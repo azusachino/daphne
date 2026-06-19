@@ -127,6 +127,7 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
 
     def test_setup_scheduler(self):
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from image_fetch import fetch_popular_image
 
         scheduler = AsyncIOScheduler()
         mock_bot = MagicMock()
@@ -134,15 +135,39 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
         setup_scheduler(mock_bot, self.db_path, "123456", scheduler=scheduler)
 
         jobs = scheduler.get_jobs()
-        self.assertEqual(len(jobs), 1)
-        job = jobs[0]
+        self.assertEqual(len(jobs), 3)
 
+        # Job 1: update_and_report_rates
+        job = jobs[0]
         self.assertEqual(job.func, update_and_report_rates)
         self.assertEqual(job.args, (mock_bot, self.db_path, "123456"))
 
         fields = {f.name: str(f) for f in job.trigger.fields}
         self.assertEqual(fields["minute"], "59")
         self.assertEqual(fields["second"], "39")
+
+        # Job 2: Yandere job
+        job_y = jobs[1]
+        self.assertEqual(job_y.func, fetch_popular_image)
+        expected_yandere_channel = os.environ.get(
+            "YANDERE_CHANNEL", "@yandere_daily_popular"
+        )
+        self.assertEqual(job_y.args, (mock_bot, "yandere", expected_yandere_channel))
+
+        fields_y = {f.name: str(f) for f in job_y.trigger.fields}
+        self.assertEqual(fields_y["hour"], "23")
+        self.assertEqual(fields_y["minute"], "39")
+        self.assertEqual(fields_y["second"], "39")
+
+        # Job 3: Danbooru job
+        job_d = jobs[2]
+        self.assertEqual(job_d.func, fetch_popular_image)
+        self.assertEqual(job_d.args, (mock_bot, "danbooru", expected_yandere_channel))
+
+        fields_d = {f.name: str(f) for f in job_d.trigger.fields}
+        self.assertEqual(fields_d["hour"], "13")
+        self.assertEqual(fields_d["minute"], "29")
+        self.assertEqual(fields_d["second"], "39")
 
 
 if __name__ == "__main__":

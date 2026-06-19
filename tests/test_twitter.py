@@ -14,17 +14,39 @@ from twitter import (
 
 class TestTwitterExtraction(unittest.TestCase):
     def test_contains_twitter_link(self):
-        self.assertTrue(contains_twitter_link("Check this out: https://twitter.com/jack/status/20"))
-        self.assertTrue(contains_twitter_link("Check this out: https://x.com/jack/status/20?s=19"))
-        self.assertTrue(contains_twitter_link("Check this out: https://fxtwitter.com/jack/status/20"))
-        self.assertTrue(contains_twitter_link("Check this out: https://vxtwitter.com/jack/status/20"))
-        self.assertTrue(contains_twitter_link("Check this out: https://fixupx.com/jack/status/20"))
-        self.assertTrue(contains_twitter_link("Check this out: https://www.x.com/jack/status/20"))
-        self.assertFalse(contains_twitter_link("Check this out: https://google.com/jack/status/20"))
-        self.assertFalse(contains_twitter_link("Check this out: https://twitter.com/jack"))
+        self.assertTrue(
+            contains_twitter_link("Check this out: https://twitter.com/jack/status/20")
+        )
+        self.assertTrue(
+            contains_twitter_link("Check this out: https://x.com/jack/status/20?s=19")
+        )
+        self.assertTrue(
+            contains_twitter_link(
+                "Check this out: https://fxtwitter.com/jack/status/20"
+            )
+        )
+        self.assertTrue(
+            contains_twitter_link(
+                "Check this out: https://vxtwitter.com/jack/status/20"
+            )
+        )
+        self.assertTrue(
+            contains_twitter_link("Check this out: https://fixupx.com/jack/status/20")
+        )
+        self.assertTrue(
+            contains_twitter_link("Check this out: https://www.x.com/jack/status/20")
+        )
+        self.assertFalse(
+            contains_twitter_link("Check this out: https://google.com/jack/status/20")
+        )
+        self.assertFalse(
+            contains_twitter_link("Check this out: https://twitter.com/jack")
+        )
 
     def test_extract_twitter_link(self):
-        res = extract_twitter_link("Check this out: https://twitter.com/jack/status/20?s=20")
+        res = extract_twitter_link(
+            "Check this out: https://twitter.com/jack/status/20?s=20"
+        )
         self.assertIsNotNone(res)
         domain, username, tweet_id = res
         self.assertEqual(domain, "twitter.com")
@@ -65,7 +87,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     async def test_handle_no_media_sends_fallback_url(self, mock_get):
         # API succeeds, but tweet has no media
         self.update.message.text = "Here: https://x.com/jack/status/20"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -74,8 +96,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "id": "20",
                 "text": "just setting up my twttr",
                 "author": {"screen_name": "jack", "name": "jack"},
-                "media": {"photos": [], "videos": []}
-            }
+                "media": {"photos": [], "videos": []},
+            },
         }
         mock_get.return_value = mock_response
 
@@ -90,7 +112,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_single_photo_success(self, mock_get):
         self.update.message.text = "Check: https://twitter.com/nasa/status/999"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -101,9 +123,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "author": {"screen_name": "nasa", "name": "NASA"},
                 "media": {
                     "photos": [{"url": "https://pbs.twimg.com/media/test.jpg"}],
-                    "videos": []
-                }
-            }
+                    "videos": [],
+                },
+            },
         }
         mock_get.return_value = mock_response
 
@@ -124,7 +146,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_multi_photo_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -134,10 +156,13 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "text": "Check these photos",
                 "author": {"screen_name": "nasa", "name": "NASA"},
                 "media": {
-                    "photos": [{"url": "https://pbs.twimg.com/media/1.jpg"}, {"url": "https://pbs.twimg.com/media/2.jpg"}],
-                    "videos": []
-                }
-            }
+                    "photos": [
+                        {"url": "https://pbs.twimg.com/media/1.jpg"},
+                        {"url": "https://pbs.twimg.com/media/2.jpg"},
+                    ],
+                    "videos": [],
+                },
+            },
         }
         mock_get.return_value = mock_response
 
@@ -157,7 +182,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_video_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -168,9 +193,11 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "author": {"screen_name": "nasa", "name": "NASA"},
                 "media": {
                     "photos": [],
-                    "videos": [{"url": "https://video.twimg.com/test.mp4", "type": "video"}]
-                }
-            }
+                    "videos": [
+                        {"url": "https://video.twimg.com/test.mp4", "type": "video"}
+                    ],
+                },
+            },
         }
         mock_get.return_value = mock_response
 
@@ -186,7 +213,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_gif_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -197,9 +224,11 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "author": {"screen_name": "nasa", "name": "NASA"},
                 "media": {
                     "photos": [],
-                    "videos": [{"url": "https://video.twimg.com/test.gif", "type": "gif"}]
-                }
-            }
+                    "videos": [
+                        {"url": "https://video.twimg.com/test.gif", "type": "gif"}
+                    ],
+                },
+            },
         }
         mock_get.return_value = mock_response
 
@@ -214,9 +243,11 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("twitter.httpx.AsyncClient.get")
     @patch("twitter.download_bytes")
-    async def test_handle_media_send_by_url_fails_downloads_bytes(self, mock_download, mock_get):
+    async def test_handle_media_send_by_url_fails_downloads_bytes(
+        self, mock_download, mock_get
+    ):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -227,14 +258,17 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "author": {"screen_name": "nasa", "name": "NASA"},
                 "media": {
                     "photos": [{"url": "https://pbs.twimg.com/media/test.jpg"}],
-                    "videos": []
-                }
-            }
+                    "videos": [],
+                },
+            },
         }
         mock_get.return_value = mock_response
 
         # First call to send_photo raises exception, second succeeds
-        self.context.bot.send_photo.side_effect = [Exception("Failed to send by URL"), None]
+        self.context.bot.send_photo.side_effect = [
+            Exception("Failed to send by URL"),
+            None,
+        ]
         mock_download.return_value = b"image_data"
 
         await handle_twitter_links(self.update, self.context)
@@ -242,7 +276,10 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         # Verified that send_photo is called twice
         self.assertEqual(self.context.bot.send_photo.call_count, 2)
         # First call tried with URL
-        self.assertEqual(self.context.bot.send_photo.call_args_list[0][1]["photo"], "https://pbs.twimg.com/media/test.jpg")
+        self.assertEqual(
+            self.context.bot.send_photo.call_args_list[0][1]["photo"],
+            "https://pbs.twimg.com/media/test.jpg",
+        )
         # Second call tried with downloaded BytesIO
         photo_arg = self.context.bot.send_photo.call_args_list[1][1]["photo"]
         self.assertTrue(isinstance(photo_arg, io.BytesIO))
@@ -255,7 +292,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_api_error_sends_fallback_url(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         # API returns 404
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 404
@@ -272,7 +309,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     @patch("twitter.httpx.AsyncClient.get")
     async def test_handle_api_exception_sends_fallback_url(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
-        
+
         # API raises connection error
         mock_get.side_effect = httpx.RequestError("Connection failed")
 
@@ -288,7 +325,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     async def test_reply_prevents_message_deletion(self, mock_get):
         self.update.message.text = "https://x.com/jack/status/20"
         self.update.message.reply_to_message = MagicMock()  # This message is a reply
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -297,8 +334,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "id": "20",
                 "text": "No media tweet",
                 "author": {"screen_name": "jack", "name": "jack"},
-                "media": {}
-            }
+                "media": {},
+            },
         }
         mock_get.return_value = mock_response
 
@@ -311,7 +348,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     async def test_topic_message_prevents_message_deletion(self, mock_get):
         self.update.message.text = "https://x.com/jack/status/20"
         self.update.message.is_topic_message = True  # This is a topic message
-        
+
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -320,8 +357,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "id": "20",
                 "text": "No media tweet",
                 "author": {"screen_name": "jack", "name": "jack"},
-                "media": {}
-            }
+                "media": {},
+            },
         }
         mock_get.return_value = mock_response
 

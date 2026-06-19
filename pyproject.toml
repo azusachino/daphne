@@ -14,7 +14,7 @@ dependencies = [
 daphne = "main:main"
 
 [tool.setuptools]
-py-modules = ["main", "database", "exchange", "scheduler", "bot", "rbac", "downloader", "twitter"]
+py-modules = ["main", "database", "exchange", "scheduler", "bot", "rbac", "downloader", "twitter", "image_fetch"]
 
 [tool.uv]
 package = true
