@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  daphne:
+    build: .
+    image: daphne:latest
+    container_name: daphne
+    restart: always
+    environment:
+      - HARUS_BOT_TOKEN=$HARUS_BOT_TOKEN
+      - DATABASE_URL=/data/daphne.db
+      - RBAC_CONFIG_PATH=/config/rbac.toml
+      - NOTIFICATION_CHANNEL=$NOTIFICATION_CHANNEL
+      - YANDERE_CHANNEL=$YANDERE_CHANNEL
+    volumes:
+      - ./config:/config
+      - ./data:/data

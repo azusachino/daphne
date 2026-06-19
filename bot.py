@@ -4,7 +4,7 @@ import datetime
 import tempfile
 import asyncio
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from rbac import RbacService, get_rbac_config_path
 from database import (
     get_db_path,
@@ -294,6 +294,22 @@ async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             pass
 
 
+async def twitter_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message or not message.text:
+        return
+
+    from twitter import contains_twitter_link, handle_twitter_links
+    if not contains_twitter_link(message.text):
+        return
+
+    # Check RBAC 'fix' permission before handling
+    if not await check_access_and_reply(update, "fix"):
+        return
+
+    await handle_twitter_links(update, context)
+
+
 def build_application() -> Application:
     token = os.environ.get("HARUS_BOT_TOKEN")
     if not token:
@@ -303,4 +319,5 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("rate", rate_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("dl", dl_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, twitter_message_handler))
     return app
