@@ -1,21 +1,33 @@
 import os
-import sqlite3
 import datetime
 from typing import Optional, List, Dict, Any, Union
 import aiosqlite
 
 DEFAULT_DB_PATH = "daphne.db"
 
+
 def get_db_path() -> str:
     """
-    Get the database path from the DATABASE_URL environment variable.
-    If DATABASE_URL starts with 'sqlite:///', strip it.
-    Defaults to 'daphne.db'.
+    Get the database path:
+    1. If DATABASE_URL is set, use it (strip 'sqlite:///' if present).
+    2. Else if 'daphne.db' is present in current working directory, use it.
+    3. Else, default to '~/.local/share/daphne/daphne.db' (create directory if missing).
     """
-    url = os.environ.get("DATABASE_URL", DEFAULT_DB_PATH)
-    if url.startswith("sqlite:///"):
-        return url[len("sqlite:///"):]
-    return url
+    url = os.environ.get("DATABASE_URL")
+    if url is not None:
+        if url.startswith("sqlite:///"):
+            return url[len("sqlite:///") :]
+        return url
+
+    if os.path.exists("daphne.db"):
+        return "daphne.db"
+
+    path = os.path.expanduser("~/.local/share/daphne/daphne.db")
+    dir_name = os.path.dirname(path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    return path
+
 
 class _DatabaseConnectionContext:
     def __init__(self, db_path: str):
@@ -31,6 +43,7 @@ class _DatabaseConnectionContext:
         if self.conn:
             await self.conn.close()
 
+
 def get_db_connection(db_path: Optional[str] = None) -> _DatabaseConnectionContext:
     """
     Get an asynchronous context manager for an aiosqlite database connection.
@@ -38,6 +51,7 @@ def get_db_connection(db_path: Optional[str] = None) -> _DatabaseConnectionConte
     """
     path = db_path or get_db_path()
     return _DatabaseConnectionContext(path)
+
 
 async def init_db(db_path: Optional[str] = None) -> None:
     """
@@ -48,7 +62,7 @@ async def init_db(db_path: Optional[str] = None) -> None:
     dir_name = os.path.dirname(path)
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-        
+
     async with aiosqlite.connect(path) as db:
         await db.executescript("""
         CREATE TABLE IF NOT EXISTS exchange_rates (
@@ -64,6 +78,7 @@ async def init_db(db_path: Optional[str] = None) -> None:
         """)
         await db.commit()
 
+
 def _parse_datetime(val: Any) -> Optional[Union[datetime.datetime, str]]:
     if not val:
         return None
@@ -77,6 +92,7 @@ def _parse_datetime(val: Any) -> Optional[Union[datetime.datetime, str]]:
     except ValueError:
         return val_str
 
+
 def _row_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
     d = dict(row)
     if "created_at" in d:
@@ -85,21 +101,26 @@ def _row_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
         d["fetched_at"] = _parse_datetime(d["fetched_at"])
     return d
 
+
 async def save_exchange_rate(
     db_path: Optional[str],
     source: str,
     target: str,
     rate: float,
-    fetched_at: Union[datetime.datetime, str]
+    fetched_at: Union[datetime.datetime, str],
 ) -> int:
     """
     Save exchange rate to the database.
     Returns the id of the inserted row.
     """
     path = db_path or get_db_path()
-    
+
     # Standardize fetched_at format
-    fetched_at_str = fetched_at.isoformat() if isinstance(fetched_at, datetime.datetime) else fetched_at
+    fetched_at_str = (
+        fetched_at.isoformat()
+        if isinstance(fetched_at, datetime.datetime)
+        else fetched_at
+    )
 
     async with get_db_connection(path) as db:
         async with db.execute(
@@ -107,16 +128,15 @@ async def save_exchange_rate(
             INSERT INTO exchange_rates (source_currency, target_currency, rate, fetched_at)
             VALUES (?, ?, ?, ?)
             """,
-            (source.upper(), target.upper(), rate, fetched_at_str)
+            (source.upper(), target.upper(), rate, fetched_at_str),
         ) as cursor:
             row_id = cursor.lastrowid
             await db.commit()
             return row_id
 
+
 async def get_latest_exchange_rate(
-    db_path: Optional[str],
-    source: str,
-    target: str
+    db_path: Optional[str], source: str, target: str
 ) -> Optional[Dict[str, Any]]:
     """
     Get the latest exchange rate for a given source and target currency.
@@ -132,16 +152,16 @@ async def get_latest_exchange_rate(
             ORDER BY fetched_at DESC, id DESC
             LIMIT 1
             """,
-            (source.upper(), target.upper())
+            (source.upper(), target.upper()),
         ) as cursor:
             row = await cursor.fetchone()
             if row:
                 return _row_to_dict(row)
             return None
 
+
 async def get_exchange_rate_history(
-    db_path: Optional[str],
-    count: int
+    db_path: Optional[str], count: int
 ) -> List[Dict[str, Any]]:
     """
     Get overall history of all exchange rates.
@@ -156,7 +176,7 @@ async def get_exchange_rate_history(
             ORDER BY fetched_at DESC, id DESC
             LIMIT ?
             """,
-            (count,)
+            (count,),
         ) as cursor:
             rows = await cursor.fetchall()
             return [_row_to_dict(row) for row in rows]

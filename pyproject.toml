@@ -10,3 +10,20 @@ dependencies = [
     "python-telegram-bot>=22.8",
 ]
 
+[project.scripts]
+daphne = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "database", "exchange", "scheduler", "bot", "rbac"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+
+
+
+

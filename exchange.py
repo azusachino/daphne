@@ -5,6 +5,7 @@ from database import save_exchange_rate
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
+
 async def fetch_rate(source: str, target: str) -> float:
     """
     Fetch the latest exchange rate from Wise for source -> target.
@@ -20,6 +21,7 @@ async def fetch_rate(source: str, target: str) -> float:
         # Extract the rate value from the last element of the returned JSON array
         return float(data[-1]["value"])
 
+
 async def fetch_and_save_rates(db_path: Optional[str] = None) -> Dict[str, float]:
     """
     Fetches JPY -> CNY and USD -> JPY rates, saves them to the database
@@ -27,16 +29,17 @@ async def fetch_and_save_rates(db_path: Optional[str] = None) -> Dict[str, float
     """
     rate_jpy_cny = await fetch_rate("JPY", "CNY")
     rate_usd_jpy = await fetch_rate("USD", "JPY")
-    
+
     fetched_at = datetime.datetime.now(datetime.timezone.utc)
-    
+
     await save_exchange_rate(db_path, "JPY", "CNY", rate_jpy_cny, fetched_at)
     await save_exchange_rate(db_path, "USD", "JPY", rate_usd_jpy, fetched_at)
-    
+
     return {
         "JPY_CNY": rate_jpy_cny,
         "USD_JPY": rate_usd_jpy,
     }
+
 
 def format_rates_message(rates: Dict[str, float]) -> str:
     """
