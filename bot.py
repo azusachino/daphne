@@ -1,6 +1,8 @@
 import os
 import logging
 import datetime
+import tempfile
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from rbac import RbacService, get_rbac_config_path
@@ -11,6 +13,13 @@ from database import (
     save_exchange_rate,
 )
 from exchange import fetch_rate
+from downloader import (
+    download_video,
+    probe_video_dimensions,
+    fetch_video_metadata,
+    format_duration,
+    format_video_caption,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +54,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/rate - Show the latest JPY/CNY exchange rate\n"
         "/rate <source> <target> - Check exchange rate for any pair on-demand\n"
         "/rate history [N] - Show history of JPY/CNY rates (last N entries, default 7)\n"
+        "/dl <url> - Download and upload a video\n"
         "/help - Show this help message"
     )
     await update.message.reply_text(help_text)
@@ -174,6 +184,116 @@ async def rate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_access_and_reply(update, "dl"):
+        return
+
+    text = update.message.text or ""
+    parts = text.split()
+    args = parts[1:]
+
+    if len(args) < 1:
+        await update.message.reply_text("Usage: /dl <url>")
+        return
+
+    url = args[0]
+    status_msg = await update.message.reply_text("⏳ Initializing...")
+
+    try:
+        await status_msg.edit_text("⏳ Fetching metadata...")
+        await status_msg.edit_text("⏳ Downloading...")
+
+        loop = asyncio.get_running_loop()
+        with tempfile.TemporaryDirectory() as out_dir:
+            try:
+                video_path = await loop.run_in_executor(
+                    None, download_video, url, out_dir
+                )
+            except Exception as e:
+                logger.exception("Failed to download video")
+                await status_msg.edit_text(f"❌ Error: {str(e)[:100]}")
+                return
+
+            await status_msg.edit_text("📤 Uploading...")
+            metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
+            width, height, duration = await loop.run_in_executor(
+                None, probe_video_dimensions, video_path
+            )
+
+            is_bilibili = "bilibili.com" in url or "b23.tv" in url
+            title = (
+                metadata.get("title")
+                or os.path.splitext(os.path.basename(video_path))[0]
+            )
+            uploader = metadata.get("uploader") or "Unknown"
+            webpage_url = metadata.get("webpage_url") or url
+
+            dur_secs = metadata.get("duration")
+            if dur_secs is None:
+                dur_secs = duration
+
+            if dur_secs is not None:
+                try:
+                    dur_str = format_duration(int(float(dur_secs)))
+                except (ValueError, TypeError):
+                    dur_str = "Unknown"
+            else:
+                dur_str = "Unknown"
+
+            user = update.effective_user
+            sender = None
+            if user:
+                if user.username:
+                    sender = f"via @{user.username}"
+                else:
+                    sender = f"via {user.full_name}"
+
+            caption = format_video_caption(
+                title=title,
+                uploader=uploader,
+                duration=dur_str,
+                url=webpage_url,
+                is_bilibili=is_bilibili,
+                sender=sender,
+            )
+
+            kwargs = {
+                "chat_id": update.effective_chat.id,
+                "supports_streaming": True,
+                "caption": caption,
+                "parse_mode": "MarkdownV2",
+            }
+            if width is not None:
+                kwargs["width"] = width
+            if height is not None:
+                kwargs["height"] = height
+            if duration is not None:
+                try:
+                    kwargs["duration"] = int(float(duration))
+                except (ValueError, TypeError):
+                    pass
+
+            with open(video_path, "rb") as video_file:
+                await context.bot.send_video(video=video_file, **kwargs)
+
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.exception("Error in dl command handler")
+        try:
+            await status_msg.edit_text(f"❌ Error: {str(e)[:100]}")
+        except Exception:
+            pass
+
+
 def build_application() -> Application:
     token = os.environ.get("HARUS_BOT_TOKEN")
     if not token:
@@ -182,4 +302,5 @@ def build_application() -> Application:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("rate", rate_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("dl", dl_command))
     return app

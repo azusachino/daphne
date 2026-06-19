@@ -1,5 +1,8 @@
 FROM ghcr.io/astral-sh/uv:python3.13-alpine
 
+# Install coreutils and ffmpeg
+RUN apk add --no-cache coreutils ffmpeg
+
 # Set the working directory
 WORKDIR /app
 
@@ -7,7 +10,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Copy source code files
-COPY main.py database.py exchange.py scheduler.py bot.py rbac.py ./
+COPY main.py database.py exchange.py scheduler.py bot.py rbac.py downloader.py ./
 
 # Sync dependencies without dev dependencies
 RUN uv sync --frozen --no-dev
