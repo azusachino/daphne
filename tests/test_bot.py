@@ -96,6 +96,8 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.base_file_url.return_value = builder
         builder.local_mode.return_value = builder
         builder.media_write_timeout.return_value = builder
+        builder.read_timeout.return_value = builder
+        builder.connect_timeout.return_value = builder
         builder.build.return_value = app
 
         with (
@@ -116,6 +118,8 @@ class TestApplicationBuilder(unittest.TestCase):
         )
         builder.local_mode.assert_called_once_with(True)
         builder.media_write_timeout.assert_called_once_with(7200)
+        builder.read_timeout.assert_called_once_with(7200)
+        builder.connect_timeout.assert_called_once_with(30.0)
 
 
 class TestBotCommands(unittest.IsolatedAsyncioTestCase):
@@ -184,6 +188,39 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["duration"], 180)
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.download_audio")
+    @patch("os.path.getsize", return_value=1024)
+    async def test_audio_command_success_schemeless(
+        self, mock_getsize, mock_download, mock_metadata, mock_limit, mock_check
+    ):
+        mock_metadata.return_value = {
+            "title": "Audio Title",
+            "uploader": "Uploader",
+            "duration": 180,
+            "webpage_url": "https://www.youtube.com/watch?v=abc",
+        }
+        mock_download.return_value = "/tmp/audio.mp3"
+
+        self.update.message.reply_to_message = None
+        self.context.args = ["youtube.com/watch?v=abc"]
+        self.context.bot.send_audio = AsyncMock()
+        self.context.bot.send_chat_action = AsyncMock()
+
+        status_msg = MagicMock()
+        status_msg.delete = AsyncMock()
+        status_msg.edit_text = AsyncMock()
+        self.update.message.reply_text.return_value = status_msg
+        self.update.message.delete = AsyncMock()
+
+        with patch("builtins.open", unittest.mock.mock_open()):
+            await audio_command(self.update, self.context)
+
+        self.context.bot.send_audio.assert_called_once()
+        self.update.message.delete.assert_called_once()
+
 
 class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -205,6 +242,10 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             extract_video_url(
                 "https://www.bilibili.com/video/BV1abc/?share_source=copy_web&p=1"
             ),
+            "https://www.bilibili.com/video/BV1abc",
+        )
+        self.assertEqual(
+            extract_video_url("bilibili.com/video/BV1abc/?share_source=copy_web&p=1"),
             "https://www.bilibili.com/video/BV1abc",
         )
 
@@ -245,6 +286,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "duration": 120,
             "webpage_url": "https://www.bilibili.com/video/BV1abc",
             "filesize_approx": 513 * 1024 * 1024,
+            "url": "https://direct-url.com/file.mp4",
         }
 
         await handle_video_link(
@@ -257,15 +299,21 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         kwargs = self.update.message.reply_text.call_args_list[-1][1]
         self.assertIn("Video is over 512 MB", text)
         self.assertIn("Huge Video", text)
-        self.assertEqual(
-            kwargs["reply_markup"].inline_keyboard[0][0].text, "Open source"
-        )
+        button_download = kwargs["reply_markup"].inline_keyboard[0][0]
+        button_source = kwargs["reply_markup"].inline_keyboard[0][1]
+        self.assertEqual(button_download.text, "Download")
+        self.assertEqual(button_download.url, "https://direct-url.com/file.mp4")
+        self.assertEqual(button_source.text, "Open source")
+        self.assertEqual(button_source.url, "https://www.bilibili.com/video/BV1abc")
         self.update.message.delete.assert_called_once()
 
-    @patch("daphne.bot.download_video")
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))
+    @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
+    @patch("os.path.getsize", return_value=1024 * 1024)
     @patch("daphne.bot.fetch_video_metadata")
-    async def test_handle_video_link_unknown_size_sends_card_without_download(
-        self, mock_metadata, mock_download
+    async def test_handle_video_link_unknown_size_downloads_and_sends_video(
+        self, mock_metadata, mock_getsize, mock_download, mock_probe, mock_limit
     ):
         mock_metadata.return_value = {
             "title": "Unknown Size Video",
@@ -274,21 +322,49 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "webpage_url": "https://www.bilibili.com/video/BV1abc",
         }
 
-        await handle_video_link(
-            self.update, self.context, "https://www.bilibili.com/video/BV1abc"
-        )
+        with patch("builtins.open", unittest.mock.mock_open()):
+            await handle_video_link(
+                self.update, self.context, "https://www.bilibili.com/video/BV1abc"
+            )
 
-        mock_download.assert_not_called()
-        self.context.bot.send_video.assert_not_called()
-        self.assertEqual(self.update.message.reply_text.call_count, 2)
-        text = self.update.message.reply_text.call_args_list[-1][0][0]
-        kwargs = self.update.message.reply_text.call_args_list[-1][1]
-        self.assertIn("Video size is unknown", text)
-        self.assertIn("Unknown Size Video", text)
-        button = kwargs["reply_markup"].inline_keyboard[0][0]
-        self.assertEqual(button.text, "Open source")
-        self.assertEqual(button.url, "https://www.bilibili.com/video/BV1abc")
+        mock_download.assert_called_once()
+        self.context.bot.send_video.assert_called_once()
+        kwargs = self.context.bot.send_video.call_args[1]
+        self.assertEqual(kwargs["width"], 1920)
+        self.assertEqual(kwargs["height"], 1080)
+        self.assertEqual(kwargs["duration"], 90)
         self.update.message.delete.assert_called_once()
+
+    def test_preprocess_text_links(self):
+        from daphne.bot import preprocess_text_links
+
+        # Without scheme
+        self.assertEqual(
+            preprocess_text_links("bilibili.com/video/BV1tEEz6uELi"),
+            "https://bilibili.com/video/BV1tEEz6uELi",
+        )
+        # With scheme (http)
+        self.assertEqual(
+            preprocess_text_links("http://youtube.com/watch?v=123"),
+            "http://youtube.com/watch?v=123",
+        )
+        # With scheme (https)
+        self.assertEqual(
+            preprocess_text_links("https://x.com/user/status/123"),
+            "https://x.com/user/status/123",
+        )
+        # Multiple links and normal text
+        self.assertEqual(
+            preprocess_text_links(
+                "Cool video at bilibili.com/video/BV1tEEz6uELi and youtube.com/watch?v=123"
+            ),
+            "Cool video at https://bilibili.com/video/BV1tEEz6uELi and https://youtube.com/watch?v=123",
+        )
+        # Email address (should not match because of lookbehind)
+        self.assertEqual(
+            preprocess_text_links("contact uploader@bilibili.com"),
+            "contact uploader@bilibili.com",
+        )
 
 
 class TestMainInit(unittest.TestCase):

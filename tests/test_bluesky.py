@@ -10,7 +10,7 @@ from daphne.bluesky import (
 )
 
 
-class TestBluesky(unittest.TestCase):
+class TestBluesky(unittest.IsolatedAsyncioTestCase):
     def test_contains_bluesky_link(self):
         self.assertTrue(
             contains_bluesky_link(

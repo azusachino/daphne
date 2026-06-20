@@ -14,7 +14,7 @@ def bot_version() -> str:
     try:
         return version("daphne")
     except PackageNotFoundError:
-        return "0.1.0"
+        return "0.1.2"
 
 
 def sender_attribution(user) -> Optional[str]:
@@ -30,11 +30,11 @@ def sender_attribution(user) -> Optional[str]:
 
 def append_footer(body: str, sender: Optional[str] = None) -> str:
     lines = [body.rstrip()]
-    footer = [f"daphne {bot_version()}"]
+    parts = [f"<code>daphne v{bot_version()}</code>"]
     if sender:
-        footer.append(sender)
+        parts.append(f"<i>{escape_html(sender)}</i>")
     lines.append("")
-    lines.append(" · ".join(escape_html(part) for part in footer))
+    lines.append(" │ ".join(parts))
     return "\n".join(lines)
 
 
