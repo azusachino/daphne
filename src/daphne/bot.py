@@ -162,6 +162,13 @@ async def send_video_card(
     )
 
 
+async def delete_original_message(update: Update) -> None:
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+
 async def handle_video_link(
     update: Update, context: ContextTypes.DEFAULT_TYPE, url: str
 ) -> None:
@@ -184,6 +191,7 @@ async def handle_video_link(
             sender,
             "Video size is unknown",
         )
+        await delete_original_message(update)
         return
     if size > max_upload_bytes:
         await status_msg.delete()
@@ -194,6 +202,7 @@ async def handle_video_link(
             sender,
             f"Video is over {video_upload_limit_mb()} MB",
         )
+        await delete_original_message(update)
         return
 
     with tempfile.TemporaryDirectory() as out_dir:
@@ -223,6 +232,7 @@ async def handle_video_link(
                 sender,
                 f"Video is over {video_upload_limit_mb()} MB",
             )
+            await delete_original_message(update)
             return
 
         await status_msg.edit_text(
@@ -253,10 +263,7 @@ async def handle_video_link(
             await context.bot.send_video(video=video_file, **kwargs)
 
     await status_msg.delete()
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    await delete_original_message(update)
 
 
 async def media_message_handler(

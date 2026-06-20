@@ -187,6 +187,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             kwargs["reply_markup"].inline_keyboard[0][0].text, "Open source"
         )
+        self.update.message.delete.assert_called_once()
 
     @patch("daphne.bot.download_video")
     @patch("daphne.bot.fetch_video_metadata")
@@ -214,6 +215,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         button = kwargs["reply_markup"].inline_keyboard[0][0]
         self.assertEqual(button.text, "Open source")
         self.assertEqual(button.url, "https://www.bilibili.com/video/BV1abc")
+        self.update.message.delete.assert_called_once()
 
 
 class TestMainInit(unittest.TestCase):
