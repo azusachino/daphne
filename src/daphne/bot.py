@@ -77,6 +77,8 @@ def detect_platform(url: str) -> str:
         return "tiktok"
     elif "instagram.com" in url_lower:
         return "instagram"
+    elif "bsky.app" in url_lower or "bluesky" in url_lower:
+        return "bluesky"
     return "video"
 
 
@@ -190,7 +192,10 @@ async def delete_original_message(update: Update) -> None:
 
 
 async def handle_video_link(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, url: str
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    url: str,
+    custom_metadata: dict | None = None,
 ) -> None:
     sender = sender_attribution(update.effective_user)
     status_msg = await update.message.reply_text(
@@ -205,10 +210,15 @@ async def handle_video_link(
         )
     except Exception:
         pass
-    metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
+
+    if custom_metadata:
+        metadata = custom_metadata
+    else:
+        metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
+
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
     size = _metadata_size(metadata)
-    if size is None:
+    if size is None and not custom_metadata:
         await status_msg.delete()
         await send_video_card(
             update,
@@ -219,7 +229,7 @@ async def handle_video_link(
         )
         await delete_original_message(update)
         return
-    if size > max_upload_bytes:
+    if size is not None and size > max_upload_bytes:
         await status_msg.delete()
         await send_video_card(
             update,
@@ -307,6 +317,7 @@ async def media_message_handler(
 
     from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
     from daphne.twitter import contains_twitter_link, handle_twitter_links
+    from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
 
     if contains_twitter_link(message.text):
         if await check_access_and_reply(update, "fix"):
@@ -314,6 +325,9 @@ async def media_message_handler(
     elif contains_pixiv_link(message.text):
         if await check_access_and_reply(update, "fix"):
             await handle_pixiv_links(update, context)
+    elif contains_bluesky_link(message.text):
+        if await check_access_and_reply(update, "fix"):
+            await handle_bluesky_links(update, context)
     elif video_url := extract_video_url(message.text):
         if await check_access_and_reply(update, "fix"):
             await handle_video_link(update, context, video_url)
