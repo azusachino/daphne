@@ -5,6 +5,7 @@ description = "Telegram bot for converting raw media links into Telegram-friendl
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
+    "parth-dl>=1.0.1",
     "python-telegram-bot>=22.8",
 ]
 
