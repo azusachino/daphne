@@ -19,14 +19,9 @@ data:
     permissions = ["fix"]
 
     [rbac.users]
-    996596491 = "admin" # Owner
+    # Add your Telegram numeric user ID. Example:
+    # 996596491 = "admin"
 
     [rbac.chats]
-    # average anime fan boy
-    -1002058191932 = "standard_group"
-    # michishirube
-    -1002101328553 = "standard_group"
-    # harus_channel
-    -1003438236939 = "standard_group"
-    # harus_notification
-    -1003524535102 = "standard_group"
+    # Add your chat/group IDs here. Example:
+    # -1002058191932 = "standard_group"
