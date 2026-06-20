@@ -1,7 +1,7 @@
 import datetime
 import httpx
 from typing import Optional, Dict
-from database import save_exchange_rate
+from daphne.database import save_exchange_rate
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 

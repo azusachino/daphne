@@ -6,6 +6,8 @@ import logging
 import json
 from typing import Tuple, Optional
 
+from daphne.messages import append_footer, escape_html
+
 logger = logging.getLogger(__name__)
 
 USER_AGENTS = [
@@ -14,6 +16,19 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
+
+
+def is_bilibili_url(url: str) -> bool:
+    return "bilibili.com" in url or "b23.tv" in url
+
+
+def bilibili_headers() -> list[str]:
+    return [
+        "--add-header",
+        "Referer:https://www.bilibili.com/",
+        "--add-header",
+        "Origin:https://www.bilibili.com",
+    ]
 
 
 def scan_largest_media_file(out_dir: str) -> Optional[str]:
@@ -85,15 +100,8 @@ def download_video(url: str, out_dir: str) -> str:
         "--user-agent",
         ua,
     ]
-    if "bilibili.com" in url or "b23.tv" in url:
-        cmd_pass2.extend(
-            [
-                "--add-header",
-                "Referer:https://www.bilibili.com/",
-                "--add-header",
-                "Origin:https://www.bilibili.com",
-            ]
-        )
+    if is_bilibili_url(url):
+        cmd_pass2.extend(bilibili_headers())
     cmd_pass2.append(url)
     _run_cmd(cmd_pass2)
     largest = scan_largest_media_file(out_dir)
@@ -163,29 +171,36 @@ def probe_video_dimensions(
 
 
 def fetch_video_metadata(url: str) -> dict:
-    cmd = [
-        "uvx",
-        "yt-dlp",
-        "--dump-json",
-        "--no-playlist",
-        "--user-agent",
-        random.choice(USER_AGENTS),
-        url,
+    commands = [
+        [
+            "uvx",
+            "yt-dlp",
+            "--dump-json",
+            "--no-playlist",
+            "--user-agent",
+            random.choice(USER_AGENTS),
+            url,
+        ]
     ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(res.stdout)
-        return {
-            "title": data.get("title", ""),
-            "uploader": data.get("uploader", ""),
-            "duration": data.get("duration"),
-            "webpage_url": data.get("webpage_url", url),
-            "width": data.get("width"),
-            "height": data.get("height"),
-        }
-    except Exception as e:
-        logger.warning(f"Failed to fetch video metadata via yt-dlp: {e}")
-        return {}
+    if is_bilibili_url(url):
+        cmd = commands[0][:-1] + bilibili_headers() + [url]
+        commands.append(cmd)
+
+    for cmd in commands:
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(res.stdout)
+            return {
+                "title": data.get("title", ""),
+                "uploader": data.get("uploader", ""),
+                "duration": data.get("duration"),
+                "webpage_url": data.get("webpage_url", url),
+                "width": data.get("width"),
+                "height": data.get("height"),
+            }
+        except Exception as e:
+            logger.warning(f"Failed to fetch video metadata via yt-dlp: {e}")
+    return {}
 
 
 def format_duration(seconds: int) -> str:
@@ -198,17 +213,6 @@ def format_duration(seconds: int) -> str:
         return f"{minutes:02d}:{secs:02d}"
 
 
-def markdown_v2_escape(s: str) -> str:
-    escape_chars = r"_*[]()~`>#+-=|{}.!"
-    res = ""
-    for char in s:
-        if char in escape_chars:
-            res += "\\" + char
-        else:
-            res += char
-    return res
-
-
 def format_video_caption(
     title: str,
     uploader: str,
@@ -217,14 +221,12 @@ def format_video_caption(
     is_bilibili: bool,
     sender: Optional[str] = None,
 ) -> str:
-    source_tag = "\\#bilibili" if is_bilibili else "\\#youtube"
-    caption = (
-        f"🎬 *{markdown_v2_escape(title)}*\n"
-        f"👤 {markdown_v2_escape(uploader)}\n"
-        f"⏱️ {markdown_v2_escape(duration)}\n"
-        f"🔗 {markdown_v2_escape(url)}\n"
+    source_tag = "#bilibili" if is_bilibili else "#youtube"
+    body = (
+        f"🎬 <b>{escape_html(title)}</b>\n"
+        f"👤 {escape_html(uploader)}\n"
+        f"⏱️ {escape_html(duration)}\n"
+        f'🔗 <a href="{escape_html(url)}">{escape_html(url)}</a>\n'
         f"{source_tag}"
     )
-    if sender:
-        caption += f"\n{markdown_v2_escape(sender)}"
-    return caption
+    return append_footer(body, sender)

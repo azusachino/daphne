@@ -5,6 +5,7 @@ import tomllib
 from typing import Dict, Any, Tuple, Optional
 
 logger = logging.getLogger(__name__)
+ENV_RBAC_CONFIG_PATH = "DAPHNE_RBAC_CONFIG_PATH"
 
 
 class AccessStatus:
@@ -186,7 +187,7 @@ class RbacService:
 
 
 def get_rbac_config_path() -> str:
-    path = os.environ.get("RBAC_CONFIG_PATH")
+    path = os.environ.get(ENV_RBAC_CONFIG_PATH)
     if path:
         return path
     if os.path.exists("rbac.toml"):

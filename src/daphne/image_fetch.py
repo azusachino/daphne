@@ -6,6 +6,7 @@ import asyncio
 import random
 from typing import Tuple, Optional, Dict, Any
 import httpx
+from daphne.messages import append_footer, escape_html
 
 logger = logging.getLogger("daphne.image_fetch")
 
@@ -112,15 +113,16 @@ def format_caption(site: str, post_id: int, date_str: str, tags: str) -> str:
         post_url = f"https://danbooru.donmai.us/posts/{post_id}"
         site_label = "danbooru"
 
-    tags_formatted = tags
+    tags_formatted = escape_html(tags)
     if len(tags_formatted) > 500:
         tags_formatted = tags_formatted[:497] + "..."
 
-    return (
+    body = (
         f"🌟 <b>{site_label} Daily Popular</b> ({date_str})\n"
         f'🔗 <a href="{post_url}">Post #{post_id}</a>\n\n'
         f"🏷️ <code>{tags_formatted}</code>"
     )
+    return append_footer(body)
 
 
 async def fetch_popular_image(

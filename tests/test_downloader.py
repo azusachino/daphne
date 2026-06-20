@@ -5,13 +5,12 @@ import shutil
 import json
 from unittest.mock import patch, MagicMock
 
-from downloader import (
+from daphne.downloader import (
     scan_largest_media_file,
     download_video,
     probe_video_dimensions,
     fetch_video_metadata,
     format_duration,
-    markdown_v2_escape,
     format_video_caption,
 )
 
@@ -49,28 +48,25 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(format_duration(125), "02:05")
         self.assertEqual(format_duration(3665), "01:01:05")
 
-    def test_markdown_v2_escape(self):
-        self.assertEqual(markdown_v2_escape("hello"), "hello")
-        self.assertEqual(markdown_v2_escape("hello_world!"), "hello\\_world\\!")
-
     def test_format_video_caption(self):
         # YouTube, no sender
         cap = format_video_caption(
             "A * B", "Uploader #1", "12:34", "http://x.com", False
         )
-        self.assertIn("🎬 *A \\* B*", cap)
-        self.assertIn("👤 Uploader \\#1", cap)
+        self.assertIn("🎬 <b>A * B</b>", cap)
+        self.assertIn("👤 Uploader #1", cap)
         self.assertIn("⏱️ 12:34", cap)
-        self.assertIn("🔗 http://x\\.com", cap)
-        self.assertIn("\\#youtube", cap)
+        self.assertIn('<a href="http://x.com">http://x.com</a>', cap)
+        self.assertIn("#youtube", cap)
+        self.assertIn("daphne", cap)
         self.assertNotIn("via", cap)
 
         # Bilibili, with sender
         cap_bili = format_video_caption(
             "Bili Bili", "User2", "01:00", "http://b23.tv/xyz", True, "via @haru"
         )
-        self.assertIn("🎬 *Bili Bili*", cap_bili)
-        self.assertIn("\\#bilibili", cap_bili)
+        self.assertIn("🎬 <b>Bili Bili</b>", cap_bili)
+        self.assertIn("#bilibili", cap_bili)
         self.assertIn("via @haru", cap_bili)
 
     @patch("subprocess.run")
@@ -112,8 +108,33 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(meta["uploader"], "My Uploader")
         self.assertEqual(meta["duration"], 300)
 
+    @patch("subprocess.run")
+    def test_fetch_video_metadata_bilibili_retries_with_headers(self, mock_run):
+        mock_run.side_effect = [
+            Exception("HTTP 412"),
+            MagicMock(
+                stdout=json.dumps(
+                    {
+                        "title": "Bili Title",
+                        "uploader": "Bili Uploader",
+                        "duration": 108,
+                        "webpage_url": "https://www.bilibili.com/video/BV1",
+                    }
+                ),
+                returncode=0,
+            ),
+        ]
+
+        meta = fetch_video_metadata("https://www.bilibili.com/video/BV1")
+
+        self.assertEqual(meta["title"], "Bili Title")
+        self.assertEqual(mock_run.call_count, 2)
+        second_cmd = mock_run.call_args_list[1][0][0]
+        self.assertIn("Referer:https://www.bilibili.com/", second_cmd)
+        self.assertIn("Origin:https://www.bilibili.com", second_cmd)
+
     @patch("shutil.which")
-    @patch("downloader.scan_largest_media_file")
+    @patch("daphne.downloader.scan_largest_media_file")
     @patch("subprocess.run")
     def test_download_video_fallback(self, mock_run, mock_scan, mock_which):
         # Case 1: Pass 1 works

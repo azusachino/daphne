@@ -3,7 +3,7 @@ import unittest
 import tempfile
 import datetime
 import shutil
-from database import (
+from daphne.database import (
     get_db_path,
     init_db,
     save_exchange_rate,
@@ -24,10 +24,10 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
 
     def test_get_db_path_default(self):
         # Test default fallback path
-        orig_env = os.environ.get("DATABASE_URL")
+        orig_env = os.environ.get("DAPHNE_DATABASE_URL")
         try:
-            if "DATABASE_URL" in os.environ:
-                del os.environ["DATABASE_URL"]
+            if "DAPHNE_DATABASE_URL" in os.environ:
+                del os.environ["DAPHNE_DATABASE_URL"]
 
             # If daphne.db is not present, should default to ~/.local/share/daphne/daphne.db
             expected_fallback = os.path.expanduser("~/.local/share/daphne/daphne.db")
@@ -42,31 +42,31 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(get_db_path(), "daphne.db")
         finally:
             if orig_env is not None:
-                os.environ["DATABASE_URL"] = orig_env
+                os.environ["DAPHNE_DATABASE_URL"] = orig_env
 
     def test_get_db_path_with_env(self):
-        # Test DATABASE_URL without sqlite:/// prefix
-        orig_env = os.environ.get("DATABASE_URL")
+        # Test DAPHNE_DATABASE_URL without sqlite:/// prefix
+        orig_env = os.environ.get("DAPHNE_DATABASE_URL")
         try:
-            os.environ["DATABASE_URL"] = "custom_path.db"
+            os.environ["DAPHNE_DATABASE_URL"] = "custom_path.db"
             self.assertEqual(get_db_path(), "custom_path.db")
         finally:
             if orig_env is not None:
-                os.environ["DATABASE_URL"] = orig_env
+                os.environ["DAPHNE_DATABASE_URL"] = orig_env
 
     def test_get_db_path_with_sqlite_prefix(self):
-        # Test DATABASE_URL with sqlite:/// prefix
-        orig_env = os.environ.get("DATABASE_URL")
+        # Test DAPHNE_DATABASE_URL with sqlite:/// prefix
+        orig_env = os.environ.get("DAPHNE_DATABASE_URL")
         try:
-            os.environ["DATABASE_URL"] = "sqlite:///custom_path.db"
+            os.environ["DAPHNE_DATABASE_URL"] = "sqlite:///custom_path.db"
             self.assertEqual(get_db_path(), "custom_path.db")
 
             # Test absolute path with sqlite:///
-            os.environ["DATABASE_URL"] = "sqlite:////tmp/custom_path.db"
+            os.environ["DAPHNE_DATABASE_URL"] = "sqlite:////tmp/custom_path.db"
             self.assertEqual(get_db_path(), "/tmp/custom_path.db")
         finally:
             if orig_env is not None:
-                os.environ["DATABASE_URL"] = orig_env
+                os.environ["DAPHNE_DATABASE_URL"] = orig_env
 
     async def test_init_db(self):
         # Test that init_db creates table and indexes

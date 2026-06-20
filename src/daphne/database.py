@@ -4,16 +4,17 @@ from typing import Optional, List, Dict, Any, Union
 import aiosqlite
 
 DEFAULT_DB_PATH = "daphne.db"
+ENV_DATABASE_URL = "DAPHNE_DATABASE_URL"
 
 
 def get_db_path() -> str:
     """
     Get the database path:
-    1. If DATABASE_URL is set, use it (strip 'sqlite:///' if present).
+    1. If DAPHNE_DATABASE_URL is set, use it (strip 'sqlite:///' if present).
     2. Else if 'daphne.db' is present in current working directory, use it.
     3. Else, default to '~/.local/share/daphne/daphne.db' (create directory if missing).
     """
-    url = os.environ.get("DATABASE_URL")
+    url = os.environ.get(ENV_DATABASE_URL)
     if url is not None:
         if url.startswith("sqlite:///"):
             return url[len("sqlite:///") :]

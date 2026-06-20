@@ -6,9 +6,9 @@ import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
-from database import init_db, get_latest_exchange_rate
-from exchange import fetch_rate, fetch_and_save_rates, format_rates_message
-from scheduler import update_and_report_rates, setup_scheduler
+from daphne.database import init_db, get_latest_exchange_rate
+from daphne.exchange import fetch_rate, fetch_and_save_rates, format_rates_message
+from daphne.scheduler import update_and_report_rates, setup_scheduler
 
 
 class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
@@ -59,7 +59,7 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await fetch_rate("USD", "JPY")
 
-    @patch("exchange.fetch_rate")
+    @patch("daphne.exchange.fetch_rate")
     async def test_fetch_and_save_rates(self, mock_fetch_rate):
         # Initialize DB
         await init_db(self.db_path)
@@ -107,8 +107,8 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("JPY_CNY: 0.0457", message)
         self.assertIn("USD_JPY: 161.35", message)
 
-    @patch("scheduler.fetch_and_save_rates")
-    @patch("scheduler.format_rates_message")
+    @patch("daphne.scheduler.fetch_and_save_rates")
+    @patch("daphne.scheduler.format_rates_message")
     async def test_update_and_report_rates(self, mock_format, mock_fetch_and_save):
         mock_fetch_and_save.return_value = {"JPY_CNY": 0.04567, "USD_JPY": 161.35}
         mock_format.return_value = "Formatted Message"
@@ -127,12 +127,13 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
 
     def test_setup_scheduler(self):
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from image_fetch import fetch_popular_image
+        from daphne.image_fetch import fetch_popular_image
 
         scheduler = AsyncIOScheduler()
         mock_bot = MagicMock()
 
-        setup_scheduler(mock_bot, self.db_path, "123456", scheduler=scheduler)
+        with patch.dict(os.environ, {}, clear=True):
+            setup_scheduler(mock_bot, self.db_path, "123456", scheduler=scheduler)
 
         jobs = scheduler.get_jobs()
         self.assertEqual(len(jobs), 3)
@@ -150,7 +151,7 @@ class TestExchangeAndScheduler(unittest.IsolatedAsyncioTestCase):
         job_y = jobs[1]
         self.assertEqual(job_y.func, fetch_popular_image)
         expected_yandere_channel = os.environ.get(
-            "YANDERE_CHANNEL", "@yandere_daily_popular"
+            "DAPHNE_IMAGE_CHANNEL", "@yandere_daily_popular"
         )
         self.assertEqual(job_y.args, (mock_bot, "yandere", expected_yandere_channel))
 

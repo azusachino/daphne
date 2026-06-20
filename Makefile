@@ -3,10 +3,10 @@
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 
 dev:
-	uv run python main.py
+	uv run daphne
 
 init:
-	uv run python main.py init
+	uv run daphne init
 
 test:
 	uv run python -m unittest discover tests

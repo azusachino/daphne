@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daphne
+  namespace: harus-media
+  labels:
+    app: daphne
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: daphne
+  template:
+    metadata:
+      labels:
+        app: daphne
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: daphne
+          image: docker.io/azusachino/daphne:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          envFrom:
+            - secretRef:
+                name: daphne-secret
+          env:
+            - name: DAPHNE_DATABASE_URL
+              value: /data/daphne.db
+            - name: DAPHNE_RBAC_CONFIG_PATH
+              value: /config/rbac.toml
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: rbac-config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 25m
+            limits:
+              memory: 512Mi
+              cpu: 250m
+      volumes:
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: File
+        - name: rbac-config
+          configMap:
+            name: daphne-rbac
+        - name: data
+          persistentVolumeClaim:
+            claimName: daphne-data-pvc
+        - name: tmp
+          emptyDir: {}

@@ -2,14 +2,18 @@
 
 Daphne（ダフニー）沈丁花（月桂）
 
-## description
+## Description
 
-grpc practice project
+Daphne is a Telegram bot for personal automation: exchange-rate reporting, media link conversion, video download/upload, and daily image posts.
 
-## necessary steps
+## Configuration
 
-for generating `*_micro.pb.go` files, we need to install `protoc-gen-micro`.(must ensure protoc & protoc-gen-go exists)
+Runtime environment variables are all prefixed with `DAPHNE_`:
 
-```shell
-go get github.com/asim/go-micro/cmd/protoc-gen-micro/v3
-```
+- `DAPHNE_BOT_TOKEN`
+- `DAPHNE_DATABASE_URL`
+- `DAPHNE_RBAC_CONFIG_PATH`
+- `DAPHNE_NOTIFICATION_CHANNEL`
+- `DAPHNE_IMAGE_CHANNEL`
+
+Existing channel names/IDs can stay unchanged; only the environment variable keys are renamed.

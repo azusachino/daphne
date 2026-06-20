@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: daphne-rbac
+  namespace: harus-media
+data:
+  rbac.toml: |
+    public_commands = ["help", "rate"]
+
+    [roles.admin]
+    permissions = ["*"]
+
+    [roles.standard_group]
+    permissions = ["dl", "fix"]
+
+    [users]
+    996596491 = "admin" # Owner
+
+    [chats]
+    # average anime fan boy
+    -1002058191932 = "standard_group"
+    # michishirube
+    -1002101328553 = "standard_group"
+    # harus_channel
+    -1003438236939 = "standard_group"
+    # harus_notification
+    -1003524535102 = "standard_group"

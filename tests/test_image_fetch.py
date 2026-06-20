@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
-from image_fetch import (
+from daphne.image_fetch import (
     get_yesterday_date,
     parse_popular_api,
     format_caption,
@@ -88,7 +88,7 @@ class TestImageFetch(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Post #456", caption_d)
         self.assertIn("tag3 tag4", caption_d)
 
-    @patch("image_fetch.download_image")
+    @patch("daphne.image_fetch.download_image")
     @patch("httpx.AsyncClient")
     async def test_fetch_popular_image_yandere_success(
         self, mock_client_class, mock_download
@@ -140,7 +140,7 @@ class TestImageFetch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["parse_mode"], "HTML")
         self.assertIn("Post #999", kwargs["caption"])
 
-    @patch("image_fetch.download_image")
+    @patch("daphne.image_fetch.download_image")
     @patch("httpx.AsyncClient")
     async def test_fetch_popular_image_danbooru_success(
         self, mock_client_class, mock_download
@@ -192,11 +192,11 @@ class TestImageFetch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["parse_mode"], "HTML")
         self.assertIn("Post #888", kwargs["caption"])
 
-    @patch("image_fetch.download_image")
+    @patch("daphne.image_fetch.download_image")
     @patch("httpx.AsyncClient")
     async def test_send_photo_retry(self, mock_client_class, mock_download):
         # We also want to verify send_photo_with_retry works with retry logic
-        from image_fetch import send_photo_with_retry
+        from daphne.image_fetch import send_photo_with_retry
 
         mock_bot = MagicMock()
         # Fail first two times, then succeed

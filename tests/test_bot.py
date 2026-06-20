@@ -5,10 +5,10 @@ import shutil
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from rbac import RbacService, get_rbac_config_path
-from database import get_db_path
-from bot import help_command, rate_command
-import main
+from daphne.rbac import RbacService, get_rbac_config_path
+from daphne.database import get_db_path
+from daphne.bot import help_command, rate_command
+from daphne import main
 
 
 class TestRbac(unittest.TestCase):
@@ -20,7 +20,7 @@ class TestRbac(unittest.TestCase):
                 "admin": {"permissions": ["*"]},
                 "standard": {"permissions": ["rate", "dl"]},
             },
-            "users": {"996596491": "admin", "12345": "standard", "67890": "restricted"},
+            "users": {"123456789": "admin", "12345": "standard", "67890": "restricted"},
             "chats": {"-1002058191932": "standard", "88888": "restricted"},
         }
         self.rbac = RbacService(self.config_data)
@@ -54,7 +54,7 @@ class TestRbac(unittest.TestCase):
     def test_admin_bypass(self):
         # Admin can access non-public command or anything
         res = self.rbac.check_access(
-            user_id=996596491, chat_id=999, command="restricted_cmd"
+            user_id=123456789, chat_id=999, command="restricted_cmd"
         )
         self.assertTrue(res.is_allowed())
 
@@ -94,20 +94,20 @@ class TestRbac(unittest.TestCase):
 
 class TestPathsAndXDG(unittest.TestCase):
     def test_database_url_env(self):
-        with patch.dict(os.environ, {"DATABASE_URL": "sqlite:///my_db.db"}):
+        with patch.dict(os.environ, {"DAPHNE_DATABASE_URL": "sqlite:///my_db.db"}):
             self.assertEqual(get_db_path(), "my_db.db")
 
-        with patch.dict(os.environ, {"DATABASE_URL": "custom_path.db"}):
+        with patch.dict(os.environ, {"DAPHNE_DATABASE_URL": "custom_path.db"}):
             self.assertEqual(get_db_path(), "custom_path.db")
 
     def test_database_cwd_fallback(self):
-        # If DATABASE_URL is not set, but daphne.db exists in CWD
+        # If DAPHNE_DATABASE_URL is not set, but daphne.db exists in CWD
         with patch.dict(os.environ, {}, clear=True):
             with patch("os.path.exists", lambda path: path == "daphne.db"):
                 self.assertEqual(get_db_path(), "daphne.db")
 
     def test_database_xdg_fallback(self):
-        # If DATABASE_URL is not set, and daphne.db not in CWD, fallback to local/share
+        # If DAPHNE_DATABASE_URL is not set, and daphne.db not in CWD, fallback to local/share
         with patch.dict(os.environ, {}, clear=True):
             with patch("os.path.exists", return_value=False):
                 with patch("os.makedirs") as mock_makedirs:
@@ -119,7 +119,7 @@ class TestPathsAndXDG(unittest.TestCase):
                     )
 
     def test_rbac_path_env(self):
-        with patch.dict(os.environ, {"RBAC_CONFIG_PATH": "custom_rbac.toml"}):
+        with patch.dict(os.environ, {"DAPHNE_RBAC_CONFIG_PATH": "custom_rbac.toml"}):
             self.assertEqual(get_rbac_config_path(), "custom_rbac.toml")
 
     def test_rbac_cwd_fallback(self):
@@ -141,12 +141,14 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.db_path = os.path.join(self.test_dir, "test_bot.db")
 
         # Patch database path resolution to use our temp DB path
-        self.get_db_path_patcher = patch("bot.get_db_path", return_value=self.db_path)
+        self.get_db_path_patcher = patch(
+            "daphne.bot.get_db_path", return_value=self.db_path
+        )
         self.get_db_path_patcher.start()
 
         # Setup mock update and context
         self.update = MagicMock()
-        self.update.effective_user.id = 996596491  # admin to pass RBAC
+        self.update.effective_user.id = 123456789  # admin to pass RBAC
         self.update.effective_chat.id = -1002058191932
         self.update.message.reply_text = AsyncMock()
         self.context = MagicMock()
@@ -164,7 +166,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("daphne - Wise Exchange Rate Bot", reply)
         self.assertIn("/rate - Show the latest JPY/CNY exchange rate", reply)
 
-    @patch("bot.get_latest_exchange_rate")
+    @patch("daphne.bot.get_latest_exchange_rate")
     async def test_rate_command_no_args_stored(self, mock_get_latest):
         # Database returns a stored exchange rate record
         mock_get_latest.return_value = {
@@ -184,9 +186,9 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("JPY/CNY: 456.000 (×10000)", reply)
         self.assertIn("Fetched: 2026-06-20", reply)
 
-    @patch("bot.get_latest_exchange_rate", return_value=None)
-    @patch("bot.fetch_rate")
-    @patch("bot.save_exchange_rate")
+    @patch("daphne.bot.get_latest_exchange_rate", return_value=None)
+    @patch("daphne.bot.fetch_rate")
+    @patch("daphne.bot.save_exchange_rate")
     async def test_rate_command_no_args_live_fallback(
         self, mock_save, mock_fetch, mock_get_latest
     ):
@@ -201,7 +203,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         reply = self.update.message.reply_text.call_args[0][0]
         self.assertIn("JPY/CNY: 457.000 (×10000)", reply)
 
-    @patch("bot.get_exchange_rate_history")
+    @patch("daphne.bot.get_exchange_rate_history")
     async def test_rate_command_history(self, mock_history):
         mock_history.return_value = [
             {
@@ -231,7 +233,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertIn("456.000", reply)
         self.assertIn("455.000", reply)
 
-    @patch("bot.get_exchange_rate_history", return_value=[])
+    @patch("daphne.bot.get_exchange_rate_history", return_value=[])
     async def test_rate_command_history_empty(self, mock_history):
         self.update.message.text = "/rate history"
         await rate_command(self.update, self.context)
@@ -239,7 +241,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
             "No rate history available."
         )
 
-    @patch("bot.fetch_rate")
+    @patch("daphne.bot.fetch_rate")
     async def test_rate_command_on_demand_success(self, mock_fetch):
         mock_fetch.return_value = 161.35
 
@@ -249,7 +251,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         mock_fetch.assert_called_once_with("USD", "JPY")
         self.update.message.reply_text.assert_called_once_with("USD/JPY: 161.350000")
 
-    @patch("bot.fetch_rate", side_effect=Exception("Wise down"))
+    @patch("daphne.bot.fetch_rate", side_effect=Exception("Wise down"))
     async def test_rate_command_on_demand_fail(self, mock_fetch):
         self.update.message.text = "/rate USD JPY"
         await rate_command(self.update, self.context)

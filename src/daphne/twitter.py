@@ -1,10 +1,16 @@
 import re
-import html
 import httpx
 import logging
 import io
 from telegram import Update, InputMediaPhoto
 from telegram.ext import ContextTypes
+
+from daphne.messages import (
+    PARSE_MODE_HTML,
+    append_footer,
+    escape_html,
+    sender_attribution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -221,31 +227,21 @@ async def handle_twitter_links(
                     # Original URL without query parameters
                     original_url = f"https://{domain}/{username}/status/{tweet_id}"
 
-                    # Sender attribution
-                    user = update.effective_user
-                    sender_attr = ""
-                    if user:
-                        if user.username:
-                            sender_attr = f"via @{user.username}"
-                        else:
-                            sender_attr = f"via {user.full_name}"
-
                     # Truncate tweet text to protect caption length limits in Telegram
                     if len(tweet_text) > 700:
                         tweet_text = tweet_text[:700] + "..."
 
                     # Escape HTML for text elements
-                    escaped_text = html.escape(tweet_text)
-                    escaped_sender = html.escape(sender_attr) if sender_attr else ""
-                    escaped_url = html.escape(original_url)
+                    escaped_text = escape_html(tweet_text)
+                    escaped_url = escape_html(original_url)
 
                     parts = [escaped_text]
                     parts.append(f'🔗 <a href="{escaped_url}">{escaped_url}</a>')
                     parts.append(hashtag_line)
-                    if escaped_sender:
-                        parts.append(escaped_sender)
 
-                    caption = "\n\n".join(parts)
+                    caption = append_footer(
+                        "\n\n".join(parts), sender_attribution(update.effective_user)
+                    )
 
                     # Send media
                     if video_urls:
@@ -254,7 +250,7 @@ async def handle_twitter_links(
                             chat_id,
                             video_urls[0],
                             caption,
-                            parse_mode="HTML",
+                            parse_mode=PARSE_MODE_HTML,
                         )
                         success = True
                     elif gif_urls:
@@ -263,7 +259,7 @@ async def handle_twitter_links(
                             chat_id,
                             gif_urls[0],
                             caption,
-                            parse_mode="HTML",
+                            parse_mode=PARSE_MODE_HTML,
                         )
                         success = True
                     elif photo_urls:
@@ -273,7 +269,7 @@ async def handle_twitter_links(
                                 chat_id,
                                 photo_urls[0],
                                 caption,
-                                parse_mode="HTML",
+                                parse_mode=PARSE_MODE_HTML,
                             )
                             success = True
                         else:
@@ -282,7 +278,7 @@ async def handle_twitter_links(
                                 chat_id,
                                 photo_urls,
                                 caption,
-                                parse_mode="HTML",
+                                parse_mode=PARSE_MODE_HTML,
                             )
                             success = True
                 else:

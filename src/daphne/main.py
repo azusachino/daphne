@@ -9,6 +9,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("daphne.main")
 
+DEFAULT_IMAGE_CHANNEL = "@yandere_daily_popular"
+DEFAULT_NOTIFICATION_CHANNEL = "@harus_notification"
+ENV_BOT_TOKEN = "DAPHNE_BOT_TOKEN"
+ENV_NOTIFICATION_CHANNEL = "DAPHNE_NOTIFICATION_CHANNEL"
+
 
 def load_env_file(filepath: str) -> None:
     """
@@ -39,9 +44,9 @@ load_env_file(".env")
 load_env_file(os.path.expanduser("~/.config/daphne/daphne.env"))
 
 # Import remaining modules after loading environment variables
-from database import init_db, get_db_path  # noqa: E402
-from bot import build_application  # noqa: E402
-from scheduler import setup_scheduler  # noqa: E402
+from daphne.database import init_db, get_db_path  # noqa: E402
+from daphne.bot import build_application  # noqa: E402
+from daphne.scheduler import setup_scheduler  # noqa: E402
 
 
 async def post_init(app) -> None:
@@ -54,7 +59,9 @@ async def post_init(app) -> None:
     logger.info(f"Database initialized at: {db_path}")
 
     # Setup scheduler
-    notification_channel = os.environ.get("NOTIFICATION_CHANNEL", "@harus_notification")
+    notification_channel = os.environ.get(
+        ENV_NOTIFICATION_CHANNEL, DEFAULT_NOTIFICATION_CHANNEL
+    )
     setup_scheduler(app.bot, db_path, notification_channel)
     logger.info("Scheduler setup completed.")
 
@@ -80,7 +87,7 @@ permissions = ["*"]
 
 [users]
 # Add user IDs mapping to roles here. Example:
-# 996596491 = "admin"
+# 123456789 = "admin"
 
 [chats]
 # Add chat/group IDs mapping to roles here. Example:
@@ -93,10 +100,11 @@ permissions = ["*"]
     # 3. Write template environment file
     env_path = os.path.join(config_dir, "daphne.env")
     env_content = f"""# Environment variables for Daphne Bot
-HARUS_BOT_TOKEN=your_telegram_bot_token_here
-DATABASE_URL=sqlite:///{os.path.join(home, ".local", "share", "daphne", "daphne.db")}
-RBAC_CONFIG_PATH={rbac_path}
-NOTIFICATION_CHANNEL=@harus_notification
+DAPHNE_BOT_TOKEN=your_telegram_bot_token_here
+DAPHNE_DATABASE_URL=sqlite:///{os.path.join(home, ".local", "share", "daphne", "daphne.db")}
+DAPHNE_RBAC_CONFIG_PATH={rbac_path}
+DAPHNE_NOTIFICATION_CHANNEL={DEFAULT_NOTIFICATION_CHANNEL}
+DAPHNE_IMAGE_CHANNEL={DEFAULT_IMAGE_CHANNEL}
 """
     with open(env_path, "w") as f:
         f.write(env_content)
@@ -146,10 +154,11 @@ def main() -> None:
         run_init()
     else:
         # Check token existence
-        token = os.environ.get("HARUS_BOT_TOKEN")
+        token = os.environ.get(ENV_BOT_TOKEN)
         if not token:
             print(
-                "Error: HARUS_BOT_TOKEN environment variable not set.", file=sys.stderr
+                f"Error: {ENV_BOT_TOKEN} environment variable not set.",
+                file=sys.stderr,
             )
             print(
                 "Please set it in your environment or run 'daphne init' to set up a template env file.",

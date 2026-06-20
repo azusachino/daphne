@@ -5,7 +5,7 @@ import io
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from twitter import (
+from daphne.twitter import (
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
@@ -83,7 +83,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_media_group = AsyncMock()
         self.context.bot.send_message = AsyncMock()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_no_media_sends_fallback_url(self, mock_get):
         # API succeeds, but tweet has no media
         self.update.message.text = "Here: https://x.com/jack/status/20"
@@ -109,7 +109,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         )
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_single_photo_success(self, mock_get):
         self.update.message.text = "Check: https://twitter.com/nasa/status/999"
 
@@ -143,7 +143,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://twitter.com/nasa/status/999", kwargs["caption"])
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_multi_photo_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -179,7 +179,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Check these photos", media_group[0].caption)
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_video_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -210,7 +210,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["video"], "https://video.twimg.com/test.mp4")
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_gif_success(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -241,8 +241,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["animation"], "https://video.twimg.com/test.gif")
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
-    @patch("twitter.download_bytes")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.download_bytes")
     async def test_handle_media_send_by_url_fails_downloads_bytes(
         self, mock_download, mock_get
     ):
@@ -289,7 +289,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_api_error_sends_fallback_url(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -306,7 +306,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         )
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_api_exception_sends_fallback_url(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -321,7 +321,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         )
         self.update.message.delete.assert_called_once()
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_reply_prevents_message_deletion(self, mock_get):
         self.update.message.text = "https://x.com/jack/status/20"
         self.update.message.reply_to_message = MagicMock()  # This message is a reply
@@ -344,7 +344,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_message.assert_called_once()
         self.update.message.delete.assert_not_called()  # delete must not be called
 
-    @patch("twitter.httpx.AsyncClient.get")
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_topic_message_prevents_message_deletion(self, mock_get):
         self.update.message.text = "https://x.com/jack/status/20"
         self.update.message.is_topic_message = True  # This is a topic message

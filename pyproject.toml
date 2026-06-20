@@ -11,10 +11,11 @@ dependencies = [
 ]
 
 [project.scripts]
-daphne = "main:main"
+daphne = "daphne.main:main"
 
 [tool.setuptools]
-py-modules = ["main", "database", "exchange", "scheduler", "bot", "rbac", "downloader", "twitter", "image_fetch"]
+package-dir = {"" = "src"}
+packages = ["daphne"]
 
 [tool.uv]
 package = true

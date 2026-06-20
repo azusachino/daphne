@@ -11,23 +11,25 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-from rbac import RbacService, get_rbac_config_path
-from database import (
+from daphne.rbac import RbacService, get_rbac_config_path
+from daphne.database import (
     get_db_path,
     get_latest_exchange_rate,
     get_exchange_rate_history,
     save_exchange_rate,
 )
-from exchange import fetch_rate
-from downloader import (
+from daphne.exchange import fetch_rate
+from daphne.downloader import (
     download_video,
     probe_video_dimensions,
     fetch_video_metadata,
     format_duration,
     format_video_caption,
 )
+from daphne.messages import PARSE_MODE_HTML
 
 logger = logging.getLogger(__name__)
+ENV_BOT_TOKEN = "DAPHNE_BOT_TOKEN"
 
 # Initialize RbacService
 rbac_path = get_rbac_config_path()
@@ -267,7 +269,7 @@ async def dl_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 "chat_id": update.effective_chat.id,
                 "supports_streaming": True,
                 "caption": caption,
-                "parse_mode": "MarkdownV2",
+                "parse_mode": PARSE_MODE_HTML,
             }
             if width is not None:
                 kwargs["width"] = width
@@ -307,22 +309,22 @@ async def twitter_message_handler(
     if not message or not message.text:
         return
 
-    from twitter import contains_twitter_link, handle_twitter_links
+    from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
+    from daphne.twitter import contains_twitter_link, handle_twitter_links
 
-    if not contains_twitter_link(message.text):
-        return
-
-    # Check RBAC 'fix' permission before handling
     if not await check_access_and_reply(update, "fix"):
         return
 
-    await handle_twitter_links(update, context)
+    if contains_twitter_link(message.text):
+        await handle_twitter_links(update, context)
+    elif contains_pixiv_link(message.text):
+        await handle_pixiv_links(update, context)
 
 
 def build_application() -> Application:
-    token = os.environ.get("HARUS_BOT_TOKEN")
+    token = os.environ.get(ENV_BOT_TOKEN)
     if not token:
-        raise ValueError("HARUS_BOT_TOKEN environment variable not set")
+        raise ValueError(f"{ENV_BOT_TOKEN} environment variable not set")
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("rate", rate_command))

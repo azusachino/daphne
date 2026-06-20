@@ -7,11 +7,11 @@ services:
     container_name: daphne
     restart: always
     environment:
-      - HARUS_BOT_TOKEN=$HARUS_BOT_TOKEN
-      - DATABASE_URL=/data/daphne.db
-      - RBAC_CONFIG_PATH=/config/rbac.toml
-      - NOTIFICATION_CHANNEL=$NOTIFICATION_CHANNEL
-      - YANDERE_CHANNEL=$YANDERE_CHANNEL
+      - DAPHNE_BOT_TOKEN=$DAPHNE_BOT_TOKEN
+      - DAPHNE_DATABASE_URL=/data/daphne.db
+      - DAPHNE_RBAC_CONFIG_PATH=/config/rbac.toml
+      - DAPHNE_NOTIFICATION_CHANNEL=$DAPHNE_NOTIFICATION_CHANNEL
+      - DAPHNE_IMAGE_CHANNEL=$DAPHNE_IMAGE_CHANNEL
     volumes:
       - ./config:/config
       - ./data:/data

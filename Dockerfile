@@ -10,7 +10,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 # Copy source code files
-COPY main.py database.py exchange.py scheduler.py bot.py rbac.py downloader.py ./
+COPY src/ ./src/
 
 # Sync dependencies without dev dependencies
 RUN uv sync --frozen --no-dev
