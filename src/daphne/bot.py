@@ -67,10 +67,30 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
 
+def detect_platform(url: str) -> str:
+    url_lower = url.lower()
+    if is_bilibili_url(url_lower):
+        return "bilibili"
+    elif "youtube.com" in url_lower or "youtu.be" in url_lower:
+        return "youtube"
+    elif "tiktok.com" in url_lower or "douyin.com" in url_lower:
+        return "tiktok"
+    elif "instagram.com" in url_lower:
+        return "instagram"
+    return "video"
+
+
 def extract_video_url(text: str) -> str | None:
     for match in URL_REGEX.finditer(text):
         url = sanitize_video_url(match.group(0))
-        if is_bilibili_url(url) or "youtube.com" in url or "youtu.be" in url:
+        if (
+            is_bilibili_url(url)
+            or "youtube.com" in url
+            or "youtu.be" in url
+            or "tiktok.com" in url
+            or "douyin.com" in url
+            or "instagram.com" in url
+        ):
             return url
     return None
 
@@ -118,7 +138,7 @@ def _video_caption_from_metadata(
         uploader=uploader,
         duration=dur_str,
         url=webpage_url,
-        is_bilibili=is_bilibili_url(url),
+        platform=detect_platform(url),
         sender=sender,
     )
 
@@ -149,7 +169,7 @@ async def send_video_card(
             ("Duration:", duration_text),
         )
         .link(webpage_url)
-        .tags("bilibili" if is_bilibili_url(url) else "youtube")
+        .tags(detect_platform(url))
         .render()
     )
     await update.message.reply_text(

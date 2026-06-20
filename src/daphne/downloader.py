@@ -231,10 +231,10 @@ def format_video_caption(
     uploader: str,
     duration: str,
     url: str,
-    is_bilibili: bool,
+    platform: str,
     sender: Optional[str] = None,
 ) -> str:
-    source_tag = "#bilibili" if is_bilibili else "#youtube"
+    source_tag = f"#{platform}"
     return (
         HtmlMessage(sender=sender)
         .title(title)

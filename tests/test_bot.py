@@ -161,6 +161,16 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "https://www.bilibili.com/video/BV1abc",
         )
 
+    def test_extract_video_url_tiktok_and_instagram(self):
+        self.assertEqual(
+            extract_video_url("Check this: https://www.tiktok.com/@user/video/12345"),
+            "https://www.tiktok.com/@user/video/12345",
+        )
+        self.assertEqual(
+            extract_video_url("https://www.instagram.com/reel/C12345/"),
+            "https://www.instagram.com/reel/C12345/",
+        )
+
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.fetch_video_metadata")
     async def test_handle_video_link_over_configured_limit_sends_card(

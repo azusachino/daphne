@@ -51,7 +51,7 @@ class TestDownloader(unittest.TestCase):
     def test_format_video_caption(self):
         # YouTube, no sender
         cap = format_video_caption(
-            "A * B", "Uploader #1", "12:34", "http://x.com", False
+            "A * B", "Uploader #1", "12:34", "http://x.com", "youtube"
         )
         self.assertIn("<b>A * B</b>", cap)
         self.assertIn("<b>Uploader:</b> Uploader #1", cap)
@@ -63,7 +63,7 @@ class TestDownloader(unittest.TestCase):
 
         # Bilibili, with sender
         cap_bili = format_video_caption(
-            "Bili Bili", "User2", "01:00", "http://b23.tv/xyz", True, "via @haru"
+            "Bili Bili", "User2", "01:00", "http://b23.tv/xyz", "bilibili", "via @haru"
         )
         self.assertIn("<b>Bili Bili</b>", cap_bili)
         self.assertIn("#bilibili", cap_bili)
