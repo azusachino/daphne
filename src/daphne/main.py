@@ -143,8 +143,16 @@ def main() -> None:
         app = build_application()
         app.post_init = post_init
 
-        logger.info("Starting Daphne bot polling...")
-        app.run_polling()
+        try:
+            logger.info("Starting Daphne bot polling...")
+            app.run_polling()
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Daphne bot received exit signal. Shutting down gracefully...")
+        except Exception as e:
+            logger.critical(
+                "Daphne bot crashed with unhandled exception: %s", e, exc_info=True
+            )
+            sys.exit(1)
 
 
 if __name__ == "__main__":

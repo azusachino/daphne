@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv:0.11.19-python3.14-alpine
 ARG LUX_VERSION=0.24.1
 
 # Install runtime tools used by downloader fallbacks.
-RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar tzdata \
+RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar tzdata tini \
     && curl -fsSL "https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}/lux_${LUX_VERSION}_Linux_x86_64.tar.gz" \
         | tar -xz -C /tmp \
     && install -m 0755 /tmp/lux /usr/local/bin/lux \
@@ -26,5 +26,5 @@ RUN uv sync --frozen --no-dev
 # Place the virtual environment's bin directory on the PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Set entrypoint
-ENTRYPOINT ["daphne"]
+# Set entrypoint to use tini for graceful signal propagation
+ENTRYPOINT ["/sbin/tini", "--", "daphne"]
