@@ -43,6 +43,25 @@ def bilibili_headers() -> list[str]:
     ]
 
 
+def scan_largest_audio_file(out_dir: str) -> Optional[str]:
+    valid_exts = {".mp3", ".m4a", ".ogg", ".wav", ".opus", ".flac"}
+    largest_file = None
+    largest_size = -1
+    for root, _, files in os.walk(out_dir):
+        for file in files:
+            _, ext = os.path.splitext(file)
+            if ext.lower() in valid_exts:
+                full_path = os.path.join(root, file)
+                try:
+                    size = os.path.getsize(full_path)
+                    if size > largest_size:
+                        largest_size = size
+                        largest_file = full_path
+                except OSError:
+                    pass
+    return largest_file
+
+
 def scan_largest_media_file(out_dir: str) -> Optional[str]:
     valid_exts = {".mp4", ".mkv", ".webm", ".flv", ".mov", ".m4v", ".ts"}
     largest_file = None
@@ -135,6 +154,35 @@ def download_video(url: str, out_dir: str) -> str:
         return largest
 
     raise RuntimeError("Failed to download video using all engines")
+
+
+def download_audio(url: str, out_dir: str) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = [
+        "uvx",
+        "yt-dlp",
+        "-f",
+        "bestaudio/best",
+        "--extract-audio",
+        "--audio-format",
+        "mp3",
+        "--output",
+        f"{out_dir}/%(id)s.%(ext)s",
+        "--no-playlist",
+        "--restrict-filenames",
+        url,
+    ]
+    _run_cmd(cmd)
+    largest = scan_largest_audio_file(out_dir)
+    if largest:
+        return largest
+
+    largest_media = scan_largest_media_file(out_dir)
+    if largest_media:
+        return largest_media
+
+    raise RuntimeError("Failed to download audio using all engines")
 
 
 def probe_video_dimensions(

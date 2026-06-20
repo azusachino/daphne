@@ -12,6 +12,7 @@ from daphne.downloader import (
     fetch_video_metadata,
     format_duration,
     format_video_caption,
+    download_audio,
 )
 
 
@@ -181,3 +182,13 @@ class TestDownloader(unittest.TestCase):
         mock_scan.side_effect = [None, None, None, None]
         with self.assertRaises(RuntimeError):
             download_video("http://x.com", self.test_dir)
+
+    @patch("daphne.downloader.scan_largest_audio_file")
+    @patch("subprocess.run")
+    def test_download_audio(self, mock_run, mock_scan):
+        mock_scan.return_value = "/tmp/audio.mp3"
+        res = download_audio("http://x.com", self.test_dir)
+        self.assertEqual(res, "/tmp/audio.mp3")
+        self.assertEqual(mock_run.call_count, 1)
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("--extract-audio", cmd)

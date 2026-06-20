@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from daphne import bot as bot_module
-from daphne.bot import extract_video_url, help_command, handle_video_link
+from daphne.bot import extract_video_url, help_command, handle_video_link, audio_command
 from daphne.config import load_config
 from daphne.messages import PARSE_MODE_HTML
 from daphne.rbac import RbacService, get_rbac_config_path
@@ -85,7 +85,7 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.token.assert_called_once_with("token")
         builder.job_queue.assert_called_once_with(None)
         builder.base_url.assert_not_called()
-        self.assertEqual(app.add_handler.call_count, 2)
+        self.assertEqual(app.add_handler.call_count, 3)
 
     def test_build_application_uses_local_bot_api(self):
         app = MagicMock()
@@ -136,6 +136,53 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.update.message.reply_text.call_args[1]["parse_mode"], PARSE_MODE_HTML
         )
+
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    async def test_audio_command_no_link(self, mock_check):
+        self.update.message.reply_to_message = None
+        self.context.args = []
+        await audio_command(self.update, self.context)
+        self.update.message.reply_text.assert_called_once()
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Please provide a link", text)
+
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.download_audio")
+    @patch("os.path.getsize", return_value=1024)
+    async def test_audio_command_success(
+        self, mock_getsize, mock_download, mock_metadata, mock_limit, mock_check
+    ):
+        mock_metadata.return_value = {
+            "title": "Audio Title",
+            "uploader": "Uploader",
+            "duration": 180,
+            "webpage_url": "https://www.youtube.com/watch?v=abc",
+        }
+        mock_download.return_value = "/tmp/audio.mp3"
+
+        self.update.message.reply_to_message = None
+        self.context.args = ["https://www.youtube.com/watch?v=abc"]
+        self.context.bot.send_audio = AsyncMock()
+        self.context.bot.send_chat_action = AsyncMock()
+
+        # Mock status message
+        status_msg = MagicMock()
+        status_msg.delete = AsyncMock()
+        status_msg.edit_text = AsyncMock()
+        self.update.message.reply_text.return_value = status_msg
+        self.update.message.delete = AsyncMock()
+
+        with patch("builtins.open", unittest.mock.mock_open()):
+            await audio_command(self.update, self.context)
+
+        self.context.bot.send_audio.assert_called_once()
+        kwargs = self.context.bot.send_audio.call_args[1]
+        self.assertEqual(kwargs["title"], "Audio Title")
+        self.assertEqual(kwargs["performer"], "Uploader")
+        self.assertEqual(kwargs["duration"], 180)
+        self.update.message.delete.assert_called_once()
 
 
 class TestVideoHandler(unittest.IsolatedAsyncioTestCase):

@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from daphne.config import telegram_api_url, video_upload_limit_mb
 from daphne.downloader import (
+    download_audio,
     download_video,
     fetch_video_metadata,
     format_duration,
@@ -333,6 +334,136 @@ async def media_message_handler(
             await handle_video_link(update, context, video_url)
 
 
+async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await check_access_and_reply(update, "fix"):
+        return
+
+    message = update.message
+    if not message:
+        return
+
+    # Extract text/link
+    text = ""
+    if len(context.args) > 0:
+        text = " ".join(context.args)
+    elif message.reply_to_message and message.reply_to_message.text:
+        text = message.reply_to_message.text
+
+    url = None
+    if text:
+        match = URL_REGEX.search(text)
+        if match:
+            url = sanitize_video_url(match.group(0))
+
+    if not url:
+        await message.reply_text(
+            HtmlMessage().text("Please provide a link or reply to a message containing a link.").render(),
+            parse_mode=PARSE_MODE_HTML
+        )
+        return
+
+    sender = sender_attribution(update.effective_user)
+    status_msg = await message.reply_text(
+        HtmlMessage(sender=sender).text("Fetching audio metadata...").render(),
+        parse_mode=PARSE_MODE_HTML,
+    )
+
+    loop = asyncio.get_running_loop()
+    try:
+        await context.bot.send_chat_action(
+            chat_id=message.chat_id, action="upload_audio"
+        )
+    except Exception:
+        pass
+
+    metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
+    max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
+
+    with tempfile.TemporaryDirectory() as out_dir:
+        try:
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender).text("Downloading audio...").render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            try:
+                await context.bot.send_chat_action(
+                    chat_id=message.chat_id, action="upload_audio"
+                )
+            except Exception:
+                pass
+            audio_path = await loop.run_in_executor(None, download_audio, url, out_dir)
+        except Exception as exc:
+            logger.exception("Failed to download audio")
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"Audio download failed: {exc}")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+
+        file_size = os.path.getsize(audio_path)
+        if file_size > max_upload_bytes:
+            await status_msg.delete()
+            await message.reply_text(
+                HtmlMessage(sender=sender)
+                .title("Audio is too large")
+                .text(f"Audio file is over {video_upload_limit_mb()} MB limit.")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            await delete_original_message(update)
+            return
+
+        await status_msg.edit_text(
+            HtmlMessage(sender=sender).text("Uploading audio...").render(),
+            parse_mode=PARSE_MODE_HTML,
+        )
+        try:
+            await context.bot.send_chat_action(
+                chat_id=message.chat_id, action="upload_audio"
+            )
+        except Exception:
+            pass
+
+        title = metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
+        performer = metadata.get("uploader") or "Unknown"
+        duration_secs = metadata.get("duration")
+        dur_val = None
+        if duration_secs is not None:
+            try:
+                dur_val = int(float(duration_secs))
+            except (ValueError, TypeError):
+                pass
+
+        # Construct simple caption
+        platform = detect_platform(url)
+        caption = (
+            HtmlMessage(sender=sender)
+            .title(title)
+            .fields(("Uploader:", performer))
+            .link(metadata.get("webpage_url") or url)
+            .tags(platform, "audio")
+            .render()
+        )
+
+        kwargs = {
+            "chat_id": message.chat_id,
+            "title": title,
+            "performer": performer,
+            "caption": caption,
+            "parse_mode": PARSE_MODE_HTML,
+        }
+        if dur_val is not None:
+            kwargs["duration"] = dur_val
+
+        with open(audio_path, "rb") as audio_file:
+            await context.bot.send_audio(audio=audio_file, **kwargs)
+
+    await status_msg.delete()
+    await delete_original_message(update)
+
+
 def build_application() -> Application:
     token = os.environ.get(ENV_BOT_TOKEN)
     if not token:
@@ -352,6 +483,7 @@ def build_application() -> Application:
 
     app = builder.build()
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("audio", audio_command))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, media_message_handler)
     )
