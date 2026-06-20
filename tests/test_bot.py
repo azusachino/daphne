@@ -208,14 +208,22 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "https://www.bilibili.com/video/BV1abc",
         )
 
-    def test_extract_video_url_tiktok_and_instagram(self):
+    def test_extract_instagram_and_tiktok_links(self):
+        from daphne.instagram import contains_instagram_link, extract_instagram_link
+        from daphne.tiktok import contains_tiktok_link, extract_tiktok_link
+
+        # Instagram
+        self.assertTrue(contains_instagram_link("Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"))
         self.assertEqual(
-            extract_video_url("Check this: https://www.tiktok.com/@user/video/12345"),
-            "https://www.tiktok.com/@user/video/12345",
+            extract_instagram_link("Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"),
+            "https://www.instagram.com/p/DXS4QzZAqxB",
         )
+
+        # TikTok
+        self.assertTrue(contains_tiktok_link("Check this: https://www.tiktok.com/@user/video/12345"))
         self.assertEqual(
-            extract_video_url("https://www.instagram.com/reel/C12345/"),
-            "https://www.instagram.com/reel/C12345/",
+            extract_tiktok_link("Check this: https://www.tiktok.com/@user/video/12345"),
+            "https://www.tiktok.com/@user/video/12345",
         )
 
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)

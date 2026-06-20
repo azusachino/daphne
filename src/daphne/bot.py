@@ -90,9 +90,6 @@ def extract_video_url(text: str) -> str | None:
             is_bilibili_url(url)
             or "youtube.com" in url
             or "youtu.be" in url
-            or "tiktok.com" in url
-            or "douyin.com" in url
-            or "instagram.com" in url
         ):
             return url
     return None
@@ -319,6 +316,8 @@ async def media_message_handler(
     from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
     from daphne.twitter import contains_twitter_link, handle_twitter_links
     from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
+    from daphne.instagram import contains_instagram_link, handle_instagram_links
+    from daphne.tiktok import contains_tiktok_link, handle_tiktok_links
 
     if contains_twitter_link(message.text):
         if await check_access_and_reply(update, "fix"):
@@ -329,6 +328,12 @@ async def media_message_handler(
     elif contains_bluesky_link(message.text):
         if await check_access_and_reply(update, "fix"):
             await handle_bluesky_links(update, context)
+    elif contains_instagram_link(message.text):
+        if await check_access_and_reply(update, "fix"):
+            await handle_instagram_links(update, context)
+    elif contains_tiktok_link(message.text):
+        if await check_access_and_reply(update, "fix"):
+            await handle_tiktok_links(update, context)
     elif video_url := extract_video_url(message.text):
         if await check_access_and_reply(update, "fix"):
             await handle_video_link(update, context, video_url)
