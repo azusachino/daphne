@@ -18,11 +18,13 @@ INSTAGRAM_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+
 def contains_instagram_link(text: str) -> bool:
     """
     Returns True if the text contains an Instagram post/reel link.
     """
     return bool(INSTAGRAM_REGEX.search(text))
+
 
 def extract_instagram_link(text: str) -> str | None:
     """
@@ -32,6 +34,7 @@ def extract_instagram_link(text: str) -> str | None:
     if match:
         return match.group(0)
     return None
+
 
 async def handle_instagram_links(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -49,32 +52,39 @@ async def handle_instagram_links(
 
     chat_id = message.chat_id
     sender = sender_attribution(update.effective_user)
-    logger.info("Instagram handler: start processing link %s for chat_id=%s", url, chat_id)
+    logger.info(
+        "Instagram handler: start processing link %s for chat_id=%s", url, chat_id
+    )
 
     # 1. Trigger visual feedback action
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action="upload_photo"
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
     except Exception:
         pass
 
     # 2. Extract media metadata via parth-dl
     try:
         from parth_dl.extractors import MediaExtractor
+
         extractor = MediaExtractor()
         # Clean URL parameter for more reliable API parsing
         clean_url = url.split("?")[0]
-        logger.info("Instagram handler: extracting metadata using parth-dl for clean URL %s", clean_url)
+        logger.info(
+            "Instagram handler: extracting metadata using parth-dl for clean URL %s",
+            clean_url,
+        )
         data = extractor.extract(clean_url)
     except Exception as e:
         logger.exception("Failed to extract Instagram media via parth-dl: %s", e)
         data = None
 
     if not data:
-        logger.warning("No data extracted for Instagram URL: %s. Falling back to video card.", url)
+        logger.warning(
+            "No data extracted for Instagram URL: %s. Falling back to video card.", url
+        )
         # Fallback: call the standard handle_video_link which sends an info card
         from daphne.bot import handle_video_link
+
         await handle_video_link(update, context, url)
         return
 
@@ -83,7 +93,12 @@ async def handle_instagram_links(
     media_type = data.get("type", "image")
     shortcode = data.get("id", "")
     original_url = f"https://www.instagram.com/p/{shortcode}/"
-    logger.info("Instagram handler: metadata retrieved. Shortcode: %s, type: %s, uploader: %s", shortcode, media_type, uploader)
+    logger.info(
+        "Instagram handler: metadata retrieved. Shortcode: %s, type: %s, uploader: %s",
+        shortcode,
+        media_type,
+        uploader,
+    )
 
     # Construct caption
     tags = ["instagram"]
@@ -106,7 +121,9 @@ async def handle_instagram_links(
             photo_urls = [data["thumbnail"]]
 
         if photo_urls:
-            logger.info("Instagram handler: sending %d image(s) to Telegram", len(photo_urls))
+            logger.info(
+                "Instagram handler: sending %d image(s) to Telegram", len(photo_urls)
+            )
             success = await send_photos(
                 context.bot,
                 chat_id,
@@ -129,18 +146,26 @@ async def handle_instagram_links(
             # Download video bytes to a temporary directory
             with tempfile.TemporaryDirectory() as out_dir:
                 video_path = os.path.join(out_dir, f"{shortcode}.mp4")
-                logger.info("Instagram handler: downloading video bytes from %s", video_url)
+                logger.info(
+                    "Instagram handler: downloading video bytes from %s", video_url
+                )
                 try:
                     async with httpx.AsyncClient() as client:
                         resp = await client.get(video_url, timeout=30.0)
                         resp.raise_for_status()
                         with open(video_path, "wb") as f:
                             f.write(resp.content)
-                    logger.info("Instagram handler: video download completed. File size: %d bytes", os.path.getsize(video_path))
+                    logger.info(
+                        "Instagram handler: video download completed. File size: %d bytes",
+                        os.path.getsize(video_path),
+                    )
                 except Exception as exc:
-                    logger.exception("Failed to download Instagram video from direct URL: %s", exc)
+                    logger.exception(
+                        "Failed to download Instagram video from direct URL: %s", exc
+                    )
                     # Try fallback to standard video link downloader
                     from daphne.bot import handle_video_link
+
                     await handle_video_link(update, context, url)
                     return
 
@@ -148,13 +173,23 @@ async def handle_instagram_links(
                 max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
                 file_size = os.path.getsize(video_path)
                 if file_size > max_upload_bytes:
-                    logger.warning("Instagram video size %d exceeds limit %d", file_size, max_upload_bytes)
+                    logger.warning(
+                        "Instagram video size %d exceeds limit %d",
+                        file_size,
+                        max_upload_bytes,
+                    )
                     from daphne.bot import handle_video_link
+
                     await handle_video_link(update, context, url)
                     return
 
                 width, height, duration = probe_video_dimensions(video_path)
-                logger.info("Instagram handler: sending video to Telegram (width=%s, height=%s, duration=%s)", width, height, duration)
+                logger.info(
+                    "Instagram handler: sending video to Telegram (width=%s, height=%s, duration=%s)",
+                    width,
+                    height,
+                    duration,
+                )
 
                 # Send video
                 kwargs = {
@@ -175,7 +210,9 @@ async def handle_instagram_links(
                 success = True
 
     if success:
-        logger.info("Instagram handler: processing finished successfully. Deleting original message.")
+        logger.info(
+            "Instagram handler: processing finished successfully. Deleting original message."
+        )
         await try_delete_message(update)
     else:
         logger.warning("Instagram handler: processing failed to complete successfully.")

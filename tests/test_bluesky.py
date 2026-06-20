@@ -12,12 +12,22 @@ from daphne.bluesky import (
 
 class TestBluesky(unittest.TestCase):
     def test_contains_bluesky_link(self):
-        self.assertTrue(contains_bluesky_link("https://bsky.app/profile/alice.bsky.social/post/3livnrzudt22s"))
-        self.assertTrue(contains_bluesky_link("Look at this: http://www.bsky.app/profile/bob/post/12345"))
+        self.assertTrue(
+            contains_bluesky_link(
+                "https://bsky.app/profile/alice.bsky.social/post/3livnrzudt22s"
+            )
+        )
+        self.assertTrue(
+            contains_bluesky_link(
+                "Look at this: http://www.bsky.app/profile/bob/post/12345"
+            )
+        )
         self.assertFalse(contains_bluesky_link("https://twitter.com/user/status/123"))
 
     def test_extract_bluesky_link(self):
-        res = extract_bluesky_link("https://bsky.app/profile/alice.bsky.social/post/3livnrzudt22s")
+        res = extract_bluesky_link(
+            "https://bsky.app/profile/alice.bsky.social/post/3livnrzudt22s"
+        )
         self.assertEqual(res, ("alice.bsky.social", "3livnrzudt22s"))
 
         res_none = extract_bluesky_link("https://bsky.app/profile/alice.bsky.social")
@@ -32,10 +42,13 @@ class TestBluesky(unittest.TestCase):
             ],
         }
         photos, video = extract_media_from_embed(embed)
-        self.assertEqual(photos, [
-            "https://cdn.bsky.app/img/fullsize/1.jpg",
-            "https://cdn.bsky.app/img/fullsize/2.jpg",
-        ])
+        self.assertEqual(
+            photos,
+            [
+                "https://cdn.bsky.app/img/fullsize/1.jpg",
+                "https://cdn.bsky.app/img/fullsize/2.jpg",
+            ],
+        )
         self.assertIsNone(video)
 
     def test_extract_media_from_embed_video(self):
@@ -64,7 +77,9 @@ class TestBluesky(unittest.TestCase):
     @patch("daphne.bluesky.fetch_post_thread")
     @patch("daphne.bluesky.send_photos", new_callable=AsyncMock)
     @patch("daphne.bluesky.try_delete_message", new_callable=AsyncMock)
-    async def test_handle_bluesky_links_images(self, mock_delete, mock_send_photos, mock_fetch, mock_resolve):
+    async def test_handle_bluesky_links_images(
+        self, mock_delete, mock_send_photos, mock_fetch, mock_resolve
+    ):
         mock_resolve.return_value = "did:plc:alice"
         mock_fetch.return_value = {
             "thread": {

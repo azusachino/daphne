@@ -6,7 +6,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
+from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
 from daphne.downloader import probe_video_dimensions, format_video_caption
 from daphne.config import video_upload_limit_mb
@@ -18,11 +18,13 @@ TIKTOK_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+
 def contains_tiktok_link(text: str) -> bool:
     """
     Returns True if the text contains a TikTok or Douyin link.
     """
     return bool(TIKTOK_REGEX.search(text))
+
 
 def extract_tiktok_link(text: str) -> str | None:
     """
@@ -32,6 +34,7 @@ def extract_tiktok_link(text: str) -> str | None:
     if match:
         return match.group(0)
     return None
+
 
 async def handle_tiktok_links(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -53,9 +56,7 @@ async def handle_tiktok_links(
 
     # 1. Trigger visual feedback action
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action="upload_video"
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action="upload_video")
     except Exception:
         pass
 
@@ -69,7 +70,9 @@ async def handle_tiktok_links(
     try:
         logger.info("TikTok handler: querying TikWM API for URL: %s", url)
         async with httpx.AsyncClient() as client:
-            resp = await client.get(api_url, params={"url": url}, headers=headers, timeout=15.0)
+            resp = await client.get(
+                api_url, params={"url": url}, headers=headers, timeout=15.0
+            )
             if resp.status_code == 200:
                 res_data = resp.json()
                 if res_data.get("code") == 0 and "data" in res_data:
@@ -78,7 +81,12 @@ async def handle_tiktok_links(
                     title = data.get("title", "")
                     uploader = data.get("author", {}).get("unique_id", "unknown")
                     duration_secs = data.get("duration")
-                    logger.info("TikTok handler: TikWM API succeeded. Video ID: %s, title: %s, uploader: %s", data.get("id"), title[:100], uploader)
+                    logger.info(
+                        "TikTok handler: TikWM API succeeded. Video ID: %s, title: %s, uploader: %s",
+                        data.get("id"),
+                        title[:100],
+                        uploader,
+                    )
 
                     # Construct caption
                     caption = format_video_caption(
@@ -93,22 +101,41 @@ async def handle_tiktok_links(
                     # Download video file
                     if video_url:
                         with tempfile.TemporaryDirectory() as out_dir:
-                            video_path = os.path.join(out_dir, f"{data.get('id', 'tiktok_video')}.mp4")
-                            logger.info("TikTok handler: downloading video bytes from direct URL %s", video_url)
-                            video_resp = await client.get(video_url, headers=headers, timeout=30.0)
+                            video_path = os.path.join(
+                                out_dir, f"{data.get('id', 'tiktok_video')}.mp4"
+                            )
+                            logger.info(
+                                "TikTok handler: downloading video bytes from direct URL %s",
+                                video_url,
+                            )
+                            video_resp = await client.get(
+                                video_url, headers=headers, timeout=30.0
+                            )
                             video_resp.raise_for_status()
                             with open(video_path, "wb") as f:
                                 f.write(video_resp.content)
-                            logger.info("TikTok handler: video download completed. File size: %d bytes", os.path.getsize(video_path))
+                            logger.info(
+                                "TikTok handler: video download completed. File size: %d bytes",
+                                os.path.getsize(video_path),
+                            )
 
                             max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
                             file_size = os.path.getsize(video_path)
                             if file_size > max_upload_bytes:
-                                logger.warning("TikTok video size %d exceeds limit %d", file_size, max_upload_bytes)
+                                logger.warning(
+                                    "TikTok video size %d exceeds limit %d",
+                                    file_size,
+                                    max_upload_bytes,
+                                )
                                 return
 
                             width, height, duration = probe_video_dimensions(video_path)
-                            logger.info("TikTok handler: sending video to Telegram (width=%s, height=%s, duration=%s)", width, height, duration)
+                            logger.info(
+                                "TikTok handler: sending video to Telegram (width=%s, height=%s, duration=%s)",
+                                width,
+                                height,
+                                duration,
+                            )
 
                             # Send video
                             kwargs = {
@@ -128,7 +155,11 @@ async def handle_tiktok_links(
                                 await context.bot.send_video(video=video_file, **kwargs)
                             success = True
                 else:
-                    logger.warning("TikWM API returned error code/msg: %s - %s", res_data.get("code"), res_data.get("msg"))
+                    logger.warning(
+                        "TikWM API returned error code/msg: %s - %s",
+                        res_data.get("code"),
+                        res_data.get("msg"),
+                    )
             else:
                 logger.warning("TikWM API HTTP error status: %s", resp.status_code)
     except Exception as e:
@@ -136,13 +167,19 @@ async def handle_tiktok_links(
 
     # Fallback to standard yt-dlp downloader if TikWM fails
     if not success:
-        logger.info("TikTok handler: falling back to standard yt-dlp downloader for URL: %s", url)
+        logger.info(
+            "TikTok handler: falling back to standard yt-dlp downloader for URL: %s",
+            url,
+        )
         from daphne.bot import handle_video_link
+
         await handle_video_link(update, context, url)
         success = True  # We assume handled
 
     if success:
-        logger.info("TikTok handler: processing finished successfully. Deleting original message.")
+        logger.info(
+            "TikTok handler: processing finished successfully. Deleting original message."
+        )
         await try_delete_message(update)
     else:
         logger.warning("TikTok handler: processing failed to complete successfully.")

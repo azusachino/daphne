@@ -86,11 +86,7 @@ def detect_platform(url: str) -> str:
 def extract_video_url(text: str) -> str | None:
     for match in URL_REGEX.finditer(text):
         url = sanitize_video_url(match.group(0))
-        if (
-            is_bilibili_url(url)
-            or "youtube.com" in url
-            or "youtu.be" in url
-        ):
+        if is_bilibili_url(url) or "youtube.com" in url or "youtu.be" in url:
             return url
     return None
 
@@ -315,7 +311,12 @@ async def media_message_handler(
 
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
-    logger.info("Received message from user_id=%s in chat_id=%s: %r", user_id, chat_id, message.text)
+    logger.info(
+        "Received message from user_id=%s in chat_id=%s: %r",
+        user_id,
+        chat_id,
+        message.text,
+    )
 
     from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
     from daphne.twitter import contains_twitter_link, handle_twitter_links
@@ -372,8 +373,10 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if not url:
         await message.reply_text(
-            HtmlMessage().text("Please provide a link or reply to a message containing a link.").render(),
-            parse_mode=PARSE_MODE_HTML
+            HtmlMessage()
+            .text("Please provide a link or reply to a message containing a link.")
+            .render(),
+            parse_mode=PARSE_MODE_HTML,
         )
         return
 
@@ -441,7 +444,9 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             pass
 
-        title = metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
+        title = (
+            metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
+        )
         performer = metadata.get("uploader") or "Unknown"
         duration_secs = metadata.get("duration")
         dur_val = None

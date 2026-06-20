@@ -219,9 +219,7 @@ async def handle_twitter_links(
     chat_id = message.chat_id
 
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action="upload_photo"
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
     except Exception:
         pass
 

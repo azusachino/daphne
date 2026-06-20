@@ -113,7 +113,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # Subcommand 'init'
-    parser_init = subparsers.add_parser("init", help="Craft default config and env files")
+    parser_init = subparsers.add_parser(
+        "init", help="Craft default config and env files"
+    )
     parser_init.add_argument(
         "--local",
         action="store_true",

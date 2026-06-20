@@ -1,6 +1,5 @@
 import re
 import logging
-import io
 import httpx
 from typing import Optional, Tuple, List
 from telegram import Update
@@ -39,7 +38,11 @@ async def resolve_handle(handle: str) -> Optional[str]:
                 data = resp.json()
                 return data.get("did")
             else:
-                logger.warning("Bluesky handle resolution failed for %s: %s", handle, resp.status_code)
+                logger.warning(
+                    "Bluesky handle resolution failed for %s: %s",
+                    handle,
+                    resp.status_code,
+                )
     except Exception as e:
         logger.exception("Error resolving Bluesky handle %s: %s", handle, e)
     return None
@@ -55,7 +58,9 @@ async def fetch_post_thread(did: str, post_id: str) -> Optional[dict]:
             if resp.status_code == 200:
                 return resp.json()
             else:
-                logger.warning("Bluesky getPostThread failed for %s: %s", uri, resp.status_code)
+                logger.warning(
+                    "Bluesky getPostThread failed for %s: %s", uri, resp.status_code
+                )
     except Exception as e:
         logger.exception("Error fetching Bluesky thread %s: %s", uri, e)
     return None
@@ -122,9 +127,7 @@ async def handle_bluesky_links(
 
     # 1. Trigger photo upload indicator
     try:
-        await context.bot.send_chat_action(
-            chat_id=chat_id, action="upload_photo"
-        )
+        await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
     except Exception:
         pass
 
@@ -137,12 +140,16 @@ async def handle_bluesky_links(
     # 3. Fetch thread content
     thread_data = await fetch_post_thread(did, post_id)
     if not thread_data or "thread" not in thread_data:
-        logger.warning("Could not fetch Bluesky thread data for %s/post/%s", handle, post_id)
+        logger.warning(
+            "Could not fetch Bluesky thread data for %s/post/%s", handle, post_id
+        )
         return
 
     thread_post = thread_data["thread"].get("post")
     if not thread_post:
-        logger.warning("No post field inside thread response for %s/post/%s", handle, post_id)
+        logger.warning(
+            "No post field inside thread response for %s/post/%s", handle, post_id
+        )
         return
 
     author = thread_post.get("author", {})
@@ -159,7 +166,9 @@ async def handle_bluesky_links(
     success = False
 
     if photo_urls:
-        caption = build_bluesky_caption(post_text, original_url, author_name, author_handle, sender)
+        caption = build_bluesky_caption(
+            post_text, original_url, author_name, author_handle, sender
+        )
         success = await send_photos(
             context.bot,
             chat_id,
@@ -177,7 +186,9 @@ async def handle_bluesky_links(
             "duration": None,
             "webpage_url": original_url,
         }
-        await handle_video_link(update, context, video_url, custom_metadata=custom_metadata)
+        await handle_video_link(
+            update, context, video_url, custom_metadata=custom_metadata
+        )
         success = True
     else:
         # Post has no media. Send a fallback message

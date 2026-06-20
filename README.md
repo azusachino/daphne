@@ -1,21 +1,35 @@
-# daphne
+# Daphne (ダフニー - 沈丁花)
 
-Daphne（ダフニー）沈丁花（月桂）
+Daphne is a fast, stateless Telegram bot designed to convert raw media links (Twitter, Pixiv, Bluesky, TikTok, Instagram, Bilibili, YouTube, etc.) into Telegram-friendly native media messages.
 
-## Description
+**Current Version:** `0.1.0`
 
-Daphne is a Telegram bot for converting raw media links into Telegram-friendly media messages.
+## Core Features
+
+- **Platform Media Extractor & Converter**:
+  - **YouTube & Bilibili**: Video downloads utilizing standard `yt-dlp`/`you-get`/`lux` fallback engines, with automatic duration and dimensions probing.
+  - **Twitter / X**: Fetches tweets using the `FxTwitter` API, rendering photos, animations (GIFs), and videos natively.
+  - **Pixiv**: Resolves Pixiv artwork/galleries and sends them as clean photo/media groups.
+  - **Bluesky**: Resolves handles via XRPC identity endpoints, parsing native image carousels and HLS HLS playlist video URLs.
+  - **TikTok / Douyin**: Direct high-speed video downloads via the public `TikWM` API, bypassing `yt-dlp` login blocks, with a graceful fallback to `yt-dlp`.
+  - **Instagram**: Public image, carousel, and video/reel downloads using `parth-dl` (GraphQL parsing), bypassing login walls and server IP blockages.
+- **Audio Extraction**:
+  - `/audio <link>` command to extract the audio track from video URLs, automatically encoding it to MP3 with performer and title metadata.
+- **Access Control & RBAC**:
+  - Multi-tenant Role-Based Access Control (RBAC) configured in `config.toml` matching specific user and chat ID permissions.
+- **Interactive UX Cues**:
+  - Visually updates the chat actions (e.g. `uploading_video`, `uploading_photo`, `uploading_audio`) to give visual feedback during download/transcoding.
+  - HTML captions highlighting original post title, uploader, duration, source link, platform tag, and attribution to the requesting user.
+- **Safety First**:
+  - Messages are only deleted if the download, conversion, and upload to Telegram succeed, preventing links from being lost on error.
 
 ## Configuration
 
-Secrets stay in environment variables:
+Secrets are loaded from environment variables:
+- `DAPHNE_BOT_TOKEN`: The bot token from `@BotFather`.
+- `TELEGRAM_API_ID` & `TELEGRAM_API_HASH`: API credentials required by the Telegram Bot API sidecar.
 
-- `DAPHNE_BOT_TOKEN`
-- `TELEGRAM_API_ID`
-- `TELEGRAM_API_HASH`
-
-Runtime settings live in `config.toml`:
-
+Runtime settings are loaded from `config.toml`:
 ```toml
 [app]
 # telegram_api_url = "http://localhost:8081"
@@ -25,28 +39,40 @@ video_upload_limit_mb = 512
 public_commands = ["help"]
 ```
 
-`video_upload_limit_mb` controls the maximum video Daphne will upload to Telegram. If a detected video exceeds the limit, Daphne replies with a cleaned and decorated HTML card instead of uploading the file.
+`video_upload_limit_mb` controls the maximum video size Daphne will upload to Telegram. If a detected video exceeds the limit, Daphne replies with a decorated HTML info card instead of uploading the file.
 
-## Project-local run
+## Development & Local Testing
 
-Use this path for a separate local Telegram bot without touching the currently running bot:
+Daphne uses [uv](https://github.com/astral-sh/uv) for dependency management and runs cleanly in containerized stacks (Podman / Docker).
 
-```bash
-cp .daphne.local.env.example .daphne.local.env
-cp .daphne.config.local.toml.example .daphne.config.local.toml
-```
+1. Initialize configurations locally:
+   ```bash
+   make init-local
+   ```
+   This generates untracked local templates:
+   - `.daphne.local.env`
+   - `.daphne.config.local.toml`
 
-Edit `.daphne.local.env` with a separate BotFather token and Telegram API credentials. Edit `.daphne.config.local.toml` with your Telegram user ID, the test chat/group ID, local Bot API URL, and upload limit.
+2. Edit `.daphne.local.env` and `.daphne.config.local.toml` with your test bot credentials and user IDs.
 
-Then start the local container:
+3. Spin up the container stack (bot + local Telegram Bot API server sidecar):
+   ```bash
+   make up
+   ```
 
-```bash
-podman compose -f docker-compose.local.yml up --build
-```
+4. Tear down the stack:
+   ```bash
+   make down
+   ```
 
-Local secrets and runtime state stay untracked:
+5. Run checks and tests:
+   ```bash
+   make fmt    # Format code
+   make lint   # Run lint check
+   make test   # Run unit tests
+   make ready  # Format, lint, and run tests together
+   ```
 
-- `.daphne.local.env`
-- `.daphne.config.local.toml`
+## License
 
-Daphne v0.1 is stateless for local media conversion; the compose file does not mount a database.
+This project is licensed under the [MIT License](LICENSE).

@@ -213,14 +213,22 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         from daphne.tiktok import contains_tiktok_link, extract_tiktok_link
 
         # Instagram
-        self.assertTrue(contains_instagram_link("Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"))
+        self.assertTrue(
+            contains_instagram_link(
+                "Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"
+            )
+        )
         self.assertEqual(
-            extract_instagram_link("Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"),
+            extract_instagram_link(
+                "Check this: https://www.instagram.com/p/DXS4QzZAqxB/?hl=en"
+            ),
             "https://www.instagram.com/p/DXS4QzZAqxB",
         )
 
         # TikTok
-        self.assertTrue(contains_tiktok_link("Check this: https://www.tiktok.com/@user/video/12345"))
+        self.assertTrue(
+            contains_tiktok_link("Check this: https://www.tiktok.com/@user/video/12345")
+        )
         self.assertEqual(
             extract_tiktok_link("Check this: https://www.tiktok.com/@user/video/12345"),
             "https://www.tiktok.com/@user/video/12345",
@@ -292,7 +300,9 @@ class TestMainInit(unittest.TestCase):
 
         # Test global mode
         main.run_init(local=False)
-        mock_makedirs.assert_called_with(os.path.expanduser("~/.config/daphne"), exist_ok=True)
+        mock_makedirs.assert_called_with(
+            os.path.expanduser("~/.config/daphne"), exist_ok=True
+        )
 
         # Test local mode
         mock_makedirs.reset_mock()
@@ -300,8 +310,10 @@ class TestMainInit(unittest.TestCase):
         mock_makedirs.assert_called_with("./config", exist_ok=True)
 
         write_calls = [
-            call for call in mock_open.call_args_list
-            if (len(call.args) > 1 and "w" in call.args[1]) or "w" in call.kwargs.get("mode", "")
+            call
+            for call in mock_open.call_args_list
+            if (len(call.args) > 1 and "w" in call.args[1])
+            or "w" in call.kwargs.get("mode", "")
         ]
         # 2 files written for local=False, 2 files written for local=True
         self.assertEqual(len(write_calls), 4)
