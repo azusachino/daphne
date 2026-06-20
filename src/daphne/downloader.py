@@ -1,6 +1,5 @@
 import os
 import subprocess
-import shutil
 import random
 import logging
 import json
@@ -115,13 +114,12 @@ def download_video(url: str, out_dir: str) -> str:
     if largest:
         return largest
 
-    # 4. lux (if on PATH)
-    if shutil.which("lux") is not None:
-        cmd_lux = ["lux", "-o", out_dir, "--silent", url]
-        _run_cmd(cmd_lux)
-        largest = scan_largest_media_file(out_dir)
-        if largest:
-            return largest
+    # 4. lux binary installed in the image
+    cmd_lux = ["lux", "-o", out_dir, "--silent", url]
+    _run_cmd(cmd_lux)
+    largest = scan_largest_media_file(out_dir)
+    if largest:
+        return largest
 
     raise RuntimeError("Failed to download video using all engines")
 

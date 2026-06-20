@@ -133,10 +133,9 @@ class TestDownloader(unittest.TestCase):
         self.assertIn("Referer:https://www.bilibili.com/", second_cmd)
         self.assertIn("Origin:https://www.bilibili.com", second_cmd)
 
-    @patch("shutil.which")
     @patch("daphne.downloader.scan_largest_media_file")
     @patch("subprocess.run")
-    def test_download_video_fallback(self, mock_run, mock_scan, mock_which):
+    def test_download_video_fallback(self, mock_run, mock_scan):
         # Case 1: Pass 1 works
         mock_scan.side_effect = ["/tmp/file.mp4"]
         res = download_video("http://x.com", self.test_dir)
@@ -168,11 +167,11 @@ class TestDownloader(unittest.TestCase):
         mock_scan.reset_mock()
 
         # Case 4: Pass 1 & 2 & you-get fail, lux succeeds
-        mock_which.return_value = "/usr/bin/lux"
         mock_scan.side_effect = [None, None, None, "/tmp/lux.mp4"]
         res = download_video("http://x.com", self.test_dir)
         self.assertEqual(res, "/tmp/lux.mp4")
         self.assertEqual(mock_run.call_count, 4)
+        self.assertEqual(mock_run.call_args_list[-1][0][0][0], "lux")
 
         # Reset mocks
         mock_run.reset_mock()

@@ -1,7 +1,13 @@
-FROM ghcr.io/astral-sh/uv:python3.13-alpine
+FROM ghcr.io/astral-sh/uv:0.11.19-python3.13-alpine
 
-# Install coreutils and ffmpeg
-RUN apk add --no-cache coreutils ffmpeg
+ARG LUX_VERSION=0.24.1
+
+# Install runtime tools used by downloader fallbacks.
+RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar \
+    && curl -fsSL "https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}/lux_${LUX_VERSION}_Linux_x86_64.tar.gz" \
+        | tar -xz -C /tmp \
+    && install -m 0755 /tmp/lux /usr/local/bin/lux \
+    && rm -f /tmp/lux
 
 # Set the working directory
 WORKDIR /app
