@@ -22,7 +22,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: daphne
-          image: docker.io/azusachino/daphne:latest
+          image: docker.io/azusachino/daphne:0.1.0
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 1000

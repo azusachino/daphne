@@ -1,17 +1,9 @@
-FROM ghcr.io/astral-sh/uv:0.11.19-python3.14-alpine
+# App image: built FROM the prebuilt base (OS tools + lux). Only the Python
+# dependency sync and source copy live here, so day-to-day rebuilds skip the
+# slow tool layers. See Dockerfile.base. Override the base with --build-arg.
+ARG BASE_IMAGE=docker.io/azusachino/daphne-base:py3.14-lux0.24.1
+FROM ${BASE_IMAGE}
 
-ARG LUX_VERSION=0.24.1
-
-# Install runtime tools used by downloader fallbacks.
-RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar tzdata tini \
-    && curl -fsSL "https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}/lux_${LUX_VERSION}_Linux_x86_64.tar.gz" \
-        | tar -xz -C /tmp \
-    && install -m 0755 /tmp/lux /usr/local/bin/lux \
-    && rm -f /tmp/lux
-
-ENV TZ=Asia/Tokyo
-
-# Set the working directory
 WORKDIR /app
 
 # Copy lockfile and configuration files
