@@ -199,6 +199,12 @@ async def handle_video_link(
     )
 
     loop = asyncio.get_running_loop()
+    try:
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id, action="upload_video"
+        )
+    except Exception:
+        pass
     metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
     size = _metadata_size(metadata)
@@ -259,6 +265,12 @@ async def handle_video_link(
             HtmlMessage(sender=sender).text("Uploading video...").render(),
             parse_mode=PARSE_MODE_HTML,
         )
+        try:
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id, action="upload_video"
+            )
+        except Exception:
+            pass
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
         )

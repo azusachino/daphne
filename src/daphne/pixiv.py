@@ -146,6 +146,13 @@ async def handle_pixiv_links(
     if not artwork_id:
         return
 
+    try:
+        await context.bot.send_chat_action(
+            chat_id=message.chat_id, action="upload_photo"
+        )
+    except Exception:
+        pass
+
     original_url = (
         extract_pixiv_url(message.text) or f"{PIXIV_CAT_BASE}/{artwork_id}.jpg"
     )

@@ -218,6 +218,13 @@ async def handle_twitter_links(
     domain, username, tweet_id = match_info
     chat_id = message.chat_id
 
+    try:
+        await context.bot.send_chat_action(
+            chat_id=chat_id, action="upload_photo"
+        )
+    except Exception:
+        pass
+
     # Try fetching from API
     api_url = f"https://api.fxtwitter.com/{username}/status/{tweet_id}"
     headers = {"User-Agent": USER_AGENT}
@@ -288,6 +295,12 @@ async def handle_twitter_links(
                         caption_available = False
                         success = True
                     for video_url in video_urls:
+                        try:
+                            await context.bot.send_chat_action(
+                                chat_id=chat_id, action="upload_video"
+                            )
+                        except Exception:
+                            pass
                         await send_video_helper(
                             context.bot,
                             chat_id,
@@ -298,6 +311,12 @@ async def handle_twitter_links(
                         caption_available = False
                         success = True
                     for gif_url in gif_urls:
+                        try:
+                            await context.bot.send_chat_action(
+                                chat_id=chat_id, action="upload_video"
+                            )
+                        except Exception:
+                            pass
                         await send_animation_helper(
                             context.bot,
                             chat_id,
