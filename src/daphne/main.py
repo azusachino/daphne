@@ -51,12 +51,17 @@ async def post_init(app) -> None:
     return None
 
 
-def run_init() -> None:
+def run_init(local: bool = False) -> None:
     """
     Craft default files and configuration for Daphne.
     """
-    home = os.path.expanduser("~")
-    config_dir = os.path.join(home, ".config", "daphne")
+    if local:
+        config_dir = "./config"
+        env_path = "./.env"
+    else:
+        home = os.path.expanduser("~")
+        config_dir = os.path.join(home, ".config", "daphne")
+        env_path = os.path.join(config_dir, "daphne.env")
 
     # 1. Create config directory
     os.makedirs(config_dir, exist_ok=True)
@@ -83,47 +88,24 @@ permissions = ["*"]
 # Add chat/group IDs mapping to roles here. Example:
 # -1002058191932 = "standard_group"
 """
-    with open(config_path, "w") as f:
-        f.write(config_content)
-    print(f"Wrote default config.toml to: {config_path}")
+    if os.path.exists(config_path):
+        print(f"Skipping config.toml (already exists at {config_path})")
+    else:
+        with open(config_path, "w") as f:
+            f.write(config_content)
+        print(f"Wrote default config.toml to: {config_path}")
 
     # 3. Write template environment file
-    env_path = os.path.join(config_dir, "daphne.env")
     env_content = """# Environment variables for Daphne Bot
 DAPHNE_BOT_TOKEN=your_telegram_bot_token_here
 TZ=Asia/Tokyo
 """
-    with open(env_path, "w") as f:
-        f.write(env_content)
-    print(f"Wrote template environment file to: {env_path}")
-
-    # 4. Write systemd user service file
-    systemd_dir = os.path.join(home, ".config", "systemd", "user")
-    os.makedirs(systemd_dir, exist_ok=True)
-
-    import shutil
-
-    daphne_bin = shutil.which("daphne")
-    if not daphne_bin:
-        daphne_bin = os.path.join(home, ".local", "bin", "daphne")
-
-    service_path = os.path.join(systemd_dir, "daphne.service")
-    service_content = f"""[Unit]
-Description=Daphne - Telegram Media Converter
-After=network.target
-
-[Service]
-Type=simple
-ExecStart={daphne_bin}
-EnvironmentFile={env_path}
-Restart=always
-
-[Install]
-WantedBy=default.target
-"""
-    with open(service_path, "w") as f:
-        f.write(service_content)
-    print(f"Wrote systemd user service file to: {service_path}")
+    if os.path.exists(env_path):
+        print(f"Skipping environment file (already exists at {env_path})")
+    else:
+        with open(env_path, "w") as f:
+            f.write(env_content)
+        print(f"Wrote template environment file to: {env_path}")
 
 
 def main() -> None:
@@ -131,14 +113,17 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # Subcommand 'init'
-    subparsers.add_parser(
-        "init", help="Craft default config files, env, and systemd service"
+    parser_init = subparsers.add_parser("init", help="Craft default config and env files")
+    parser_init.add_argument(
+        "--local",
+        action="store_true",
+        help="Craft files in the current working directory (./config/config.toml and .env) instead of ~/.config/daphne/",
     )
 
     args = parser.parse_args()
 
     if args.command == "init":
-        run_init()
+        run_init(local=args.local)
     else:
         # Check token existence
         token = os.environ.get(ENV_BOT_TOKEN)

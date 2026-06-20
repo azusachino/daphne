@@ -219,16 +219,27 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
 
 
 class TestMainInit(unittest.TestCase):
+    @patch("os.path.exists", return_value=False)
     @patch("os.makedirs")
     @patch("builtins.open")
-    @patch("shutil.which", return_value="/usr/local/bin/daphne")
-    def test_run_init(self, mock_which, mock_open, mock_makedirs):
+    def test_run_init(self, mock_open, mock_makedirs, mock_exists):
         from daphne import main
 
-        main.run_init()
+        # Test global mode
+        main.run_init(local=False)
+        mock_makedirs.assert_called_with(os.path.expanduser("~/.config/daphne"), exist_ok=True)
 
-        self.assertEqual(mock_makedirs.call_count, 2)
-        self.assertGreaterEqual(mock_open.call_count, 3)
+        # Test local mode
+        mock_makedirs.reset_mock()
+        main.run_init(local=True)
+        mock_makedirs.assert_called_with("./config", exist_ok=True)
+
+        write_calls = [
+            call for call in mock_open.call_args_list
+            if (len(call.args) > 1 and "w" in call.args[1]) or "w" in call.kwargs.get("mode", "")
+        ]
+        # 2 files written for local=False, 2 files written for local=True
+        self.assertEqual(len(write_calls), 4)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-.PHONY: dev init test fmt lint ready image-build verify
+.PHONY: dev init init-local test fmt lint ready image-build verify
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 
@@ -7,6 +7,9 @@ dev:
 
 init:
 	uv run daphne init
+
+init-local:
+	uv run daphne init --local
 
 test:
 	uv run python -m unittest discover tests

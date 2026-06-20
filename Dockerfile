@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:0.11.19-python3.13-alpine
+FROM ghcr.io/astral-sh/uv:0.11.19-python3.14-alpine
 
 ARG LUX_VERSION=0.24.1
 
