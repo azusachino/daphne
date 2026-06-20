@@ -71,3 +71,8 @@ venv.bak/
 
 # Project custom
 vendor/
+
+# Project-local Daphne runtime files
+.daphne.local.env
+.daphne.rbac.local.toml
+.daphne-data/

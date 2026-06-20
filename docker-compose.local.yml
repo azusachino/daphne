@@ -1,0 +1,14 @@
+services:
+  daphne-local:
+    build: .
+    image: daphne:local
+    container_name: daphne-local
+    restart: unless-stopped
+    env_file:
+      - ./.daphne.local.env
+    environment:
+      DAPHNE_DATABASE_URL: /data/daphne.db
+      DAPHNE_RBAC_CONFIG_PATH: /config/rbac.toml
+    volumes:
+      - ./.daphne.rbac.local.toml:/config/rbac.toml:ro
+      - ./.daphne-data:/data
