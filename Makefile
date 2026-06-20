@@ -1,4 +1,4 @@
-.PHONY: dev init init-local test fmt lint ready image-build verify up down
+.PHONY: dev init init-local test fmt fmt-check lint ready image-build verify up down
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
@@ -17,6 +17,9 @@ test:
 
 fmt:
 	uv run ruff format .
+
+fmt-check:
+	uv run ruff format --check .
 
 lint:
 	uv run ruff check .

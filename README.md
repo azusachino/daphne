@@ -10,7 +10,7 @@ Daphne is a fast, stateless Telegram bot designed to convert raw media links (Tw
   - **YouTube & Bilibili**: Video downloads utilizing standard `yt-dlp`/`you-get`/`lux` fallback engines, with automatic duration and dimensions probing.
   - **Twitter / X**: Fetches tweets using the `FxTwitter` API, rendering photos, animations (GIFs), and videos natively.
   - **Pixiv**: Resolves Pixiv artwork/galleries and sends them as clean photo/media groups.
-  - **Bluesky**: Resolves handles via XRPC identity endpoints, parsing native image carousels and HLS HLS playlist video URLs.
+  - **Bluesky**: Resolves handles via XRPC identity endpoints, parsing native image carousels and HLS playlist video URLs.
   - **TikTok / Douyin**: Direct high-speed video downloads via the public `TikWM` API, bypassing `yt-dlp` login blocks, with a graceful fallback to `yt-dlp`.
   - **Instagram**: Public image, carousel, and video/reel downloads using `parth-dl` (GraphQL parsing), bypassing login walls and server IP blockages.
 - **Audio Extraction**:

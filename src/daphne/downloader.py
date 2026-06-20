@@ -110,6 +110,7 @@ def download_video(url: str, out_dir: str) -> str:
         f"{out_dir}/%(id)s.%(ext)s",
         "--no-playlist",
         "--restrict-filenames",
+        "--",
         url,
     ]
     _run_cmd(cmd_pass1)
@@ -133,7 +134,7 @@ def download_video(url: str, out_dir: str) -> str:
     ]
     if is_bilibili_url(url):
         cmd_pass2.extend(bilibili_headers())
-    cmd_pass2.append(url)
+    cmd_pass2.extend(["--", url])
     _run_cmd(cmd_pass2)
     largest = scan_largest_media_file(out_dir)
     if largest:
@@ -171,6 +172,7 @@ def download_audio(url: str, out_dir: str) -> str:
         f"{out_dir}/%(id)s.%(ext)s",
         "--no-playlist",
         "--restrict-filenames",
+        "--",
         url,
     ]
     _run_cmd(cmd)
@@ -230,20 +232,17 @@ def probe_video_dimensions(
 
 
 def fetch_video_metadata(url: str) -> dict:
-    commands = [
-        [
-            "uvx",
-            "yt-dlp",
-            "--dump-json",
-            "--no-playlist",
-            "--user-agent",
-            random.choice(USER_AGENTS),
-            url,
-        ]
+    base = [
+        "uvx",
+        "yt-dlp",
+        "--dump-json",
+        "--no-playlist",
+        "--user-agent",
+        random.choice(USER_AGENTS),
     ]
+    commands = [base + ["--", url]]
     if is_bilibili_url(url):
-        cmd = commands[0][:-1] + bilibili_headers() + [url]
-        commands.append(cmd)
+        commands.append(base + bilibili_headers() + ["--", url])
 
     for cmd in commands:
         try:
