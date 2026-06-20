@@ -10,9 +10,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from daphne.messages import (
+    HtmlMessage,
     PARSE_MODE_HTML,
-    append_footer,
-    escape_html,
     sender_attribution,
 )
 from daphne.twitter import try_delete_message
@@ -120,21 +119,20 @@ def build_caption(
 ) -> str:
     if info:
         tags = [to_telegram_tag(tag) for tag in info.tags]
-        tag_line = "#pixiv" if not tags else "#pixiv " + " ".join(tags)
-        body = (
-            f"<b>{escape_html(info.title)}</b>\n"
-            f"by {escape_html(info.author_name)}\n\n"
-            f'<a href="{escape_html(original_url)}">{escape_html(original_url)}</a>\n'
-            f'<a href="{escape_html(pixiv_cat_url)}">{escape_html(pixiv_cat_url)}</a>\n\n'
-            f"{escape_html(tag_line)}"
+        return (
+            HtmlMessage(sender=sender)
+            .title(info.title)
+            .fields(("Author:", info.author_name))
+            .links(original_url, pixiv_cat_url)
+            .tags("pixiv", *tags)
+            .render()
         )
-    else:
-        body = (
-            f'<a href="{escape_html(original_url)}">{escape_html(original_url)}</a>\n\n'
-            f'<a href="{escape_html(pixiv_cat_url)}">{escape_html(pixiv_cat_url)}</a>\n\n'
-            "#pixiv"
-        )
-    return append_footer(body, sender)
+    return (
+        HtmlMessage(sender=sender)
+        .links(original_url, pixiv_cat_url)
+        .tags("pixiv")
+        .render()
+    )
 
 
 async def handle_pixiv_links(

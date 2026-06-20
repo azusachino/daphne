@@ -138,7 +138,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["photo"], "https://pbs.twimg.com/media/test.jpg")
         self.assertEqual(kwargs["parse_mode"], "HTML")
         self.assertIn("Beautiful space view #NASA #Hubble", kwargs["caption"])
-        self.assertIn("#nasa #hubble #twitter", kwargs["caption"])
+        self.assertIn("#twitter #nasa #hubble", kwargs["caption"])
         self.assertIn("via @test_user", kwargs["caption"])
         self.assertIn("https://twitter.com/nasa/status/999", kwargs["caption"])
         self.update.message.delete.assert_called_once()
@@ -208,6 +208,42 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         kwargs = self.context.bot.send_video.call_args[1]
         self.assertEqual(kwargs["chat_id"], 123456)
         self.assertEqual(kwargs["video"], "https://video.twimg.com/test.mp4")
+        self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_mixed_media_sends_photos_and_video(self, mock_get):
+        self.update.message.text = "https://x.com/nasa/status/999"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "999",
+                "text": "Mixed media #NASA",
+                "url": "https://twitter.com/nasa/status/999",
+                "media": {
+                    "all": [
+                        {"url": "https://pbs.twimg.com/media/1.jpg", "type": "photo"},
+                        {"url": "https://pbs.twimg.com/media/2.jpg", "type": "photo"},
+                        {"url": "https://video.twimg.com/test.mp4", "type": "video"},
+                    ]
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_media_group.assert_called_once()
+        self.context.bot.send_video.assert_called_once()
+        media_group = self.context.bot.send_media_group.call_args[1]["media"]
+        self.assertIn("Mixed media #NASA", media_group[0].caption)
+        self.assertEqual(
+            self.context.bot.send_video.call_args[1]["video"],
+            "https://video.twimg.com/test.mp4",
+        )
+        self.assertEqual(self.context.bot.send_video.call_args[1]["caption"], "")
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")

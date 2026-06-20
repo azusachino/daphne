@@ -6,9 +6,8 @@ from telegram import Update, InputMediaPhoto
 from telegram.ext import ContextTypes
 
 from daphne.messages import (
+    HtmlMessage,
     PARSE_MODE_HTML,
-    append_footer,
-    escape_html,
     sender_attribution,
 )
 
@@ -141,6 +140,18 @@ async def send_media_group_helper(
         await bot.send_media_group(chat_id=chat_id, media=media)
 
 
+async def send_photos(
+    bot, chat_id: int, urls: list[str], caption: str, parse_mode: str
+) -> bool:
+    if not urls:
+        return False
+    if len(urls) == 1:
+        await send_photo_helper(bot, chat_id, urls[0], caption, parse_mode)
+    else:
+        await send_media_group_helper(bot, chat_id, urls, caption, parse_mode)
+    return True
+
+
 async def send_fallback(bot, chat_id: int, username: str, tweet_id: str) -> bool:
     fallback_url = f"https://fxtwitter.com/{username}/status/{tweet_id}"
     try:
@@ -149,6 +160,35 @@ async def send_fallback(bot, chat_id: int, username: str, tweet_id: str) -> bool
     except Exception as e:
         logger.error(f"Failed to send fallback URL {fallback_url}: {e}")
         return False
+
+
+def extract_hashtags(text: str) -> list[str]:
+    tags = []
+    seen = set()
+    for raw_tag in re.findall(r"#(\w+)", text):
+        tag = raw_tag.lower()
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return tags
+
+
+def build_caption(tweet_text: str, tweet_url: str, sender: str | None) -> str:
+    tags = ["twitter"]
+    for tag in extract_hashtags(tweet_text):
+        if tag != "twitter":
+            tags.append(tag)
+
+    if len(tweet_text) > 900:
+        tweet_text = tweet_text[:900] + "..."
+
+    return (
+        HtmlMessage(sender=sender)
+        .text(tweet_text or None)
+        .link(tweet_url)
+        .tags(*tags)
+        .render()
+    )
 
 
 async def try_delete_message(update: Update) -> None:
@@ -195,92 +235,78 @@ async def handle_twitter_links(
 
                 # Check for media
                 media_info = tweet.get("media", {})
-                photos = media_info.get("photos", [])
-                videos = media_info.get("videos", [])
+                media_all = media_info.get("all", [])
+                if media_all:
+                    photos = [
+                        m
+                        for m in media_all
+                        if str(m.get("type", "")).lower() in {"photo", "image"}
+                    ]
+                    videos = [
+                        m
+                        for m in media_all
+                        if str(m.get("type", "")).lower()
+                        in {"video", "gif", "animated_gif"}
+                    ]
+                else:
+                    photos = media_info.get("photos", [])
+                    videos = media_info.get("videos", [])
 
                 photo_urls = [p["url"] for p in photos if "url" in p]
                 video_urls = [
-                    v["url"] for v in videos if "url" in v and v.get("type") != "gif"
+                    v["url"]
+                    for v in videos
+                    if "url" in v
+                    and str(v.get("type", "")).lower() not in {"gif", "animated_gif"}
                 ]
                 gif_urls = [
-                    v["url"] for v in videos if "url" in v and v.get("type") == "gif"
+                    v["url"]
+                    for v in videos
+                    if "url" in v
+                    and str(v.get("type", "")).lower() in {"gif", "animated_gif"}
                 ]
 
                 has_media = bool(photo_urls or video_urls or gif_urls)
 
                 if has_media:
-                    # Format caption
-                    # Extract hashtags
-                    tags = []
-                    raw_tags = re.findall(r"#(\w+)", tweet_text)
-                    seen = set()
-                    for t in raw_tags:
-                        t_lower = t.lower()
-                        if t_lower not in seen:
-                            seen.add(t_lower)
-                            tags.append(t_lower)
-                    if "twitter" not in tags:
-                        tags.append("twitter")
-
-                    hashtag_line = " ".join(f"#{t}" for t in tags)
-
-                    # Original URL without query parameters
-                    original_url = f"https://{domain}/{username}/status/{tweet_id}"
-
-                    # Truncate tweet text to protect caption length limits in Telegram
-                    if len(tweet_text) > 700:
-                        tweet_text = tweet_text[:700] + "..."
-
-                    # Escape HTML for text elements
-                    escaped_text = escape_html(tweet_text)
-                    escaped_url = escape_html(original_url)
-
-                    parts = [escaped_text]
-                    parts.append(f'🔗 <a href="{escaped_url}">{escaped_url}</a>')
-                    parts.append(hashtag_line)
-
-                    caption = append_footer(
-                        "\n\n".join(parts), sender_attribution(update.effective_user)
+                    caption = build_caption(
+                        tweet_text,
+                        tweet.get("url")
+                        or f"https://{domain}/{username}/status/{tweet_id}",
+                        sender_attribution(update.effective_user),
                     )
 
-                    # Send media
-                    if video_urls:
+                    caption_available = True
+                    if photo_urls:
+                        await send_photos(
+                            context.bot,
+                            chat_id,
+                            photo_urls,
+                            caption if caption_available else "",
+                            parse_mode=PARSE_MODE_HTML,
+                        )
+                        caption_available = False
+                        success = True
+                    for video_url in video_urls:
                         await send_video_helper(
                             context.bot,
                             chat_id,
-                            video_urls[0],
-                            caption,
+                            video_url,
+                            caption if caption_available else "",
                             parse_mode=PARSE_MODE_HTML,
                         )
+                        caption_available = False
                         success = True
-                    elif gif_urls:
+                    for gif_url in gif_urls:
                         await send_animation_helper(
                             context.bot,
                             chat_id,
-                            gif_urls[0],
-                            caption,
+                            gif_url,
+                            caption if caption_available else "",
                             parse_mode=PARSE_MODE_HTML,
                         )
+                        caption_available = False
                         success = True
-                    elif photo_urls:
-                        if len(photo_urls) == 1:
-                            await send_photo_helper(
-                                context.bot,
-                                chat_id,
-                                photo_urls[0],
-                                caption,
-                                parse_mode=PARSE_MODE_HTML,
-                            )
-                            success = True
-                        else:
-                            await send_media_group_helper(
-                                context.bot,
-                                chat_id,
-                                photo_urls,
-                                caption,
-                                parse_mode=PARSE_MODE_HTML,
-                            )
-                            success = True
                 else:
                     # Successfully fetched, but no media -> send fallback URL directly
                     success = await send_fallback(

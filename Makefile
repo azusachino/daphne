@@ -23,4 +23,4 @@ image-build:
 	$(CONTAINER_TOOL) build -t daphne:latest .
 
 verify: image-build
-	$(CONTAINER_TOOL) run --rm daphne:latest --help | grep "Daphne - Wise Exchange Rate Bot"
+	$(CONTAINER_TOOL) run --rm daphne:latest --help | grep "Daphne - Telegram Media Converter"

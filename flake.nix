@@ -1,5 +1,5 @@
 {
-  description = "Daphne - Wise Exchange Rate Bot development environment";
+  description = "Daphne - Telegram Media Converter development environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

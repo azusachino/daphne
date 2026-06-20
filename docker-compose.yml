@@ -1,17 +1,27 @@
-version: '3.8'
-
 services:
   daphne:
     build: .
     image: daphne:latest
     container_name: daphne
-    restart: always
+    restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
+    env_file:
+      - ./.env
     environment:
-      - DAPHNE_BOT_TOKEN=$DAPHNE_BOT_TOKEN
-      - DAPHNE_DATABASE_URL=/data/daphne.db
-      - DAPHNE_RBAC_CONFIG_PATH=/config/rbac.toml
-      - DAPHNE_NOTIFICATION_CHANNEL=$DAPHNE_NOTIFICATION_CHANNEL
-      - DAPHNE_IMAGE_CHANNEL=$DAPHNE_IMAGE_CHANNEL
+      TZ: Asia/Tokyo
     volumes:
-      - ./config:/config
-      - ./data:/data
+      - ./config/config.toml:/app/config.toml:ro
+  telegram-bot-api:
+    image: mirror.gcr.io/aiogram/telegram-bot-api:10.1
+    container_name: daphne-telegram-bot-api
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      TELEGRAM_LOCAL: "1"
+      TZ: Asia/Tokyo
+    ports:
+      - "8081:8081"
+    tmpfs:
+      - /var/lib/telegram-bot-api

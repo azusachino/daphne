@@ -4,11 +4,24 @@ services:
     image: daphne:local
     container_name: daphne-local
     restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
     env_file:
       - ./.daphne.local.env
     environment:
-      DAPHNE_DATABASE_URL: /data/daphne.db
-      DAPHNE_RBAC_CONFIG_PATH: /config/rbac.toml
+      TZ: Asia/Tokyo
     volumes:
-      - ./.daphne.rbac.local.toml:/config/rbac.toml:ro
-      - ./.daphne-data:/data
+      - ./.daphne.config.local.toml:/app/config.toml:ro
+  telegram-bot-api:
+    image: mirror.gcr.io/aiogram/telegram-bot-api:10.1
+    container_name: daphne-telegram-bot-api
+    restart: unless-stopped
+    env_file:
+      - ./.daphne.local.env
+    environment:
+      TELEGRAM_LOCAL: "1"
+      TZ: Asia/Tokyo
+    ports:
+      - "8081:8081"
+    tmpfs:
+      - /var/lib/telegram-bot-api

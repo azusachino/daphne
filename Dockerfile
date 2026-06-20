@@ -3,11 +3,13 @@ FROM ghcr.io/astral-sh/uv:0.11.19-python3.13-alpine
 ARG LUX_VERSION=0.24.1
 
 # Install runtime tools used by downloader fallbacks.
-RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar \
+RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar tzdata \
     && curl -fsSL "https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}/lux_${LUX_VERSION}_Linux_x86_64.tar.gz" \
         | tar -xz -C /tmp \
     && install -m 0755 /tmp/lux /usr/local/bin/lux \
     && rm -f /tmp/lux
+
+ENV TZ=Asia/Tokyo
 
 # Set the working directory
 WORKDIR /app

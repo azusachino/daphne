@@ -74,5 +74,5 @@ vendor/
 
 # Project-local Daphne runtime files
 .daphne.local.env
+.daphne.config.local.toml
 .daphne.rbac.local.toml
-.daphne-data/

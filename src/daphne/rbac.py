@@ -1,11 +1,10 @@
 import os
 import time
 import logging
-import tomllib
 from typing import Dict, Any, Tuple, Optional
+from daphne.config import rbac_config
 
 logger = logging.getLogger(__name__)
-ENV_RBAC_CONFIG_PATH = "DAPHNE_RBAC_CONFIG_PATH"
 
 
 class AccessStatus:
@@ -36,7 +35,7 @@ class RbacService:
 
         # Load public commands
         self.public_commands = set(
-            c.lower() for c in config_dict.get("public_commands", ["rate", "help"])
+            c.lower() for c in config_dict.get("public_commands", ["help"])
         )
 
         # Load roles
@@ -67,7 +66,14 @@ class RbacService:
         self.rate_limiter: Dict[Tuple[int, str], Tuple[int, float]] = {}
 
     @classmethod
-    def load(cls, path: str) -> "RbacService":
+    def load(cls, path: str | None = None) -> "RbacService":
+        config_dict = rbac_config()
+        if config_dict:
+            logger.info("RBAC configuration loaded from config.toml")
+            return cls(config_dict)
+
+        if path is None:
+            path = get_rbac_config_path()
         if not os.path.exists(path):
             logger.warning(
                 f"RBAC configuration file not found at {path}. Falling back to default configuration."
@@ -75,6 +81,8 @@ class RbacService:
             return cls()
 
         try:
+            import tomllib
+
             with open(path, "rb") as f:
                 data = tomllib.load(f)
             logger.info(f"RBAC configuration loaded from {path}")
@@ -187,9 +195,6 @@ class RbacService:
 
 
 def get_rbac_config_path() -> str:
-    path = os.environ.get(ENV_RBAC_CONFIG_PATH)
-    if path:
-        return path
     if os.path.exists("rbac.toml"):
         return "rbac.toml"
     return os.path.expanduser("~/.config/daphne/rbac.toml")

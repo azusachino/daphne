@@ -31,23 +31,49 @@ spec:
             - secretRef:
                 name: daphne-secret
           env:
-            - name: DAPHNE_DATABASE_URL
-              value: /data/daphne.db
-            - name: DAPHNE_RBAC_CONFIG_PATH
-              value: /config/rbac.toml
             - name: HOME
               value: /tmp
+            - name: TZ
+              value: Asia/Tokyo
           volumeMounts:
             - name: localtime
               mountPath: /etc/localtime
               readOnly: true
-            - name: rbac-config
-              mountPath: /config
+            - name: config
+              mountPath: /app/config.toml
+              subPath: config.toml
               readOnly: true
-            - name: data
-              mountPath: /data
             - name: tmp
               mountPath: /tmp
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 25m
+            limits:
+              memory: 512Mi
+              cpu: 250m
+        - name: telegram-bot-api
+          image: mirror.gcr.io/aiogram/telegram-bot-api:10.1
+          imagePullPolicy: IfNotPresent
+          command: ["/entrypoint-fix.sh"]
+          ports:
+            - containerPort: 8081
+              name: http
+          envFrom:
+            - secretRef:
+                name: daphne-secret
+          env:
+            - name: TZ
+              value: Asia/Tokyo
+          volumeMounts:
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: telegram-bot-api-data
+              mountPath: /var/lib/telegram-bot-api
+            - name: tg-api-entrypoint
+              mountPath: /entrypoint-fix.sh
+              subPath: entrypoint-fix.sh
           resources:
             requests:
               memory: 128Mi
@@ -60,11 +86,16 @@ spec:
           hostPath:
             path: /etc/localtime
             type: File
-        - name: rbac-config
+        - name: config
           configMap:
-            name: daphne-rbac
-        - name: data
-          persistentVolumeClaim:
-            claimName: daphne-data-pvc
+            name: daphne-config
+        - name: telegram-bot-api-data
+          hostPath:
+            path: /mnt/harus_storage/runtime_files/containers/telegram-bot-api
+            type: DirectoryOrCreate
+        - name: tg-api-entrypoint
+          configMap:
+            name: daphne-tg-api-entrypoint
+            defaultMode: 0755
         - name: tmp
           emptyDir: {}

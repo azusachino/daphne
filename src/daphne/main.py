@@ -8,11 +8,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger("daphne.main")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-DEFAULT_IMAGE_CHANNEL = "@yandere_daily_popular"
-DEFAULT_NOTIFICATION_CHANNEL = "@harus_notification"
 ENV_BOT_TOKEN = "DAPHNE_BOT_TOKEN"
-ENV_NOTIFICATION_CHANNEL = "DAPHNE_NOTIFICATION_CHANNEL"
 
 
 def load_env_file(filepath: str) -> None:
@@ -44,26 +43,12 @@ load_env_file(".env")
 load_env_file(os.path.expanduser("~/.config/daphne/daphne.env"))
 
 # Import remaining modules after loading environment variables
-from daphne.database import init_db, get_db_path  # noqa: E402
 from daphne.bot import build_application  # noqa: E402
-from daphne.scheduler import setup_scheduler  # noqa: E402
 
 
 async def post_init(app) -> None:
-    """
-    Perform database initialization and scheduler setup within the running event loop.
-    """
-    db_path = get_db_path()
-    # Initialize DB
-    await init_db(db_path)
-    logger.info(f"Database initialized at: {db_path}")
-
-    # Setup scheduler
-    notification_channel = os.environ.get(
-        ENV_NOTIFICATION_CHANNEL, DEFAULT_NOTIFICATION_CHANNEL
-    )
-    setup_scheduler(app.bot, db_path, notification_channel)
-    logger.info("Scheduler setup completed.")
+    """Reserved for future startup hooks."""
+    return None
 
 
 def run_init() -> None:
@@ -77,34 +62,36 @@ def run_init() -> None:
     os.makedirs(config_dir, exist_ok=True)
     print(f"Created config directory at: {config_dir}")
 
-    # 2. Write default rbac.toml
-    rbac_path = os.path.join(config_dir, "rbac.toml")
-    rbac_content = """# Daphne RBAC Configuration
-public_commands = ["help", "rate"]
+    # 2. Write default config.toml
+    config_path = os.path.join(config_dir, "config.toml")
+    config_content = """# Daphne configuration
+[app]
+# telegram_api_url = "http://localhost:8081"
+video_upload_limit_mb = 512
 
-[roles.admin]
+[rbac]
+public_commands = ["help"]
+
+[rbac.roles.admin]
 permissions = ["*"]
 
-[users]
+[rbac.users]
 # Add user IDs mapping to roles here. Example:
 # 123456789 = "admin"
 
-[chats]
+[rbac.chats]
 # Add chat/group IDs mapping to roles here. Example:
 # -1002058191932 = "standard_group"
 """
-    with open(rbac_path, "w") as f:
-        f.write(rbac_content)
-    print(f"Wrote default rbac.toml to: {rbac_path}")
+    with open(config_path, "w") as f:
+        f.write(config_content)
+    print(f"Wrote default config.toml to: {config_path}")
 
     # 3. Write template environment file
     env_path = os.path.join(config_dir, "daphne.env")
-    env_content = f"""# Environment variables for Daphne Bot
+    env_content = """# Environment variables for Daphne Bot
 DAPHNE_BOT_TOKEN=your_telegram_bot_token_here
-DAPHNE_DATABASE_URL=sqlite:///{os.path.join(home, ".local", "share", "daphne", "daphne.db")}
-DAPHNE_RBAC_CONFIG_PATH={rbac_path}
-DAPHNE_NOTIFICATION_CHANNEL={DEFAULT_NOTIFICATION_CHANNEL}
-DAPHNE_IMAGE_CHANNEL={DEFAULT_IMAGE_CHANNEL}
+TZ=Asia/Tokyo
 """
     with open(env_path, "w") as f:
         f.write(env_content)
@@ -122,7 +109,7 @@ DAPHNE_IMAGE_CHANNEL={DEFAULT_IMAGE_CHANNEL}
 
     service_path = os.path.join(systemd_dir, "daphne.service")
     service_content = f"""[Unit]
-Description=Daphne - Wise Exchange Rate Bot
+Description=Daphne - Telegram Media Converter
 After=network.target
 
 [Service]
@@ -140,7 +127,7 @@ WantedBy=default.target
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Daphne - Wise Exchange Rate Bot")
+    parser = argparse.ArgumentParser(description="Daphne - Telegram Media Converter")
     subparsers = parser.add_subparsers(dest="command")
 
     # Subcommand 'init'
@@ -166,11 +153,7 @@ def main() -> None:
             )
             sys.exit(1)
 
-        # Build application and pass post_init
         app = build_application()
-
-        # Configure post_init to initialize database and scheduler
-        # We hook into post_init because it runs on the application's event loop
         app.post_init = post_init
 
         logger.info("Starting Daphne bot polling...")

@@ -3,9 +3,10 @@ import subprocess
 import random
 import logging
 import json
+from urllib.parse import urlsplit, urlunsplit
 from typing import Tuple, Optional
 
-from daphne.messages import append_footer, escape_html
+from daphne.messages import HtmlMessage
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,18 @@ USER_AGENTS = [
 
 def is_bilibili_url(url: str) -> bool:
     return "bilibili.com" in url or "b23.tv" in url
+
+
+def sanitize_video_url(url: str) -> str:
+    url = url.strip().strip("<>()[]{}\"'`,")
+    parsed = urlsplit(url)
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    if is_bilibili_url(url):
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+        )
+    return url
 
 
 def bilibili_headers() -> list[str]:
@@ -195,6 +208,8 @@ def fetch_video_metadata(url: str) -> dict:
                 "webpage_url": data.get("webpage_url", url),
                 "width": data.get("width"),
                 "height": data.get("height"),
+                "filesize": data.get("filesize"),
+                "filesize_approx": data.get("filesize_approx"),
             }
         except Exception as e:
             logger.warning(f"Failed to fetch video metadata via yt-dlp: {e}")
@@ -220,11 +235,14 @@ def format_video_caption(
     sender: Optional[str] = None,
 ) -> str:
     source_tag = "#bilibili" if is_bilibili else "#youtube"
-    body = (
-        f"🎬 <b>{escape_html(title)}</b>\n"
-        f"👤 {escape_html(uploader)}\n"
-        f"⏱️ {escape_html(duration)}\n"
-        f'🔗 <a href="{escape_html(url)}">{escape_html(url)}</a>\n'
-        f"{source_tag}"
+    return (
+        HtmlMessage(sender=sender)
+        .title(title)
+        .fields(
+            ("Uploader:", uploader),
+            ("Duration:", duration),
+        )
+        .link(url)
+        .tags(source_tag)
+        .render()
     )
-    return append_footer(body, sender)

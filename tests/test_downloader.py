@@ -53,9 +53,9 @@ class TestDownloader(unittest.TestCase):
         cap = format_video_caption(
             "A * B", "Uploader #1", "12:34", "http://x.com", False
         )
-        self.assertIn("🎬 <b>A * B</b>", cap)
-        self.assertIn("👤 Uploader #1", cap)
-        self.assertIn("⏱️ 12:34", cap)
+        self.assertIn("<b>A * B</b>", cap)
+        self.assertIn("<b>Uploader:</b> Uploader #1", cap)
+        self.assertIn("<b>Duration:</b> 12:34", cap)
         self.assertIn('<a href="http://x.com">http://x.com</a>', cap)
         self.assertIn("#youtube", cap)
         self.assertIn("daphne", cap)
@@ -65,7 +65,7 @@ class TestDownloader(unittest.TestCase):
         cap_bili = format_video_caption(
             "Bili Bili", "User2", "01:00", "http://b23.tv/xyz", True, "via @haru"
         )
-        self.assertIn("🎬 <b>Bili Bili</b>", cap_bili)
+        self.assertIn("<b>Bili Bili</b>", cap_bili)
         self.assertIn("#bilibili", cap_bili)
         self.assertIn("via @haru", cap_bili)
 
