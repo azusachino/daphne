@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: daphne-tg-api-entrypoint
+  namespace: harus-media
+data:
+  entrypoint-fix.sh: |
+    #!/bin/sh
+    set -e
+
+    deluser telegram-bot-api
+    addgroup -g 1000 telegram-bot-api
+    adduser -u 1000 -G telegram-bot-api -s /sbin/nologin -D -h /var/lib/telegram-bot-api telegram-bot-api
+
+    chown -R telegram-bot-api:telegram-bot-api /var/lib/telegram-bot-api
+    mkdir -p /tmp/telegram-bot-api
+    chown -R telegram-bot-api:telegram-bot-api /tmp/telegram-bot-api
+
+    exec /docker-entrypoint.sh

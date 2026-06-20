@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daphne
+  namespace: harus-media
+  labels:
+    app: daphne
+spec:
+  revisionHistoryLimit: 3
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: daphne
+  template:
+    metadata:
+      labels:
+        app: daphne
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: daphne
+          image: docker.io/azusachino/daphne:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          envFrom:
+            - secretRef:
+                name: daphne-secret
+          env:
+            - name: HOME
+              value: /tmp
+            - name: TZ
+              value: Asia/Tokyo
+          volumeMounts:
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: config
+              mountPath: /app/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 25m
+            limits:
+              memory: 512Mi
+              cpu: 250m
+        - name: telegram-bot-api
+          image: mirror.gcr.io/aiogram/telegram-bot-api:10.1
+          imagePullPolicy: IfNotPresent
+          command: ["/entrypoint-fix.sh"]
+          ports:
+            - containerPort: 8081
+              name: http
+          envFrom:
+            - secretRef:
+                name: daphne-secret
+          env:
+            - name: TZ
+              value: Asia/Tokyo
+          volumeMounts:
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+            - name: telegram-bot-api-data
+              mountPath: /var/lib/telegram-bot-api
+            - name: tg-api-entrypoint
+              mountPath: /entrypoint-fix.sh
+              subPath: entrypoint-fix.sh
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 25m
+            limits:
+              memory: 512Mi
+              cpu: 250m
+      volumes:
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: File
+        - name: config
+          configMap:
+            name: daphne-config
+        - name: telegram-bot-api-data
+          hostPath:
+            path: /mnt/harus_storage/runtime_files/containers/telegram-bot-api
+            type: DirectoryOrCreate
+        - name: tg-api-entrypoint
+          configMap:
+            name: daphne-tg-api-entrypoint
+            defaultMode: 0755
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,20 @@
+[app]
+telegram_api_url = "http://telegram-bot-api:8081"
+video_upload_limit_mb = 512
+
+[rbac]
+public_commands = ["help"]
+
+[rbac.roles.admin]
+permissions = ["*"]
+
+[rbac.roles.test_group]
+permissions = ["fix"]
+
+[rbac.users]
+# Replace with your Telegram numeric user ID.
+# 123456789 = "admin"
+
+[rbac.chats]
+# Replace with your private test chat/group/channel ID.
+# -1001234567890 = "test_group"

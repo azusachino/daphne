@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: daphne-config
+  namespace: harus-media
+data:
+  config.toml: |
+    [app]
+    telegram_api_url = "http://localhost:8081"
+    video_upload_limit_mb = 512
+
+    [rbac]
+    public_commands = ["help"]
+
+    [rbac.roles.admin]
+    permissions = ["*"]
+
+    [rbac.roles.standard_group]
+    permissions = ["fix"]
+
+    [rbac.users]
+    # Add your Telegram numeric user ID. Example:
+    # 996596491 = "admin"
+
+    [rbac.chats]
+    # Add your chat/group IDs here. Example:
+    # -1002058191932 = "standard_group"

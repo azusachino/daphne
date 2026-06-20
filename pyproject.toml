@@ -1,0 +1,32 @@
+[project]
+name = "daphne"
+version = "0.1.0"
+description = "Telegram bot for converting raw media links into Telegram-friendly media"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "parth-dl>=1.0.1",
+    "python-telegram-bot>=22.8",
+]
+
+[project.scripts]
+daphne = "daphne.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["daphne"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.17",
+]
+
+
+
