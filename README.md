@@ -2,7 +2,7 @@
 
 Daphne is a fast, stateless Telegram bot designed to convert raw media links (Twitter, Pixiv, Bluesky, TikTok, Instagram, Bilibili, YouTube, etc.) into Telegram-friendly native media messages.
 
-**Current Version:** `0.1.0`
+**Current Version:** `0.1.2`
 
 ## Core Features
 

@@ -3,7 +3,7 @@ import subprocess
 import random
 import logging
 import json
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Tuple, Optional
 
 from daphne.messages import HtmlMessage
@@ -22,14 +22,30 @@ def is_bilibili_url(url: str) -> bool:
     return "bilibili.com" in url or "b23.tv" in url
 
 
+def is_youtube_url(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+# YouTube query params worth keeping; everything else (si, pp, list, index,
+# feature, ...) is tracking/navigation noise that clutters the caption link.
+YOUTUBE_KEEP_PARAMS = {"v", "t"}
+
+
 def sanitize_video_url(url: str) -> str:
     url = url.strip().strip("<>()[]{}\"'`,")
     parsed = urlsplit(url)
     if not parsed.scheme or not parsed.netloc:
         return url
     if is_bilibili_url(url):
+        netloc = parsed.netloc
+        if netloc == "bilibili.com":
+            netloc = "www.bilibili.com"
+        # BV id lives in the path; no query is needed.
+        return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
+    if is_youtube_url(url):
+        kept = [(k, v) for k, v in parse_qsl(parsed.query) if k in YOUTUBE_KEEP_PARAMS]
         return urlunsplit(
-            (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+            (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), urlencode(kept), "")
         )
     return url
 
@@ -84,7 +100,9 @@ def scan_largest_media_file(out_dir: str) -> Optional[str]:
 def _run_cmd(cmd: list[str]) -> bool:
     logger.info(f"Running command: {' '.join(cmd)}")
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=300.0
+        )
         logger.info(f"Command succeeded. stdout: {res.stdout[:500]}")
         return True
     except subprocess.CalledProcessError as e:
@@ -204,7 +222,9 @@ def probe_video_dimensions(
         file_path,
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=15.0
+        )
         data = json.loads(res.stdout)
         streams = data.get("streams", [])
         if not streams:
@@ -246,17 +266,25 @@ def fetch_video_metadata(url: str) -> dict:
 
     for cmd in commands:
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, check=True, timeout=30.0
+            )
             data = json.loads(res.stdout)
             return {
                 "title": data.get("title", ""),
                 "uploader": data.get("uploader", ""),
                 "duration": data.get("duration"),
-                "webpage_url": data.get("webpage_url", url),
+                "webpage_url": sanitize_video_url(data.get("webpage_url", url)),
                 "width": data.get("width"),
                 "height": data.get("height"),
                 "filesize": data.get("filesize"),
                 "filesize_approx": data.get("filesize_approx"),
+                "url": data.get("url")
+                or (
+                    data.get("formats", [{}])[-1].get("url")
+                    if data.get("formats")
+                    else None
+                ),
             }
         except Exception as e:
             logger.warning(f"Failed to fetch video metadata via yt-dlp: {e}")
@@ -282,14 +310,24 @@ def format_video_caption(
     sender: Optional[str] = None,
 ) -> str:
     source_tag = f"#{platform}"
+    platform_icons = {
+        "youtube": "📺",
+        "bilibili": "⚡",
+        "tiktok": "🎵",
+        "instagram": "📸",
+        "bluesky": "🦋",
+        "twitter": "🐦",
+        "pixiv": "🎨",
+    }
+    icon = platform_icons.get(platform.lower(), "🎥")
     return (
         HtmlMessage(sender=sender)
         .title(title)
         .fields(
-            ("Uploader:", uploader),
-            ("Duration:", duration),
+            ("👤 Uploader", uploader),
+            ("🕒 Duration", duration),
         )
-        .link(url)
+        .link(url, f"🔗 Source ({icon} {platform.capitalize()})")
         .tags(source_tag)
         .render()
     )

@@ -277,10 +277,11 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["animation"], "https://video.twimg.com/test.gif")
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.twitter.logger.warning")
     @patch("daphne.twitter.httpx.AsyncClient.get")
     @patch("daphne.twitter.download_bytes")
     async def test_handle_media_send_by_url_fails_downloads_bytes(
-        self, mock_download, mock_get
+        self, mock_download, mock_get, mock_log_warn
     ):
         self.update.message.text = "https://x.com/nasa/status/999"
 
@@ -325,8 +326,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.twitter.logger.warning")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_error_sends_fallback_url(self, mock_get):
+    async def test_handle_api_404_sends_fallback_url(self, mock_get, mock_log_warn):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API returns 404
@@ -342,8 +344,11 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         )
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.twitter.logger.exception")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_exception_sends_fallback_url(self, mock_get):
+    async def test_handle_api_exception_sends_fallback_url(
+        self, mock_get, mock_log_exc
+    ):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API raises connection error

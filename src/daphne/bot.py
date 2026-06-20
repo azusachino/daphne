@@ -33,6 +33,30 @@ ENV_BOT_TOKEN = "DAPHNE_BOT_TOKEN"
 LOCAL_BOT_API_TIMEOUT_SECONDS = 7200
 URL_REGEX = re.compile(r"https?://\S+")
 
+LINK_RE = re.compile(
+    r"\b(?<!@)(?:https?://)?(?:www\.|vm\.|vt\.)?(?:"
+    r"bilibili\.com|b23\.tv|"
+    r"youtube\.com|youtu\.be|"
+    r"twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com|"
+    r"pixiv\.net|"
+    r"bsky\.app|"
+    r"instagram\.com|"
+    r"tiktok\.com|douyin\.com"
+    r")(/\S*)?",
+    re.IGNORECASE,
+)
+
+
+def preprocess_text_links(text: str) -> str:
+    def replace(match):
+        matched = match.group(0)
+        if matched.lower().startswith(("http://", "https://")):
+            return matched
+        return "https://" + matched
+
+    return LINK_RE.sub(replace, text)
+
+
 rbac_service = RbacService.load()
 
 
@@ -84,6 +108,7 @@ def detect_platform(url: str) -> str:
 
 
 def extract_video_url(text: str) -> str | None:
+    text = preprocess_text_links(text)
     for match in URL_REGEX.finditer(text):
         url = sanitize_video_url(match.group(0))
         if is_bilibili_url(url) or "youtube.com" in url or "youtu.be" in url:
@@ -168,13 +193,17 @@ async def send_video_card(
         .tags(detect_platform(url))
         .render()
     )
+    buttons = []
+    download_url = metadata.get("url")
+    if download_url and download_url != webpage_url:
+        buttons.append(InlineKeyboardButton("Download", url=download_url))
+    buttons.append(InlineKeyboardButton("Open source", url=webpage_url))
+
     await update.message.reply_text(
         text,
         parse_mode=PARSE_MODE_HTML,
         disable_web_page_preview=False,
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Open source", url=webpage_url)]]
-        ),
+        reply_markup=InlineKeyboardMarkup([buttons]),
     )
 
 
@@ -212,17 +241,6 @@ async def handle_video_link(
 
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
     size = _metadata_size(metadata)
-    if size is None and not custom_metadata:
-        await status_msg.delete()
-        await send_video_card(
-            update,
-            url,
-            metadata,
-            sender,
-            "Video size is unknown",
-        )
-        await delete_original_message(update)
-        return
     if size is not None and size > max_upload_bytes:
         await status_msg.delete()
         await send_video_card(
@@ -318,6 +336,10 @@ async def media_message_handler(
         message.text,
     )
 
+    text = preprocess_text_links(message.text)
+    if text != message.text:
+        object.__setattr__(message, "text", text)
+
     from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
     from daphne.twitter import contains_twitter_link, handle_twitter_links
     from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
@@ -367,6 +389,7 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     url = None
     if text:
+        text = preprocess_text_links(text)
         match = URL_REGEX.search(text)
         if match:
             url = sanitize_video_url(match.group(0))
@@ -499,6 +522,8 @@ def build_application() -> Application:
             .base_file_url(f"{local_api_url}/file/bot")
             .local_mode(True)
             .media_write_timeout(LOCAL_BOT_API_TIMEOUT_SECONDS)
+            .read_timeout(LOCAL_BOT_API_TIMEOUT_SECONDS)
+            .connect_timeout(30.0)
         )
 
     app = builder.build()

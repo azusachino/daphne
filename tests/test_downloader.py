@@ -13,6 +13,7 @@ from daphne.downloader import (
     format_duration,
     format_video_caption,
     download_audio,
+    sanitize_video_url,
 )
 
 
@@ -22,6 +23,39 @@ class TestDownloader(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.test_dir)
+
+    def test_sanitize_video_url(self):
+        # Bilibili: drop all query params (BV id is in the path) and normalize domain.
+        self.assertEqual(
+            sanitize_video_url(
+                "https://www.bilibili.com/video/BV1aMEj62EdA/?buvid=ABC&p=1"
+            ),
+            "https://www.bilibili.com/video/BV1aMEj62EdA",
+        )
+        self.assertEqual(
+            sanitize_video_url(
+                "https://bilibili.com/video/BV1aMEj62EdA/?buvid=ABC&p=1"
+            ),
+            "https://www.bilibili.com/video/BV1aMEj62EdA",
+        )
+        # YouTube: keep v + t, drop tracking/navigation noise.
+        self.assertEqual(
+            sanitize_video_url(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                "&list=PLx&index=2&t=30s&si=AbC&pp=ygU_"
+            ),
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s",
+        )
+        # youtu.be: id in path, keep t, drop si.
+        self.assertEqual(
+            sanitize_video_url("https://youtu.be/dQw4w9WgXcQ?si=AbC&t=10"),
+            "https://youtu.be/dQw4w9WgXcQ?t=10",
+        )
+        # Other platforms: left untouched.
+        self.assertEqual(
+            sanitize_video_url("https://example.com/v/abc?ref=x"),
+            "https://example.com/v/abc?ref=x",
+        )
 
     def test_scan_largest_media_file(self):
         # 1. No media files
@@ -55,9 +89,9 @@ class TestDownloader(unittest.TestCase):
             "A * B", "Uploader #1", "12:34", "http://x.com", "youtube"
         )
         self.assertIn("<b>A * B</b>", cap)
-        self.assertIn("<b>Uploader:</b> Uploader #1", cap)
-        self.assertIn("<b>Duration:</b> 12:34", cap)
-        self.assertIn('<a href="http://x.com">http://x.com</a>', cap)
+        self.assertIn("<b>👤 Uploader:</b> Uploader #1", cap)
+        self.assertIn("<b>🕒 Duration:</b> 12:34", cap)
+        self.assertIn('<a href="http://x.com">🔗 Source (📺 Youtube)</a>', cap)
         self.assertIn("#youtube", cap)
         self.assertIn("daphne", cap)
         self.assertNotIn("via", cap)
@@ -110,7 +144,29 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(meta["duration"], 300)
 
     @patch("subprocess.run")
-    def test_fetch_video_metadata_bilibili_retries_with_headers(self, mock_run):
+    def test_fetch_video_metadata_trims_bilibili_webpage_url(self, mock_run):
+        # yt-dlp returns a Bilibili webpage_url with tracking query params;
+        # the caption link must be trimmed to the canonical video URL.
+        mock_run.return_value = MagicMock(
+            stdout=json.dumps(
+                {
+                    "title": "Cat",
+                    "webpage_url": "https://www.bilibili.com/video/BV1aMEj62EdA/"
+                    "?buvid=ABC&share_source=COPY&p=1",
+                }
+            ),
+            returncode=0,
+        )
+        meta = fetch_video_metadata("https://www.bilibili.com/video/BV1aMEj62EdA")
+        self.assertEqual(
+            meta["webpage_url"], "https://www.bilibili.com/video/BV1aMEj62EdA"
+        )
+
+    @patch("daphne.downloader.logger.warning")
+    @patch("subprocess.run")
+    def test_fetch_video_metadata_bilibili_retries_with_headers(
+        self, mock_run, mock_log_warn
+    ):
         mock_run.side_effect = [
             Exception("HTTP 412"),
             MagicMock(
