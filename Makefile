@@ -1,6 +1,7 @@
-.PHONY: dev init init-local test fmt lint ready image-build verify
+.PHONY: dev init init-local test fmt lint ready image-build verify up down
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
+COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
 
 dev:
 	uv run daphne
@@ -27,3 +28,9 @@ image-build:
 
 verify: image-build
 	$(CONTAINER_TOOL) run --rm daphne:latest --help | grep "Daphne - Telegram Media Converter"
+
+up:
+	$(COMPOSE_TOOL) -f docker-compose.local.yml up -d --build
+
+down:
+	$(COMPOSE_TOOL) -f docker-compose.local.yml down
