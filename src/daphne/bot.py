@@ -313,6 +313,10 @@ async def media_message_handler(
     if not message or not message.text:
         return
 
+    user_id = update.effective_user.id if update.effective_user else 0
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    logger.info("Received message from user_id=%s in chat_id=%s: %r", user_id, chat_id, message.text)
+
     from daphne.pixiv import contains_pixiv_link, handle_pixiv_links
     from daphne.twitter import contains_twitter_link, handle_twitter_links
     from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
@@ -320,21 +324,27 @@ async def media_message_handler(
     from daphne.tiktok import contains_tiktok_link, handle_tiktok_links
 
     if contains_twitter_link(message.text):
+        logger.info("Routing to Twitter handler")
         if await check_access_and_reply(update, "fix"):
             await handle_twitter_links(update, context)
     elif contains_pixiv_link(message.text):
+        logger.info("Routing to Pixiv handler")
         if await check_access_and_reply(update, "fix"):
             await handle_pixiv_links(update, context)
     elif contains_bluesky_link(message.text):
+        logger.info("Routing to Bluesky handler")
         if await check_access_and_reply(update, "fix"):
             await handle_bluesky_links(update, context)
     elif contains_instagram_link(message.text):
+        logger.info("Routing to Instagram handler")
         if await check_access_and_reply(update, "fix"):
             await handle_instagram_links(update, context)
     elif contains_tiktok_link(message.text):
+        logger.info("Routing to TikTok handler")
         if await check_access_and_reply(update, "fix"):
             await handle_tiktok_links(update, context)
     elif video_url := extract_video_url(message.text):
+        logger.info("Routing to generic video handler for URL: %s", video_url)
         if await check_access_and_reply(update, "fix"):
             await handle_video_link(update, context, video_url)
 
