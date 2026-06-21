@@ -47,9 +47,9 @@ def telegram_api_url() -> str | None:
 
 
 def video_upload_limit_mb() -> int:
-    value = app_config().get("video_upload_limit_mb", 512)
+    value = app_config().get("video_upload_limit_mb", 256)
     try:
         limit = int(value)
     except (TypeError, ValueError):
-        return 512
+        return 256
     return max(1, limit)

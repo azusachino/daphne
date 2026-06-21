@@ -65,6 +65,38 @@ class RbacService:
         # Rate limiter: (user_id, command) -> (count, start_time)
         self.rate_limiter: Dict[Tuple[int, str], Tuple[int, float]] = {}
 
+        try:
+            self.convert_link_limit = int(config_dict.get("convert_link_limit", 60))
+        except (TypeError, ValueError):
+            self.convert_link_limit = 60
+
+        try:
+            self.extract_audio_limit = int(config_dict.get("extract_audio_limit", 10))
+        except (TypeError, ValueError):
+            self.extract_audio_limit = 10
+
+        try:
+            self.preview_video_limit = int(config_dict.get("preview_video_limit", 10))
+        except (TypeError, ValueError):
+            self.preview_video_limit = 10
+
+        try:
+            self.download_video_limit = int(config_dict.get("download_video_limit", 5))
+        except (TypeError, ValueError):
+            self.download_video_limit = 5
+
+        try:
+            self.fetch_metadata_limit = int(config_dict.get("fetch_metadata_limit", 30))
+        except (TypeError, ValueError):
+            self.fetch_metadata_limit = 30
+
+        try:
+            self.help_limit = int(config_dict.get("help_limit", 10))
+        except (TypeError, ValueError):
+            self.help_limit = 10
+
+        self.action_timestamps: Dict[Tuple[int, str], list[float]] = {}
+
     @classmethod
     def load(cls, path: str | None = None) -> "RbacService":
         config_dict = rbac_config()
@@ -119,7 +151,9 @@ class RbacService:
             )
             return AccessResult(AccessStatus.DENIED, "Command not allowed by chat role")
 
-    def check_access(self, user_id: int, chat_id: int, command: str) -> AccessResult:
+    def check_access(
+        self, user_id: int, chat_id: int, command: str, dry_run: bool = False
+    ) -> AccessResult:
         command = command.lower().lstrip("/")
 
         # 1. Admin Bypass
@@ -132,13 +166,18 @@ class RbacService:
 
         # 2. Public Command Check
         if command in self.public_commands:
+            quota_res = self._check_and_record_quota(user_id, command, dry_run)
+            if not quota_res.is_allowed():
+                return quota_res
+
             now = time.time()
             limit_key = (user_id, command)
 
             if limit_key in self.rate_limiter:
                 count, start_time = self.rate_limiter[limit_key]
                 if now - start_time >= 60.0:
-                    self.rate_limiter[limit_key] = (1, now)
+                    if not dry_run:
+                        self.rate_limiter[limit_key] = (1, now)
                     logger.info(
                         f"RBAC: [ALLOWED] public command (limit reset) for user={user_id} cmd={command}"
                     )
@@ -150,25 +189,21 @@ class RbacService:
                     )
                     return AccessResult(AccessStatus.RATE_LIMITED)
 
-                self.rate_limiter[limit_key] = (count + 1, start_time)
+                if not dry_run:
+                    self.rate_limiter[limit_key] = (count + 1, start_time)
                 logger.info(
                     f"RBAC: [ALLOWED] public command (count={count + 1}) for user={user_id} cmd={command}"
                 )
                 return AccessResult(AccessStatus.ALLOWED)
             else:
-                self.rate_limiter[limit_key] = (1, now)
+                if not dry_run:
+                    self.rate_limiter[limit_key] = (1, now)
                 logger.info(
                     f"RBAC: [ALLOWED] public command (first request) for user={user_id} cmd={command}"
                 )
                 return AccessResult(AccessStatus.ALLOWED)
 
-        # 3. Whitelist Enforcement
-        if not user_role:
-            logger.warning(
-                f"RBAC: [DENIED] user not in whitelist: user={user_id} cmd={command}"
-            )
-            return AccessResult(AccessStatus.DENIED, "User not in whitelist")
-
+        # 3. Chat Whitelist Enforcement
         chat_role = self.chats.get(chat_id)
         if not chat_role:
             logger.warning(
@@ -176,22 +211,80 @@ class RbacService:
             )
             return AccessResult(AccessStatus.DENIED, "Chat not in whitelist")
 
-        # 4. Intersection Logic
-        user_allowed = self.has_permission(user_role, command)
+        # 4. Check Chat Permission (standard/group permission fallback)
         chat_allowed = self.has_permission(chat_role, command)
-
-        if user_allowed and chat_allowed:
+        if chat_allowed:
+            quota_res = self._check_and_record_quota(user_id, command, dry_run)
+            if not quota_res.is_allowed():
+                return quota_res
             logger.info(
-                f"RBAC: [ALLOWED] intersection for user={user_id} chat={chat_id} cmd={command}"
+                f"RBAC: [ALLOWED] chat-level access for user={user_id} chat={chat_id} (role={chat_role}) cmd={command}"
             )
             return AccessResult(AccessStatus.ALLOWED)
+
+        # 5. Check User Permission (if chat role does not have permission, but user role does)
+        if user_role:
+            user_allowed = self.has_permission(user_role, command)
+            if user_allowed:
+                quota_res = self._check_and_record_quota(user_id, command, dry_run)
+                if not quota_res.is_allowed():
+                    return quota_res
+                logger.info(
+                    f"RBAC: [ALLOWED] user-level access for user={user_id} (role={user_role}) in chat={chat_id} cmd={command}"
+                )
+                return AccessResult(AccessStatus.ALLOWED)
+            else:
+                logger.warning(
+                    f"RBAC: [DENIED] user role lacks permission: user={user_id} (role={user_role}) cmd={command}"
+                )
         else:
             logger.warning(
-                f"RBAC: [DENIED] intersection failed for user={user_id} (allowed={user_allowed}) chat={chat_id} (allowed={chat_allowed}) cmd={command}"
+                f"RBAC: [DENIED] user not whitelisted and chat role lacks permission: user={user_id} chat={chat_id} cmd={command}"
             )
+
+        return AccessResult(
+            AccessStatus.DENIED, "Command not allowed by user or chat role"
+        )
+
+    def _check_and_record_quota(
+        self, user_id: int, command: str, dry_run: bool = False
+    ) -> AccessResult:
+        # Define limits for actions
+        limits = {
+            "convert_link": self.convert_link_limit,
+            "extract_audio": self.extract_audio_limit,
+            "download_video": self.download_video_limit,
+            "preview_video": self.preview_video_limit,
+            "fetch_metadata": self.fetch_metadata_limit,
+            "help": self.help_limit,
+        }
+
+        if command not in limits:
+            return AccessResult(AccessStatus.ALLOWED)
+
+        limit = limits[command]
+        now = time.time()
+        one_hour_ago = now - 3600.0
+
+        key = (user_id, command)
+        timestamps = self.action_timestamps.get(key, [])
+        # Clean up old timestamps
+        active_timestamps = [t for t in timestamps if t > one_hour_ago]
+
+        if len(active_timestamps) >= limit:
+            logger.warning(
+                f"RBAC: [RATE_LIMITED] {command} quota exceeded for user={user_id} (limit={limit}/hr)"
+            )
+            friendly_name = command.replace("_", " ")
             return AccessResult(
-                AccessStatus.DENIED, "Command not allowed by user or chat role"
+                AccessStatus.RATE_LIMITED,
+                f"{friendly_name.capitalize()} hourly quota exceeded",
             )
+
+        if not dry_run:
+            active_timestamps.append(now)
+            self.action_timestamps[key] = active_timestamps
+        return AccessResult(AccessStatus.ALLOWED)
 
 
 def get_rbac_config_path() -> str:

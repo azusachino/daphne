@@ -1,15 +1,20 @@
 [app]
 telegram_api_url = "http://telegram-bot-api:8081"
-video_upload_limit_mb = 512
+video_upload_limit_mb = 256
 
 [rbac]
 public_commands = ["help"]
+convert_link_limit = 60
+extract_audio_limit = 10
+download_video_limit = 5
+preview_video_limit = 10
+fetch_metadata_limit = 30
 
 [rbac.roles.admin]
 permissions = ["*"]
 
-[rbac.roles.test_group]
-permissions = ["fix"]
+[rbac.roles.standard_group]
+permissions = ["convert_link", "extract_audio", "preview_video", "download_video", "fetch_metadata"]
 
 [rbac.users]
 # Replace with your Telegram numeric user ID.
@@ -17,4 +22,4 @@ permissions = ["fix"]
 
 [rbac.chats]
 # Replace with your private test chat/group/channel ID.
-# -1001234567890 = "test_group"
+# -1001234567890 = "standard_group"

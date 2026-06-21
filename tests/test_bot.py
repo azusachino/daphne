@@ -15,7 +15,7 @@ class TestRbac(unittest.TestCase):
             "public_commands": ["help"],
             "roles": {
                 "admin": {"permissions": ["*"]},
-                "standard": {"permissions": ["fix"]},
+                "standard": {"permissions": ["convert_link"]},
             },
             "users": {"123456789": "admin", "12345": "standard"},
             "chats": {"-1002058191932": "standard"},
@@ -27,22 +27,34 @@ class TestRbac(unittest.TestCase):
         self.assertTrue(self.rbac.check_access(111, 222, "/help").is_allowed())
 
     def test_admin_bypass(self):
-        self.assertTrue(self.rbac.check_access(123456789, 999, "fix").is_allowed())
+        self.assertTrue(
+            self.rbac.check_access(123456789, 999, "convert_link").is_allowed()
+        )
 
     def test_whitelist_enforcement(self):
-        self.assertTrue(self.rbac.check_access(999, -1002058191932, "fix").is_denied())
-        self.assertTrue(self.rbac.check_access(12345, 999, "fix").is_denied())
+        # Non-whitelisted user in non-whitelisted chat is denied
+        self.assertTrue(self.rbac.check_access(999, 999, "convert_link").is_denied())
+        # Whitelisted user in non-whitelisted chat is denied
+        self.assertTrue(self.rbac.check_access(12345, 999, "convert_link").is_denied())
+        # Non-whitelisted user in whitelisted chat requesting command not allowed by chat role is denied
+        self.assertTrue(
+            self.rbac.check_access(999, -1002058191932, "extract_audio").is_denied()
+        )
+        # Non-whitelisted user in whitelisted chat requesting command allowed by chat role is allowed (fallback)
+        self.assertTrue(
+            self.rbac.check_access(999, -1002058191932, "convert_link").is_allowed()
+        )
 
     def test_intersection_logic(self):
         self.assertTrue(
-            self.rbac.check_access(12345, -1002058191932, "fix").is_allowed()
+            self.rbac.check_access(12345, -1002058191932, "convert_link").is_allowed()
         )
 
     def test_missing_rbac_toml_fallback(self):
         with patch("os.path.exists", return_value=False):
             svc = RbacService.load("non_existent_file.toml")
             self.assertTrue(svc.check_access(111, 222, "help").is_allowed())
-            self.assertTrue(svc.check_access(111, 222, "fix").is_denied())
+            self.assertTrue(svc.check_access(111, 222, "convert_link").is_denied())
 
 
 class TestPathsAndXDG(unittest.TestCase):
@@ -85,7 +97,7 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.token.assert_called_once_with("token")
         builder.job_queue.assert_called_once_with(None)
         builder.base_url.assert_not_called()
-        self.assertEqual(app.add_handler.call_count, 3)
+        self.assertEqual(app.add_handler.call_count, 4)
 
     def test_build_application_uses_local_bot_api(self):
         app = MagicMock()
@@ -301,8 +313,8 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Huge Video", text)
         button_download = kwargs["reply_markup"].inline_keyboard[0][0]
         button_source = kwargs["reply_markup"].inline_keyboard[0][1]
-        self.assertEqual(button_download.text, "Download")
-        self.assertEqual(button_download.url, "https://direct-url.com/file.mp4")
+        self.assertEqual(button_download.text, "Download Video")
+        self.assertTrue(button_download.callback_data.startswith("dl:"))
         self.assertEqual(button_source.text, "Open source")
         self.assertEqual(button_source.url, "https://www.bilibili.com/video/BV1abc")
         self.update.message.delete.assert_called_once()
@@ -393,6 +405,247 @@ class TestMainInit(unittest.TestCase):
         ]
         # 2 files written for local=False, 2 files written for local=True
         self.assertEqual(len(write_calls), 4)
+
+
+class TestVideoPermissionsAndQuota(unittest.TestCase):
+    def setUp(self):
+        self.config_data = {
+            "public_commands": ["help"],
+            "help_limit": 2,
+            "convert_link_limit": 2,
+            "extract_audio_limit": 2,
+            "download_video_limit": 2,
+            "preview_video_limit": 3,
+            "roles": {
+                "admin": {"permissions": ["*"]},
+                "downloader_only": {"permissions": ["download_video"]},
+                "preview_only": {"permissions": ["preview_video"]},
+                "both": {
+                    "permissions": [
+                        "download_video",
+                        "preview_video",
+                        "convert_link",
+                        "extract_audio",
+                    ]
+                },
+            },
+            "users": {
+                "1": "admin",
+                "2": "downloader_only",
+                "3": "preview_only",
+                "4": "both",
+            },
+            "chats": {
+                "-1002058191932": "both",
+                "-1001111111111": "downloader_only",
+            },
+        }
+        self.rbac = RbacService(self.config_data)
+
+    def test_quota_limits(self):
+        # Admin is always allowed and does not consume quota
+        for _ in range(5):
+            self.assertTrue(
+                self.rbac.check_access(1, -1002058191932, "download_video").is_allowed()
+            )
+
+        # User 2 (downloader_only): limit is 2
+        self.assertTrue(
+            self.rbac.check_access(2, -1002058191932, "download_video").is_allowed()
+        )  # 1
+        self.assertTrue(
+            self.rbac.check_access(2, -1002058191932, "download_video").is_allowed()
+        )  # 2
+        self.assertTrue(
+            self.rbac.check_access(
+                2, -1002058191932, "download_video"
+            ).is_rate_limited()
+        )  # Exceeded
+
+        # User 3 (preview_only): limit is 3
+        self.assertTrue(
+            self.rbac.check_access(3, -1002058191932, "preview_video").is_allowed()
+        )  # 1
+        self.assertTrue(
+            self.rbac.check_access(3, -1002058191932, "preview_video").is_allowed()
+        )  # 2
+        self.assertTrue(
+            self.rbac.check_access(3, -1002058191932, "preview_video").is_allowed()
+        )  # 3
+        self.assertTrue(
+            self.rbac.check_access(3, -1002058191932, "preview_video").is_rate_limited()
+        )  # Exceeded
+
+        # User 4 (both): convert_link limit is 2
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "convert_link").is_allowed()
+        )  # 1
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "convert_link").is_allowed()
+        )  # 2
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "convert_link").is_rate_limited()
+        )  # Exceeded
+
+        # Public command (help) hourly quota is 2
+        # User 4 has limit 2 for help
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "help").is_allowed()
+        )  # 1
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "help").is_allowed()
+        )  # 2
+        self.assertTrue(
+            self.rbac.check_access(4, -1002058191932, "help").is_rate_limited()
+        )  # Exceeded
+
+
+class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.update = MagicMock()
+        self.update.effective_user.id = 12345
+        self.update.effective_user.username = "haru"
+        self.update.effective_user.full_name = "Haru"
+        self.update.effective_chat.id = -1002058191932
+        self.update.message.reply_text = AsyncMock()
+        self.update.message.delete = AsyncMock()
+        self.status = MagicMock()
+        self.status.delete = AsyncMock()
+        self.status.edit_text = AsyncMock()
+        self.update.message.reply_text.return_value = self.status
+        self.context = MagicMock()
+        self.context.bot.send_video = AsyncMock()
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot.send_video_card")
+    async def test_media_message_handler_preview_path(
+        self, mock_send_card, mock_handle_video, mock_fetch_metadata, mock_rbac
+    ):
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+
+        mock_fetch_metadata.return_value = {
+            "title": "Small Video",
+            "uploader": "Uploader",
+            "filesize": 10 * 1024 * 1024,
+            "webpage_url": "https://www.bilibili.com/video/BV1abc",
+        }
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc"
+
+        await bot_module.media_message_handler(self.update, self.context)
+
+        mock_rbac.check_access.assert_any_call(12345, -1002058191932, "fetch_metadata")
+        mock_rbac.check_access.assert_any_call(
+            12345, -1002058191932, "preview_video", dry_run=True
+        )
+        mock_rbac.check_access.assert_any_call(12345, -1002058191932, "preview_video")
+
+        mock_handle_video.assert_called_once_with(
+            self.update,
+            self.context,
+            "https://www.bilibili.com/video/BV1abc",
+            custom_metadata=mock_fetch_metadata.return_value,
+        )
+        mock_send_card.assert_not_called()
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot.send_video_card")
+    async def test_media_message_handler_card_path(
+        self, mock_send_card, mock_handle_video, mock_fetch_metadata, mock_rbac
+    ):
+        mock_fetch_allowed = MagicMock()
+        mock_fetch_allowed.is_allowed.return_value = True
+
+        mock_preview_denied = MagicMock()
+        mock_preview_denied.is_allowed.return_value = False
+        mock_preview_denied.is_rate_limited.return_value = False
+
+        def mock_check_access(user_id, chat_id, cmd, dry_run=False):
+            if cmd == "fetch_metadata":
+                return mock_fetch_allowed
+            if cmd == "preview_video":
+                return mock_preview_denied
+            return MagicMock()
+
+        mock_rbac.check_access.side_effect = mock_check_access
+
+        mock_fetch_metadata.return_value = {
+            "title": "Small Video No Permission",
+            "uploader": "Uploader",
+            "filesize": 10 * 1024 * 1024,
+            "webpage_url": "https://www.bilibili.com/video/BV1abc",
+        }
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc"
+
+        await bot_module.media_message_handler(self.update, self.context)
+
+        mock_rbac.check_access.assert_any_call(12345, -1002058191932, "fetch_metadata")
+        mock_rbac.check_access.assert_any_call(
+            12345, -1002058191932, "preview_video", dry_run=True
+        )
+
+        mock_handle_video.assert_not_called()
+        mock_send_card.assert_called_once_with(
+            self.update,
+            "https://www.bilibili.com/video/BV1abc",
+            mock_fetch_metadata.return_value,
+            bot_module.sender_attribution(self.update.effective_user),
+            "Video Details",
+        )
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.download_video")
+    @patch("daphne.bot.probe_video_dimensions", return_value=(1280, 720, 60))
+    @patch("os.path.getsize", return_value=15 * 1024 * 1024)
+    async def test_download_button_callback_success(
+        self, mock_getsize, mock_probe, mock_download, mock_fetch_metadata, mock_rbac
+    ):
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+
+        mock_fetch_metadata.return_value = {
+            "title": "Downloaded Video",
+            "uploader": "Uploader",
+            "filesize": 15 * 1024 * 1024,
+            "webpage_url": "https://www.bilibili.com/video/BV1abc",
+        }
+        mock_download.return_value = "/tmp/video.mp4"
+
+        bot_module.CALLBACK_URL_CACHE["testshort"] = (
+            "https://www.bilibili.com/video/BV1abc"
+        )
+
+        query = AsyncMock()
+        query.data = "dl:testshort"
+        query.from_user.id = 12345
+        query.message.chat.id = -1002058191932
+        query.edit_message_text = AsyncMock()
+        query.message.delete = AsyncMock()
+        query.message.reply_to_message = AsyncMock()
+
+        callback_update = MagicMock()
+        callback_update.callback_query = query
+
+        with patch("builtins.open", unittest.mock.mock_open()):
+            await bot_module.download_button_callback(callback_update, self.context)
+
+        query.answer.assert_called_once()
+        mock_rbac.check_access.assert_called_once_with(
+            12345, -1002058191932, "download_video"
+        )
+        mock_download.assert_called_once()
+        self.context.bot.send_video.assert_called_once()
+        query.message.delete.assert_called_once()
+        query.message.reply_to_message.delete.assert_called_once()
 
 
 if __name__ == "__main__":

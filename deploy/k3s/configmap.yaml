@@ -7,7 +7,7 @@ data:
   config.toml: |
     [app]
     telegram_api_url = "http://localhost:8081"
-    video_upload_limit_mb = 512
+    video_upload_limit_mb = 256
 
     [rbac]
     public_commands = ["help"]
@@ -16,7 +16,7 @@ data:
     permissions = ["*"]
 
     [rbac.roles.standard_group]
-    permissions = ["fix"]
+    permissions = ["convert_link", "extract_audio", "preview_video", "download_video", "fetch_metadata"]
 
     [rbac.users]
     # Add your Telegram numeric user ID. Example:

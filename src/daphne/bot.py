@@ -11,7 +11,9 @@ from telegram.ext import (
     ContextTypes,
     MessageHandler,
     filters,
+    CallbackQueryHandler,
 )
+import uuid
 
 from daphne.config import telegram_api_url, video_upload_limit_mb
 from daphne.downloader import (
@@ -26,6 +28,8 @@ from daphne.downloader import (
 )
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
 from daphne.rbac import RbacService
+
+CALLBACK_URL_CACHE: dict[str, str] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +198,21 @@ async def send_video_card(
         .render()
     )
     buttons = []
-    download_url = metadata.get("url")
-    if download_url and download_url != webpage_url:
-        buttons.append(InlineKeyboardButton("Download", url=download_url))
+    short_id = str(uuid.uuid4())[:8]
+    CALLBACK_URL_CACHE[short_id] = webpage_url
+
+    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+    size = _metadata_size(metadata)
+    if size is None or size <= TG_HARD_LIMIT_BYTES:
+        buttons.append(
+            InlineKeyboardButton("Download Video", callback_data=f"dl:{short_id}")
+        )
     buttons.append(InlineKeyboardButton("Open source", url=webpage_url))
 
     await update.message.reply_text(
         text,
         parse_mode=PARSE_MODE_HTML,
-        disable_web_page_preview=False,
+        disable_web_page_preview=True,
         reply_markup=InlineKeyboardMarkup([buttons]),
     )
 
@@ -348,32 +358,99 @@ async def media_message_handler(
 
     if contains_twitter_link(message.text):
         logger.info("Routing to Twitter handler")
-        if await check_access_and_reply(update, "fix"):
+        if await check_access_and_reply(update, "convert_link"):
             await handle_twitter_links(update, context)
     elif contains_pixiv_link(message.text):
         logger.info("Routing to Pixiv handler")
-        if await check_access_and_reply(update, "fix"):
+        if await check_access_and_reply(update, "convert_link"):
             await handle_pixiv_links(update, context)
     elif contains_bluesky_link(message.text):
         logger.info("Routing to Bluesky handler")
-        if await check_access_and_reply(update, "fix"):
+        if await check_access_and_reply(update, "convert_link"):
             await handle_bluesky_links(update, context)
     elif contains_instagram_link(message.text):
         logger.info("Routing to Instagram handler")
-        if await check_access_and_reply(update, "fix"):
+        if await check_access_and_reply(update, "convert_link"):
             await handle_instagram_links(update, context)
     elif contains_tiktok_link(message.text):
         logger.info("Routing to TikTok handler")
-        if await check_access_and_reply(update, "fix"):
+        if await check_access_and_reply(update, "convert_link"):
             await handle_tiktok_links(update, context)
     elif video_url := extract_video_url(message.text):
         logger.info("Routing to generic video handler for URL: %s", video_url)
-        if await check_access_and_reply(update, "fix"):
-            await handle_video_link(update, context, video_url)
+        # Check fetch_metadata permission & quota
+        access = rbac_service.check_access(user_id, chat_id, "fetch_metadata")
+        if not access.is_allowed():
+            if access.is_rate_limited():
+                text = HtmlMessage().text(f"Quota exceeded: {access.reason}").render()
+            else:
+                text = (
+                    HtmlMessage().text(f"Permission denied: {access.reason}").render()
+                )
+            await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
+            return
+
+        sender = sender_attribution(update.effective_user)
+        status_msg = await update.message.reply_text(
+            HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+            parse_mode=PARSE_MODE_HTML,
+        )
+
+        try:
+            loop = asyncio.get_running_loop()
+            metadata = await loop.run_in_executor(None, fetch_video_metadata, video_url)
+        except Exception as exc:
+            logger.exception("Failed to fetch video metadata")
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"Video metadata fetch failed: {exc}")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+
+        preview_access = rbac_service.check_access(
+            user_id, chat_id, "preview_video", dry_run=True
+        )
+        max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
+        size = _metadata_size(metadata)
+
+        if (
+            size is not None
+            and size <= max_upload_bytes
+            and preview_access.is_allowed()
+        ):
+            # Charge preview_video quota
+            rbac_service.check_access(user_id, chat_id, "preview_video")
+            await status_msg.delete()
+            await handle_video_link(
+                update, context, video_url, custom_metadata=metadata
+            )
+        else:
+            # Fallback to sending the video card
+            await status_msg.delete()
+            TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+            if size is not None and size > TG_HARD_LIMIT_BYTES:
+                reason = "Video is over Telegram's 2GiB limit"
+            elif size is not None and size > max_upload_bytes:
+                reason = f"Video is over {video_upload_limit_mb()} MB"
+            elif preview_access.is_rate_limited():
+                reason = "Video Preview Quota Exceeded (direct download only)"
+            else:
+                reason = "Video Details"
+
+            await send_video_card(
+                update,
+                video_url,
+                metadata,
+                sender,
+                reason,
+            )
+            await delete_original_message(update)
 
 
 async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await check_access_and_reply(update, "fix"):
+    if not await check_access_and_reply(update, "extract_audio"):
         return
 
     message = update.message
@@ -507,6 +584,182 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await delete_original_message(update)
 
 
+async def download_button_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data
+    if not data or not data.startswith("dl:"):
+        await query.answer()
+        return
+
+    short_id = data[3:]
+    url = CALLBACK_URL_CACHE.get(short_id)
+    if not url:
+        await query.answer("Error: Video link has expired.", show_alert=True)
+        return
+
+    user_id = query.from_user.id if query.from_user else 0
+    chat_id = query.message.chat.id if query.message else 0
+    sender = sender_attribution(query.from_user)
+
+    # Check download_video permission & quota (actual non-dry-run check)
+    access = rbac_service.check_access(user_id, chat_id, "download_video")
+    if not access.is_allowed():
+        # Do not download, alert the user
+        await query.answer(access.reason or "Permission denied", show_alert=True)
+        return
+
+    # Acknowledge the callback query immediately to avoid loading animation on button
+    await query.answer()
+
+    # Edit the card message to indicate progress and remove the buttons
+    try:
+        await query.edit_message_text(
+            HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+            parse_mode=PARSE_MODE_HTML,
+            reply_markup=None,
+        )
+    except Exception:
+        pass
+
+    loop = asyncio.get_running_loop()
+    try:
+        metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
+    except Exception as exc:
+        logger.exception("Failed to fetch video metadata")
+        try:
+            await query.edit_message_text(
+                HtmlMessage(sender=sender)
+                .text(f"Video metadata fetch failed: {exc}")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception:
+            pass
+        return
+
+    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+    size = _metadata_size(metadata)
+    if size is not None and size > TG_HARD_LIMIT_BYTES:
+        try:
+            await query.edit_message_text(
+                HtmlMessage(sender=sender)
+                .text(
+                    f"Video exceeds Telegram's 2GiB upload limit (size: {size / (1024 * 1024 * 1024):.2f} GiB)."
+                )
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception:
+            pass
+        return
+
+    try:
+        await query.edit_message_text(
+            HtmlMessage(sender=sender).text("Downloading video...").render(),
+            parse_mode=PARSE_MODE_HTML,
+        )
+    except Exception:
+        pass
+
+    with tempfile.TemporaryDirectory() as out_dir:
+        try:
+            video_path = await loop.run_in_executor(None, download_video, url, out_dir)
+        except Exception as exc:
+            logger.exception("Failed to download video")
+            try:
+                await query.edit_message_text(
+                    HtmlMessage(sender=sender)
+                    .text(f"Video download failed: {exc}")
+                    .render(),
+                    parse_mode=PARSE_MODE_HTML,
+                )
+            except Exception:
+                pass
+            return
+
+        file_size = os.path.getsize(video_path)
+        if file_size > TG_HARD_LIMIT_BYTES:
+            try:
+                await query.edit_message_text(
+                    HtmlMessage(sender=sender)
+                    .text(
+                        f"Downloaded video file size ({file_size / (1024 * 1024 * 1024):.2f} GiB) exceeds Telegram's 2GiB limit."
+                    )
+                    .render(),
+                    parse_mode=PARSE_MODE_HTML,
+                )
+            except Exception:
+                pass
+            return
+
+        try:
+            await query.edit_message_text(
+                HtmlMessage(sender=sender).text("Uploading video...").render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception:
+            pass
+
+        try:
+            await context.bot.send_chat_action(chat_id=chat_id, action="upload_video")
+        except Exception:
+            pass
+
+        width, height, duration = await loop.run_in_executor(
+            None, probe_video_dimensions, video_path
+        )
+        caption = _video_caption_from_metadata(
+            metadata, url, video_path, duration, sender
+        )
+
+        kwargs = {
+            "chat_id": chat_id,
+            "supports_streaming": True,
+            "caption": caption,
+            "parse_mode": PARSE_MODE_HTML,
+        }
+        if width is not None:
+            kwargs["width"] = width
+        if height is not None:
+            kwargs["height"] = height
+        if duration is not None:
+            kwargs["duration"] = int(float(duration))
+
+        try:
+            with open(video_path, "rb") as video_file:
+                await context.bot.send_video(video=video_file, **kwargs)
+        except Exception as exc:
+            logger.exception("Failed to send video")
+            try:
+                await query.edit_message_text(
+                    HtmlMessage(sender=sender)
+                    .text(f"Failed to upload video: {exc}")
+                    .render(),
+                    parse_mode=PARSE_MODE_HTML,
+                )
+            except Exception:
+                pass
+            return
+
+    # Delete the status card message on success
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
+
+    # Attempt to delete the original message containing the link if it was replied to
+    try:
+        if query.message and query.message.reply_to_message:
+            await query.message.reply_to_message.delete()
+    except Exception:
+        pass
+
+
 def build_application() -> Application:
     token = os.environ.get(ENV_BOT_TOKEN)
     if not token:
@@ -529,6 +782,7 @@ def build_application() -> Application:
     app = builder.build()
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("audio", audio_command))
+    app.add_handler(CallbackQueryHandler(download_button_callback, pattern=r"^dl:"))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, media_message_handler)
     )
