@@ -72,7 +72,7 @@ def run_init(local: bool = False) -> None:
     config_content = """# Daphne configuration
 [app]
 # telegram_api_url = "http://localhost:8081"
-video_upload_limit_mb = 512
+video_upload_limit_mb = 256
 
 [rbac]
 public_commands = ["help"]

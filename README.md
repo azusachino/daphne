@@ -2,7 +2,7 @@
 
 Daphne is a fast, stateless Telegram bot designed to convert raw media links (Twitter, Pixiv, Bluesky, TikTok, Instagram, Bilibili, YouTube, etc.) into Telegram-friendly native media messages.
 
-**Current Version:** `0.1.2`
+**Current Version:** `0.1.3`
 
 ## Core Features
 
@@ -16,7 +16,7 @@ Daphne is a fast, stateless Telegram bot designed to convert raw media links (Tw
 - **Audio Extraction**:
   - `/audio <link>` command to extract the audio track from video URLs, automatically encoding it to MP3 with performer and title metadata.
 - **Access Control & RBAC**:
-  - Multi-tenant Role-Based Access Control (RBAC) configured in `config.toml` matching specific user and chat ID permissions.
+  - Multi-tenant Role-Based Access Control (RBAC) configured in `config.toml` matching specific user and chat ID permissions. See [RBAC.md](RBAC.md) for details on authorization flows and fallback mechanics.
 - **Interactive UX Cues**:
   - Visually updates the chat actions (e.g. `uploading_video`, `uploading_photo`, `uploading_audio`) to give visual feedback during download/transcoding.
   - HTML captions highlighting original post title, uploader, duration, source link, platform tag, and attribution to the requesting user.
