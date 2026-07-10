@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-10
+
+### Added
+- **Inline Mode**: Added inline conversion for Twitter/X, Instagram, and YouTube/Bilibili links, with user-level RBAC authorization.
+- **Gallery Downloads**: Added the `/gallery` command using `gallery-dl`, with Telegram media-group chunking.
+- **Concurrency Guard**: Added global and per-user limits for heavy downloads, including queued status feedback.
+- **Message Reactions**: Added working, completed, and failed reaction feedback for supported link and command flows.
+
+### Changed
+- **More Reliable Video Downloads**: Detect truncated downloads using expected duration and retry through the fallback engines.
+- **Instagram Media Handling**: Added direct image, carousel, and reel resolution for in-chat and inline delivery.
+- **Twitter Fallbacks**: Replaced bare fallback URLs with rich HTML link messages when no native media is available.
+
 ## [0.1.3] - 2026-06-21
 
 ### Added
