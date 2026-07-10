@@ -239,6 +239,37 @@ class TestDownloader(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             download_video("http://x.com", self.test_dir)
 
+    @patch("daphne.downloader.probe_video_duration")
+    @patch("daphne.downloader.scan_largest_media_file")
+    @patch("subprocess.run")
+    def test_download_video_retries_on_truncation(self, mock_run, mock_scan, mock_dur):
+        # Pass 1 returns a truncated file (120s of an expected 270s video);
+        # Pass 2 returns a complete file and should be accepted.
+        mock_scan.side_effect = ["/tmp/short.mp4", "/tmp/full.mp4"]
+        mock_dur.side_effect = [120, 270]
+        res = download_video("http://x.com", self.test_dir, expected_duration=270)
+        self.assertEqual(res, "/tmp/full.mp4")
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("daphne.downloader.probe_video_duration")
+    @patch("daphne.downloader.scan_largest_media_file")
+    @patch("subprocess.run")
+    def test_download_video_returns_longest_partial(
+        self, mock_run, mock_scan, mock_dur
+    ):
+        # Every engine truncates; the longest partial is returned as a last resort.
+        mock_scan.side_effect = [
+            "/tmp/a.mp4",
+            "/tmp/b.mp4",
+            "/tmp/c.mp4",
+            "/tmp/d.mp4",
+        ]
+        # probed once per engine to record candidate length (100, 200, 150, 120)
+        mock_dur.side_effect = [100, 200, 150, 120]
+        res = download_video("http://x.com", self.test_dir, expected_duration=270)
+        self.assertEqual(res, "/tmp/b.mp4")
+        self.assertEqual(mock_run.call_count, 4)
+
     @patch("daphne.downloader.scan_largest_audio_file")
     @patch("subprocess.run")
     def test_download_audio(self, mock_run, mock_scan):

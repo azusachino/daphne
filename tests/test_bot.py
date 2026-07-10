@@ -1,10 +1,22 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from daphne import bot as bot_module
-from daphne.bot import extract_video_url, help_command, handle_video_link, audio_command
-from daphne.config import load_config
+from daphne.bot import (
+    extract_video_url,
+    help_command,
+    handle_video_link,
+    audio_command,
+    gallery_command,
+    inline_query_handler,
+)
+from daphne.config import (
+    load_config,
+    max_concurrent_downloads,
+    max_user_concurrent_downloads,
+)
 from daphne.messages import PARSE_MODE_HTML
 from daphne.rbac import RbacService, get_rbac_config_path
 
@@ -97,7 +109,7 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.token.assert_called_once_with("token")
         builder.job_queue.assert_called_once_with(None)
         builder.base_url.assert_not_called()
-        self.assertEqual(app.add_handler.call_count, 4)
+        self.assertEqual(app.add_handler.call_count, 6)
 
     def test_build_application_uses_local_bot_api(self):
         app = MagicMock()
@@ -232,6 +244,62 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
 
         self.context.bot.send_audio.assert_called_once()
         self.update.message.delete.assert_called_once()
+
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    async def test_gallery_command_no_link(self, mock_check):
+        self.update.message.reply_to_message = None
+        self.context.args = []
+        await gallery_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Please provide a link", text)
+
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    @patch("daphne.bot.download_gallery")
+    async def test_gallery_command_sends_media_groups(self, mock_download, mock_check):
+        # 12 images -> two media groups (10 + 2)
+        mock_download.return_value = [f"/tmp/g/{i}.jpg" for i in range(12)]
+
+        self.update.message.reply_to_message = None
+        self.context.args = ["https://example.com/gallery/xyz"]
+        self.context.bot.send_media_group = AsyncMock()
+        self.context.bot.send_chat_action = AsyncMock()
+
+        status_msg = MagicMock()
+        status_msg.delete = AsyncMock()
+        status_msg.edit_text = AsyncMock()
+        self.update.message.reply_text.return_value = status_msg
+        self.update.message.delete = AsyncMock()
+
+        with patch("builtins.open", unittest.mock.mock_open()):
+            await gallery_command(self.update, self.context)
+
+        self.assertEqual(self.context.bot.send_media_group.call_count, 2)
+        first_media = self.context.bot.send_media_group.call_args_list[0][1]["media"]
+        self.assertEqual(len(first_media), 10)
+        # Only the first photo of the first group carries a caption.
+        self.assertIsNotNone(first_media[0].caption)
+        self.assertIsNone(first_media[1].caption)
+        self.update.message.delete.assert_called_once()
+
+    @patch("daphne.bot.check_access_and_reply", return_value=True)
+    @patch("daphne.bot.download_gallery", return_value=[])
+    async def test_gallery_command_no_images_found(self, mock_download, mock_check):
+        self.update.message.reply_to_message = None
+        self.context.args = ["https://example.com/gallery/empty"]
+        self.context.bot.send_media_group = AsyncMock()
+        self.context.bot.send_chat_action = AsyncMock()
+
+        status_msg = MagicMock()
+        status_msg.delete = AsyncMock()
+        status_msg.edit_text = AsyncMock()
+        self.update.message.reply_text.return_value = status_msg
+
+        await gallery_command(self.update, self.context)
+
+        self.context.bot.send_media_group.assert_not_called()
+        # Last status edit reports no images.
+        last_edit = status_msg.edit_text.call_args[0][0]
+        self.assertIn("No images", last_edit)
 
 
 class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
@@ -646,6 +714,234 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_video.assert_called_once()
         query.message.delete.assert_called_once()
         query.message.reply_to_message.delete.assert_called_once()
+
+
+class TestInlineQuery(unittest.IsolatedAsyncioTestCase):
+    def _make_update(self, query_text, user_id=123456789):
+        update = MagicMock()
+        update.inline_query.from_user.id = user_id
+        update.inline_query.from_user.username = "haru"
+        update.inline_query.from_user.full_name = "Haru"
+        update.inline_query.query = query_text
+        update.inline_query.answer = AsyncMock()
+        return update
+
+    async def test_denied_user_gets_button_no_results(self):
+        update = self._make_update("https://youtu.be/abc")
+        access = MagicMock()
+        access.is_allowed.return_value = False
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+        kwargs = update.inline_query.answer.call_args.kwargs
+        self.assertEqual(kwargs["results"], [])
+        self.assertIsNotNone(kwargs["button"])
+
+    async def test_empty_query_prompts(self):
+        update = self._make_update("   ")
+        access = MagicMock()
+        access.is_allowed.return_value = True
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+        kwargs = update.inline_query.answer.call_args.kwargs
+        self.assertEqual(kwargs["results"], [])
+        self.assertIsNotNone(kwargs["button"])
+
+    @patch("daphne.bot.fetch_video_metadata")
+    async def test_allowed_with_thumbnail_returns_video_and_article(self, mock_meta):
+        mock_meta.return_value = {
+            "title": "Clip",
+            "webpage_url": "https://youtu.be/abc",
+            "url": "https://cdn.example/video.mp4",
+            "thumbnail": "https://cdn.example/thumb.jpg",
+        }
+        update = self._make_update("https://youtu.be/abc")
+        access = MagicMock()
+        access.is_allowed.return_value = True
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+        results = update.inline_query.answer.call_args.kwargs["results"]
+        self.assertEqual(len(results), 2)
+
+    @patch("daphne.bot.fetch_video_metadata")
+    async def test_allowed_without_thumbnail_returns_article_only(self, mock_meta):
+        mock_meta.return_value = {
+            "title": "Clip",
+            "webpage_url": "https://youtu.be/abc",
+            "url": "https://cdn.example/video.mp4",
+            "thumbnail": None,
+        }
+        update = self._make_update("https://youtu.be/abc")
+        access = MagicMock()
+        access.is_allowed.return_value = True
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+        results = update.inline_query.answer.call_args.kwargs["results"]
+        self.assertEqual(len(results), 1)
+
+    @patch("daphne.twitter.resolve_twitter_media", new_callable=AsyncMock)
+    async def test_inline_twitter_returns_media_results(self, mock_resolve):
+        from telegram import InlineQueryResultPhoto, InlineQueryResultVideo
+
+        mock_resolve.return_value = {
+            "text": "hello",
+            "url": "https://twitter.com/jack/status/20",
+            "photos": ["https://pbs.twimg.com/a.jpg", "https://pbs.twimg.com/b.jpg"],
+            "videos": [
+                {
+                    "url": "https://video.twimg.com/v.mp4",
+                    "thumbnail": "https://pbs.twimg.com/t.jpg",
+                }
+            ],
+            "gifs": [],
+        }
+        update = self._make_update("https://twitter.com/jack/status/20")
+        access = MagicMock()
+        access.is_allowed.return_value = True
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+
+        results = update.inline_query.answer.call_args.kwargs["results"]
+        photos = [r for r in results if isinstance(r, InlineQueryResultPhoto)]
+        videos = [r for r in results if isinstance(r, InlineQueryResultVideo)]
+        self.assertEqual(len(photos), 2)
+        self.assertEqual(len(videos), 1)
+        # Plus a link-share article fallback.
+        self.assertEqual(len(results), 4)
+        mock_resolve.assert_awaited_once_with("jack", "20")
+
+    @patch("daphne.instagram.resolve_instagram_media")
+    async def test_inline_instagram_returns_photo_results(self, mock_resolve):
+        from telegram import InlineQueryResultPhoto
+
+        mock_resolve.return_value = {
+            "uploader": "user",
+            "title": "Cat",
+            "original_url": "https://www.instagram.com/p/ABC123/",
+            "photos": ["https://cdn.example/1.jpg"],
+            "video_url": None,
+            "thumbnail": "https://cdn.example/t.jpg",
+        }
+        update = self._make_update("https://www.instagram.com/p/ABC123/")
+        access = MagicMock()
+        access.is_allowed.return_value = True
+        with patch.object(bot_module.rbac_service, "check_access", return_value=access):
+            await inline_query_handler(update, MagicMock())
+
+        results = update.inline_query.answer.call_args.kwargs["results"]
+        photos = [r for r in results if isinstance(r, InlineQueryResultPhoto)]
+        self.assertEqual(len(photos), 1)
+        self.assertEqual(len(results), 2)  # photo + article
+
+    async def test_authorization_uses_chat_id_zero(self):
+        update = self._make_update("https://youtu.be/abc")
+        access = MagicMock()
+        access.is_allowed.return_value = False
+        with patch.object(
+            bot_module.rbac_service, "check_access", return_value=access
+        ) as mock_check:
+            await inline_query_handler(update, MagicMock())
+        mock_check.assert_called_once_with(123456789, 0, "inline_convert")
+
+
+class TestReactions(unittest.IsolatedAsyncioTestCase):
+    async def test_set_reaction_sends_emoji(self):
+        message = MagicMock()
+        message.set_reaction = AsyncMock()
+        await bot_module.set_reaction(message, bot_module.REACTION_WORKING)
+        message.set_reaction.assert_awaited_once()
+        reaction = message.set_reaction.await_args.kwargs["reaction"]
+        self.assertEqual(len(reaction), 1)
+        self.assertEqual(reaction[0].emoji, bot_module.REACTION_WORKING)
+
+    async def test_set_reaction_none_clears(self):
+        message = MagicMock()
+        message.set_reaction = AsyncMock()
+        await bot_module.set_reaction(message, None)
+        message.set_reaction.assert_awaited_once_with(reaction=[])
+
+    async def test_set_reaction_no_message_is_noop(self):
+        # Should not raise.
+        await bot_module.set_reaction(None, bot_module.REACTION_DONE)
+
+    async def test_set_reaction_swallows_errors(self):
+        message = MagicMock()
+        message.set_reaction = AsyncMock(side_effect=Exception("no rights"))
+        # Must not propagate.
+        await bot_module.set_reaction(message, bot_module.REACTION_FAILED)
+
+
+class TestConcurrencyConfig(unittest.TestCase):
+    def test_defaults_when_unset(self):
+        with patch("daphne.config.app_config", return_value={}):
+            self.assertEqual(max_concurrent_downloads(), 3)
+            self.assertEqual(max_user_concurrent_downloads(), 1)
+
+    def test_reads_configured_values(self):
+        cfg = {"max_concurrent_downloads": 5, "max_user_concurrent_downloads": 2}
+        with patch("daphne.config.app_config", return_value=cfg):
+            self.assertEqual(max_concurrent_downloads(), 5)
+            self.assertEqual(max_user_concurrent_downloads(), 2)
+
+    def test_invalid_values_fall_back(self):
+        cfg = {"max_concurrent_downloads": "x", "max_user_concurrent_downloads": None}
+        with patch("daphne.config.app_config", return_value=cfg):
+            self.assertEqual(max_concurrent_downloads(), 3)
+            self.assertEqual(max_user_concurrent_downloads(), 1)
+
+
+class TestDownloadSlot(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Reset the lazily-created module-level semaphores between tests.
+        bot_module._global_download_semaphore = None
+        bot_module._user_download_semaphores.clear()
+
+    async def test_user_slot_serializes_and_notifies_when_busy(self):
+        with (
+            patch("daphne.bot.max_concurrent_downloads", return_value=5),
+            patch("daphne.bot.max_user_concurrent_downloads", return_value=1),
+        ):
+            order: list[str] = []
+            holding = asyncio.Event()
+            release = asyncio.Event()
+
+            async def first():
+                async with bot_module.download_slot(1):
+                    order.append("first-acquire")
+                    holding.set()
+                    await release.wait()
+                order.append("first-release")
+
+            waited = AsyncMock()
+
+            async def second():
+                await holding.wait()
+                async with bot_module.download_slot(1, on_wait=waited):
+                    order.append("second-acquire")
+
+            t1 = asyncio.create_task(first())
+            t2 = asyncio.create_task(second())
+
+            await holding.wait()
+            await asyncio.sleep(0.01)  # let `second` reach the busy slot
+            # The per-user limit is 1, so `second` must still be waiting.
+            self.assertNotIn("second-acquire", order)
+            waited.assert_awaited_once()
+
+            release.set()
+            await asyncio.gather(t1, t2)
+            self.assertEqual(
+                order, ["first-acquire", "first-release", "second-acquire"]
+            )
+
+    async def test_no_notify_when_slot_free(self):
+        with (
+            patch("daphne.bot.max_concurrent_downloads", return_value=5),
+            patch("daphne.bot.max_user_concurrent_downloads", return_value=1),
+        ):
+            waited = AsyncMock()
+            async with bot_module.download_slot(7, on_wait=waited):
+                pass
+            waited.assert_not_awaited()
 
 
 if __name__ == "__main__":

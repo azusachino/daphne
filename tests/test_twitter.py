@@ -84,7 +84,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_message = AsyncMock()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_no_media_sends_fallback_url(self, mock_get):
+    async def test_handle_no_media_sends_html_message(self, mock_get):
         # API succeeds, but tweet has no media
         self.update.message.text = "Here: https://x.com/jack/status/20"
 
@@ -95,6 +95,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
             "tweet": {
                 "id": "20",
                 "text": "just setting up my twttr",
+                "url": "https://x.com/jack/status/20",
                 "author": {"screen_name": "jack", "name": "jack"},
                 "media": {"photos": [], "videos": []},
             },
@@ -103,10 +104,13 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         await handle_twitter_links(self.update, self.context)
 
-        # It should send the fallback fxtwitter URL
-        self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456, text="https://fxtwitter.com/jack/status/20"
-        )
+        # It should send an HTML text message, not a bare fxtwitter URL
+        self.context.bot.send_message.assert_called_once()
+        _, kwargs = self.context.bot.send_message.call_args
+        self.assertEqual(kwargs["chat_id"], 123456)
+        self.assertEqual(kwargs["parse_mode"], "HTML")
+        self.assertIn("just setting up my twttr", kwargs["text"])
+        self.assertIn("https://x.com/jack/status/20", kwargs["text"])
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
