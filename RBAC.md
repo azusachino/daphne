@@ -6,7 +6,7 @@ Daphne features a multi-tenant Role-Based Access Control (RBAC) mechanism to sec
 
 ## 1. Access Evaluation Flow
 
-When a user triggers a command (e.g., `/gallery`, `/audio`), Daphne's [RbacService](file:///home/haru/Projects/project-github/daphne/src/daphne/rbac.py#L31) evaluates access in the following order:
+When a user triggers a command (e.g., `/gallery`, `/audio`), Daphne's [RbacService](src/daphne/rbac.py#L31) evaluates access in the following order:
 
 ```mermaid
 graph TD
@@ -70,15 +70,15 @@ permissions = ["inline_convert"]
 
 # Map specific Telegram user IDs to roles
 [rbac.users]
-996596491 = "admin" # Owner
-123456789 = "restricted_user"
+111111111 = "admin" # Replace with your Telegram user ID
+222222222 = "restricted_user"
 
 # Map Telegram chat/group/channel IDs to roles
 [rbac.chats]
 # average anime fan boy (Group Chat)
--1002058191932 = "standard_group"
+-1001111111111 = "standard_group"
 # Direct Message test chat
--1003438236939 = "standard_group"
+-1002222222222 = "standard_group"
 ```
 
 ---

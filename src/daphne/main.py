@@ -92,11 +92,11 @@ permissions = ["*"]
 
 [rbac.users]
 # Add user IDs mapping to roles here. Example:
-# 123456789 = "admin"
+# 111111111 = "admin"  # Replace with your Telegram user ID
 
 [rbac.chats]
 # Add chat/group IDs mapping to roles here. Example:
-# -1002058191932 = "standard_group"
+# -1001111111111 = "standard_group"  # Replace with your chat ID
 """
     if os.path.exists(config_path):
         print(f"Skipping config.toml (already exists at {config_path})")

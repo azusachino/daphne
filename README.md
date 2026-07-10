@@ -123,10 +123,10 @@ permissions = ["*"]
 # permissions = ["convert_link", "fetch_metadata", "extract_audio", "download_gallery"]
 
 [rbac.users]
-# 123456789 = "admin"
+# 111111111 = "admin"  # Replace with your Telegram user ID
 
 [rbac.chats]
-# -1002058191932 = "standard_group"
+# -1001111111111 = "standard_group"  # Replace with your chat ID
 ```
 
 If a detected video exceeds `video_upload_limit_mb`, Daphne replies with a decorated HTML info card (with a direct-download button) instead of uploading the file.
