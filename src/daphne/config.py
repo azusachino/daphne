@@ -53,3 +53,23 @@ def video_upload_limit_mb() -> int:
     except (TypeError, ValueError):
         return 256
     return max(1, limit)
+
+
+def max_concurrent_downloads() -> int:
+    """Maximum number of heavy downloads running across the whole bot."""
+    value = app_config().get("max_concurrent_downloads", 3)
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, limit)
+
+
+def max_user_concurrent_downloads() -> int:
+    """Maximum number of heavy downloads a single user may run at once."""
+    value = app_config().get("max_user_concurrent_downloads", 1)
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, limit)

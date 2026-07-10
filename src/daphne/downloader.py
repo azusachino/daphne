@@ -115,62 +115,110 @@ def _run_cmd(cmd: list[str]) -> bool:
         return False
 
 
-def download_video(url: str, out_dir: str) -> str:
+# A download is treated as complete when its probed duration covers at least
+# this fraction of the expected (metadata) duration. Bilibili anti-bot / segment
+# limits can silently return a truncated file, so we verify and fall through to
+# the next engine instead of accepting a partial video.
+DURATION_COMPLETE_RATIO = 0.95
+
+
+def probe_video_duration(file_path: str) -> Optional[int]:
+    _, _, duration = probe_video_dimensions(file_path)
+    return duration
+
+
+def _is_complete(actual: Optional[int], expected_duration: Optional[float]) -> bool:
+    """
+    Whether a downloaded file is complete enough to accept, given its already
+    probed duration. When no expected duration is known, or the file could not
+    be probed, we cannot verify and accept the file rather than looping.
+    """
+    if not expected_duration or expected_duration <= 0:
+        return True
+    if actual is None:
+        return True
+    if actual >= expected_duration * DURATION_COMPLETE_RATIO:
+        return True
+    logger.warning(
+        f"Downloaded video is truncated: {actual}s of expected "
+        f"{int(expected_duration)}s. Trying next engine."
+    )
+    return False
+
+
+def download_video(
+    url: str, out_dir: str, expected_duration: Optional[float] = None
+) -> str:
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1. yt-dlp Pass 1: plain
-    cmd_pass1 = [
-        "uvx",
-        "yt-dlp",
-        "-f",
-        "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[vcodec^=avc1][ext=mp4]/best",
-        "--output",
-        f"{out_dir}/%(id)s.%(ext)s",
-        "--no-playlist",
-        "--restrict-filenames",
-        "--",
-        url,
+    yt_dlp_format = (
+        "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+        "best[vcodec^=avc1][ext=mp4]/best"
+    )
+
+    def cmd_pass1() -> list[str]:
+        return [
+            "uvx",
+            "yt-dlp",
+            "-f",
+            yt_dlp_format,
+            "--output",
+            f"{out_dir}/%(id)s.%(ext)s",
+            "--no-playlist",
+            "--restrict-filenames",
+            "--",
+            url,
+        ]
+
+    def cmd_pass2() -> list[str]:
+        cmd = [
+            "uvx",
+            "yt-dlp",
+            "-f",
+            yt_dlp_format,
+            "--output",
+            f"{out_dir}/%(id)s.%(ext)s",
+            "--no-playlist",
+            "--restrict-filenames",
+            "--user-agent",
+            random.choice(USER_AGENTS),
+        ]
+        if is_bilibili_url(url):
+            cmd.extend(bilibili_headers())
+        cmd.extend(["--", url])
+        return cmd
+
+    engines = [
+        cmd_pass1,
+        cmd_pass2,
+        lambda: ["uvx", "you-get", "--output-dir", out_dir, url],
+        lambda: ["lux", "-o", out_dir, "--silent", url],
     ]
-    _run_cmd(cmd_pass1)
-    largest = scan_largest_media_file(out_dir)
-    if largest:
-        return largest
 
-    # 2. yt-dlp Pass 2: anti-bot
-    ua = random.choice(USER_AGENTS)
-    cmd_pass2 = [
-        "uvx",
-        "yt-dlp",
-        "-f",
-        "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[vcodec^=avc1][ext=mp4]/best",
-        "--output",
-        f"{out_dir}/%(id)s.%(ext)s",
-        "--no-playlist",
-        "--restrict-filenames",
-        "--user-agent",
-        ua,
-    ]
-    if is_bilibili_url(url):
-        cmd_pass2.extend(bilibili_headers())
-    cmd_pass2.extend(["--", url])
-    _run_cmd(cmd_pass2)
-    largest = scan_largest_media_file(out_dir)
-    if largest:
-        return largest
+    # Track the longest result across engines so that, if none is verifiably
+    # complete, we still return the best partial rather than failing outright.
+    best_path: Optional[str] = None
+    best_duration = -1.0
 
-    # 3. you-get (via uvx)
-    cmd_youget = ["uvx", "you-get", "--output-dir", out_dir, url]
-    _run_cmd(cmd_youget)
-    largest = scan_largest_media_file(out_dir)
-    if largest:
-        return largest
+    for build_cmd in engines:
+        _run_cmd(build_cmd())
+        largest = scan_largest_media_file(out_dir)
+        if not largest:
+            continue
+        # Probe when we can verify against expected duration; otherwise accept.
+        actual = probe_video_duration(largest) if expected_duration else None
+        if _is_complete(actual, expected_duration):
+            return largest
+        if (actual or 0) > best_duration:
+            best_duration = actual or 0
+            best_path = largest
 
-    # 4. lux binary installed in the image
-    cmd_lux = ["lux", "-o", out_dir, "--silent", url]
-    _run_cmd(cmd_lux)
-    largest = scan_largest_media_file(out_dir)
-    if largest:
-        return largest
+    if best_path:
+        logger.warning(
+            "No engine produced a complete video; returning longest partial "
+            f"({int(best_duration)}s) from {best_path}."
+        )
+        return best_path
 
     raise RuntimeError("Failed to download video using all engines")
 
@@ -274,6 +322,7 @@ def fetch_video_metadata(url: str) -> dict:
                 "title": data.get("title", ""),
                 "uploader": data.get("uploader", ""),
                 "duration": data.get("duration"),
+                "thumbnail": data.get("thumbnail"),
                 "webpage_url": sanitize_video_url(data.get("webpage_url", url)),
                 "width": data.get("width"),
                 "height": data.get("height"),

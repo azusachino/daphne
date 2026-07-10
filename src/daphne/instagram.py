@@ -36,6 +36,46 @@ def extract_instagram_link(text: str) -> str | None:
     return None
 
 
+def resolve_instagram_media(url: str) -> dict | None:
+    """
+    Resolve an Instagram post/reel to direct media URLs via parth-dl, without
+    sending anything. Used by inline mode. Returns None on any failure.
+    Synchronous (parth-dl is blocking) — call via an executor.
+    """
+    try:
+        from parth_dl.extractors import MediaExtractor
+
+        extractor = MediaExtractor()
+        data = extractor.extract(url.split("?")[0])
+    except Exception as e:
+        logger.warning("resolve_instagram_media failed: %s", e)
+        return None
+
+    if not data:
+        return None
+
+    uploader = data.get("uploader", "unknown")
+    title = data.get("title", "")
+    shortcode = data.get("id", "")
+    media_type = data.get("type", "image")
+
+    photo_urls = [img["url"] for img in data.get("images", []) if img.get("url")]
+    if not photo_urls and data.get("thumbnail"):
+        photo_urls = [data["thumbnail"]]
+
+    formats = data.get("formats", [])
+    video_url = formats[0]["url"] if (media_type != "image" and formats) else None
+
+    return {
+        "uploader": uploader,
+        "title": title,
+        "original_url": f"https://www.instagram.com/p/{shortcode}/",
+        "photos": photo_urls,
+        "video_url": video_url,
+        "thumbnail": data.get("thumbnail"),
+    }
+
+
 async def handle_instagram_links(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:

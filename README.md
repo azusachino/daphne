@@ -1,78 +1,161 @@
-# Daphne (ダフニー - 沈丁花)
+<div align="center">
 
-Daphne is a fast, stateless Telegram bot designed to convert raw media links (Twitter, Pixiv, Bluesky, TikTok, Instagram, Bilibili, YouTube, etc.) into Telegram-friendly native media messages.
+# 🌸 Daphne (ダフニー · 沈丁花)
 
-**Current Version:** `0.1.3`
+**A fast, stateless Telegram bot that turns raw media links into native, Telegram-friendly media.**
 
-## Core Features
+Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
-- **Platform Media Extractor & Converter**:
-  - **YouTube & Bilibili**: Video downloads utilizing standard `yt-dlp`/`you-get`/`lux` fallback engines, with automatic duration and dimensions probing.
-  - **Twitter / X**: Fetches tweets using the `FxTwitter` API, rendering photos, animations (GIFs), and videos natively.
-  - **Pixiv**: Resolves Pixiv artwork/galleries and sends them as clean photo/media groups.
-  - **Bluesky**: Resolves handles via XRPC identity endpoints, parsing native image carousels and HLS playlist video URLs.
-  - **TikTok / Douyin**: Direct high-speed video downloads via the public `TikWM` API, bypassing `yt-dlp` login blocks, with a graceful fallback to `yt-dlp`.
-  - **Instagram**: Public image, carousel, and video/reel downloads using `parth-dl` (GraphQL parsing), bypassing login walls and server IP blockages.
-- **Audio Extraction**:
-  - `/audio <link>` command to extract the audio track from video URLs, automatically encoding it to MP3 with performer and title metadata.
-- **Access Control & RBAC**:
-  - Multi-tenant Role-Based Access Control (RBAC) configured in `config.toml` matching specific user and chat ID permissions. See [RBAC.md](RBAC.md) for details on authorization flows and fallback mechanics.
-- **Interactive UX Cues**:
-  - Visually updates the chat actions (e.g. `uploading_video`, `uploading_photo`, `uploading_audio`) to give visual feedback during download/transcoding.
-  - HTML captions highlighting original post title, uploader, duration, source link, platform tag, and attribution to the requesting user.
-- **Safety First**:
-  - Messages are only deleted if the download, conversion, and upload to Telegram succeed, preventing links from being lost on error.
+[![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/azusachino/daphne/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
+[![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
+[![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)](tests/)
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Why Daphne](#why-daphne)
+- [Features](#features)
+- [Supported Platforms](#supported-platforms)
+- [Commands & Modes](#commands--modes)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Access Control (RBAC)](#access-control-rbac)
+- [Development](#development)
+- [Architecture](#architecture)
+- [License](#license)
+
+## Why Daphne
+
+Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state** — no database, secrets in the environment, everything else in a single `config.toml`.
+
+## Features
+
+- **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
+- **🎬 Multi-engine video downloads** — `yt-dlp` → `you-get` → `lux` fallback with automatic dimension/duration probing and **truncation detection** (a partial download is retried on the next engine rather than accepted).
+- **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
+- **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
+- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from *any* chat (user-allowlisted).
+- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml`. See [RBAC.md](RBAC.md).
+- **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a *Queued…* notice.
+- **👀 Live feedback** — message reactions (👀 working → 👍 done / 👎 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
+- **🎨 Rich HTML captions** — title, uploader, duration, source link, platform tag, and requester attribution.
+- **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
+
+## Supported Platforms
+
+| Platform | Method | Media | Inline |
+| --- | --- | --- | :---: |
+| **Twitter / X** | FxTwitter API | Photos, GIFs, videos | ✅ |
+| **Instagram** | `parth-dl` (GraphQL) | Images, carousels, reels | ✅ |
+| **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux` | Video downloads | ✅ |
+| **Pixiv** | Artwork/gallery resolver | Photo / media groups | — |
+| **Bluesky** | XRPC identity + HLS parsing | Image carousels, videos | — |
+| **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback) | Direct video | — |
+| **Image galleries** | `gallery-dl` (`/gallery`) | Batched photo groups | — |
+
+> Pixiv is intentionally excluded from inline: its CDN rejects hotlinking (requires a `Referer` header), and inline results hand Telegram a bare URL to fetch — so it works **in-chat** only.
+
+## Commands & Modes
+
+| Command | Description |
+| --- | --- |
+| Paste a link | Auto-detect the platform and convert it in the chat |
+| `/audio <link>` | Extract the audio track as MP3 |
+| `/gallery <link>` | Download an image gallery and send it as media group(s) |
+| `/help` | Show usage |
+| `@daphne <link>` | **Inline mode** — convert from any chat (requires `inline_convert`) |
+
+## Quick Start
+
+Daphne uses [uv](https://github.com/astral-sh/uv) for dependencies and runs cleanly in containers (Podman / Docker) with an optional [local Telegram Bot API](https://github.com/tdlib/telegram-bot-api) sidecar for 2 GB uploads.
+
+```bash
+# 1. Generate local config + env templates (untracked)
+make init-local
+
+# 2. Fill in your bot credentials and allowed user/chat IDs
+#    .daphne.local.env  and  .daphne.config.local.toml
+
+# 3. Spin up the stack (bot + local Bot API sidecar)
+make up
+
+# 4. Tear it down
+make down
+```
+
+For inline mode, enable it once with `@BotFather` → `/setinline`.
+
+### Secrets (environment)
+
+| Variable | Purpose |
+| --- | --- |
+| `DAPHNE_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Credentials for the local Bot API sidecar |
 
 ## Configuration
 
-Secrets are loaded from environment variables:
-- `DAPHNE_BOT_TOKEN`: The bot token from `@BotFather`.
-- `TELEGRAM_API_ID` & `TELEGRAM_API_HASH`: API credentials required by the Telegram Bot API sidecar.
+Non-secret runtime settings live in `config.toml`:
 
-Runtime settings are loaded from `config.toml`:
 ```toml
 [app]
 # telegram_api_url = "http://localhost:8081"
-video_upload_limit_mb = 512
+video_upload_limit_mb = 256
+
+# Heavy-download concurrency guard (yt-dlp / gallery-dl):
+# max_concurrent_downloads = 3        # across the whole bot
+# max_user_concurrent_downloads = 1   # per user
 
 [rbac]
 public_commands = ["help"]
+
+[rbac.roles.admin]
+permissions = ["*"]
+
+# Example non-admin role. Available permissions: convert_link, fetch_metadata,
+# preview_video, download_video, extract_audio, download_gallery, inline_convert.
+# [rbac.roles.standard]
+# permissions = ["convert_link", "fetch_metadata", "extract_audio", "download_gallery"]
+
+[rbac.users]
+# 123456789 = "admin"
+
+[rbac.chats]
+# -1002058191932 = "standard_group"
 ```
 
-`video_upload_limit_mb` controls the maximum video size Daphne will upload to Telegram. If a detected video exceeds the limit, Daphne replies with a decorated HTML info card instead of uploading the file.
+If a detected video exceeds `video_upload_limit_mb`, Daphne replies with a decorated HTML info card (with a direct-download button) instead of uploading the file.
 
-## Development & Local Testing
+## Access Control (RBAC)
 
-Daphne uses [uv](https://github.com/astral-sh/uv) for dependency management and runs cleanly in containerized stacks (Podman / Docker).
+Daphne resolves access in order: **admin bypass → public commands → chat-level role → user-level role**. Full authorization flows and fallback mechanics are documented in [RBAC.md](RBAC.md).
 
-1. Initialize configurations locally:
-   ```bash
-   make init-local
-   ```
-   This generates untracked local templates:
-   - `.daphne.local.env`
-   - `.daphne.config.local.toml`
+> [!IMPORTANT]
+> **Inline mode is user-level only.** Telegram provides no `chat_id` for inline queries, so the chat tier of RBAC can never apply. Grant `inline_convert` via `[rbac.users]` (or admin), **not** `[rbac.chats]`. This is intentional — inline runs from anywhere in Telegram, outside any group boundary.
 
-2. Edit `.daphne.local.env` and `.daphne.config.local.toml` with your test bot credentials and user IDs.
+## Development
 
-3. Spin up the container stack (bot + local Telegram Bot API server sidecar):
-   ```bash
-   make up
-   ```
+```bash
+make fmt      # Format code (ruff)
+make lint     # Lint check (ruff)
+make test     # Run unit tests
+make ready    # fmt + lint + test + container smoke build
+```
 
-4. Tear down the stack:
-   ```bash
-   make down
-   ```
+- **Nix-first** tooling from the devShell; `uv` for the Python runtime.
+- Every `subprocess` call to an external downloader (`yt-dlp`, `you-get`, `lux`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
 
-5. Run checks and tests:
-   ```bash
-   make fmt    # Format code
-   make lint   # Run lint check
-   make test   # Run unit tests
-   make ready  # Format, lint, and run tests together
-   ```
+## Architecture
+
+- **Python 3.12+**, `python-telegram-bot`, polling-based.
+- **Stateless**: no database; secrets in env, everything else in `config.toml`.
+- Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).
