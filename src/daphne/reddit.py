@@ -8,13 +8,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
-from daphne.twitter import send_photos, try_delete_message
+from daphne.twitter import (
+    USER_AGENT as REDDIT_USER_AGENT,
+    send_photos,
+    try_delete_message,
+)
 
 logger = logging.getLogger(__name__)
-
-REDDIT_USER_AGENT = (
-    "daphne/0.2 (Telegram media bot; +https://github.com/azusachino/daphne)"
-)
 
 REDDIT_REGEX = re.compile(
     r"https?://(?:www\.|old\.|new\.|np\.|m\.)?reddit\.com/r/[^/\s]+/comments/[a-zA-Z0-9]+(?:/[^\s]*)?"
