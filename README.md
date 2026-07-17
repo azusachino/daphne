@@ -43,7 +43,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from *any* chat (user-allowlisted).
 - **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml` or, optionally, live-edited via Valkey and the admin-only `/grant`, `/revoke`, `/roles` commands. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a *Queued…* notice.
-- **👀 Live feedback** — message reactions (👀 working → 👍 done / 👎 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
+- **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, platform tag, and requester attribution.
 - **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
 

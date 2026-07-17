@@ -122,7 +122,9 @@ URL_REGEX = re.compile(r"https?://\S+")
 # without the chat needing custom reactions enabled.
 REACTION_WORKING = "👀"
 REACTION_DONE = "👍"
-REACTION_FAILED = "👎"
+# 😢 rather than 👎 — a failed conversion is a system apology, not a downvote
+# of the user's content.
+REACTION_FAILED = "😢"
 
 
 async def set_reaction(message, emoji: Optional[str]) -> None:
