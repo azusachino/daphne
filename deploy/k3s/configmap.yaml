@@ -15,8 +15,14 @@ data:
     [rbac.roles.admin]
     permissions = ["*"]
 
-    [rbac.roles.standard_group]
-    permissions = ["convert_link", "extract_audio", "preview_video", "download_video", "fetch_metadata", "download_gallery"]
+    [rbac.roles.default]
+    permissions = ["convert_link"]
+
+    [rbac.roles.standard]
+    permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio"]
+
+    [rbac.roles.power_user]
+    permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
 
     [rbac.users]
     # Add your Telegram numeric user ID. Example:
@@ -24,4 +30,4 @@ data:
 
     [rbac.chats]
     # Add your chat/group IDs here. Example:
-    # -1001111111111 = "standard_group"
+    # -1001111111111 = "power_user"
