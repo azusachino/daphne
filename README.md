@@ -4,14 +4,14 @@
 
 **A fast, stateless Telegram bot that turns raw media links into native, Telegram-friendly media.**
 
-Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
+Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Reddit · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/azusachino/daphne/releases)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-124%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -32,7 +32,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state** — no database, secrets in the environment, everything else in a single `config.toml`.
+Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state by default** — no database, secrets in the environment, everything else in a single `config.toml`. An optional Valkey connection can back live RBAC edits (see [RBAC.md](RBAC.md)); everything else stays stateless.
 
 ## Features
 
@@ -41,7 +41,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from *any* chat (user-allowlisted).
-- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml`. See [RBAC.md](RBAC.md).
+- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml` or, optionally, live-edited via Valkey and the admin-only `/grant`, `/revoke`, `/roles` commands. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a *Queued…* notice.
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 👎 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, platform tag, and requester attribution.
@@ -57,6 +57,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | **Pixiv** | Artwork/gallery resolver | Photo / media groups | — |
 | **Bluesky** | XRPC identity + HLS parsing | Image carousels, videos | — |
 | **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback) | Direct video | — |
+| **Reddit** | Reddit's public `.json` API (+ `yt-dlp` for `v.redd.it`) | Photos, galleries, videos | — |
 | **Image galleries** | `gallery-dl` (`/gallery`) | Batched photo groups | — |
 
 > Pixiv is intentionally excluded from inline: its CDN rejects hotlinking (requires a `Referer` header), and inline results hand Telegram a bare URL to fetch — so it works **in-chat** only.
@@ -66,10 +67,13 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | Command | Description |
 | --- | --- |
 | Paste a link | Auto-detect the platform and convert it in the chat |
+| `/start` | Welcome message; answers even before RBAC has whitelisted you |
 | `/audio <link>` | Extract the audio track as MP3 |
 | `/gallery <link>` | Download an image gallery and send it as media group(s) |
 | `/help` | Show usage |
 | `@daphne <link>` | **Inline mode** — convert from any chat (requires `inline_convert`) |
+
+Admins get three additional commands (`/grant`, `/revoke`, `/roles`) — deliberately left out of Telegram's `/` picker for everyone else. See [RBAC.md](RBAC.md#5-live-edits-grant-revoke-roles).
 
 ## Quick Start
 
@@ -117,16 +121,19 @@ public_commands = ["help"]
 [rbac.roles.admin]
 permissions = ["*"]
 
-# Example non-admin role. Available permissions: convert_link, fetch_metadata,
-# preview_video, download_video, extract_audio, download_gallery, inline_convert.
-# [rbac.roles.standard]
-# permissions = ["convert_link", "fetch_metadata", "extract_audio", "download_gallery"]
+# Example non-admin roles, graduated from minimal to full. Available
+# permissions: convert_link, fetch_metadata, preview_video, download_video,
+# extract_audio, download_gallery, inline_convert.
+# [rbac.roles.default]
+# permissions = ["convert_link"]
+# [rbac.roles.power_user]
+# permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
 
 [rbac.users]
 # 111111111 = "admin"  # Replace with your Telegram user ID
 
 [rbac.chats]
-# -1001111111111 = "standard_group"  # Replace with your chat ID
+# -1001111111111 = "power_user"  # Replace with your chat ID
 ```
 
 If a detected video exceeds `video_upload_limit_mb`, Daphne replies with a decorated HTML info card (with a direct-download button) instead of uploading the file.
