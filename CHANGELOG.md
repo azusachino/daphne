@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/start` Command**: Added a welcome response, shown in the Telegram command menu, that answers even for users/chats not yet whitelisted by RBAC.
 - **Live RBAC via Valkey**: RBAC can now optionally sync from a Valkey instance (`[rbac] valkey_url` or `DAPHNE_VALKEY_URL`), refreshing every 30 seconds so role edits don't require a redeploy. Falls back to fully static `config.toml` RBAC when unset.
 - **`/grant`, `/revoke`, `/roles` Admin Commands**: Admins can grant or revoke a role for a user (reply to their message) or the current chat (no reply), and list configured roles — all hardcoded to the `admin` role check and left out of the public command menu.
-- **Reddit Support**: Added a Reddit extractor (`reddit.py`) covering image posts, galleries, and videos (via the existing `yt-dlp` pipeline for `v.redd.it`'s DASH streams), using Reddit's public `.json` API.
 - **Update Logging**: Every incoming Telegram update is now logged at the earliest dispatch point, before RBAC or routing — makes it possible to tell "never received" apart from "received but denied/failed" during troubleshooting.
 
 ### Changed
 - **Richer Captions**: Long tag lists (e.g. Pixiv artworks with a dozen+ tags) now collapse into a tap-to-expand `<blockquote expandable>` instead of a single long hashtag line.
 - **Richer Video Downloads**: yt-dlp passes now embed metadata, thumbnails, and subtitles (`--embed-metadata --embed-thumbnail --embed-subs`) into downloaded videos, and embed metadata/cover art into extracted MP3s.
 - **Command Menu Registration**: Daphne now registers its command list with Telegram (`/help`, `/audio`, `/gallery`, `/start`) so they appear in the native "/" picker.
+- **Failure Reaction**: Switched the failed-conversion reaction from 👎 to 😢 — a failed conversion is a system apology, not a downvote of the user's content.
 
 ## [0.2.0] - 2026-07-10
 

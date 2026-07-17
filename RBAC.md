@@ -92,7 +92,7 @@ permissions = ["inline_convert"]
 | Command | Permission Name | Description |
 | :--- | :--- | :--- |
 | `help` | `help` | Outputs the bot help instructions and usage limits. |
-| (Link detection / `/fix`) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram, Reddit) into native Telegram media. |
+| (Link detection / `/fix`) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram) into native Telegram media. |
 | `/audio <link>` | `extract_audio` | Extracts audio tracks from video files and outputs an MP3. |
 | (Video callback query) | `download_video` | Downloads and converts generic video links (YouTube, Bilibili) on-demand. |
 | (Video auto-preview) | `preview_video` | Automatically downloads and uploads video natively if under size limit. |

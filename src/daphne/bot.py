@@ -150,8 +150,7 @@ LINK_RE = re.compile(
     r"pixiv\.net|"
     r"bsky\.app|"
     r"instagram\.com|"
-    r"tiktok\.com|douyin\.com|"
-    r"reddit\.com|redd\.it"
+    r"tiktok\.com|douyin\.com"
     r")(/\S*)?",
     re.IGNORECASE,
 )
@@ -656,30 +655,18 @@ async def media_message_handler(
     from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
     from daphne.instagram import contains_instagram_link, handle_instagram_links
     from daphne.tiktok import contains_tiktok_link, handle_tiktok_links
-    from daphne.reddit import contains_reddit_link, handle_reddit_links
 
     is_twitter = contains_twitter_link(message.text)
     is_pixiv = contains_pixiv_link(message.text)
     is_bluesky = contains_bluesky_link(message.text)
     is_instagram = contains_instagram_link(message.text)
     is_tiktok = contains_tiktok_link(message.text)
-    is_reddit = contains_reddit_link(message.text)
     video_url = extract_video_url(message.text)
 
     # Acknowledge a recognised link with a lightweight "working" reaction. On
     # success the original message is deleted (taking the reaction with it); on
     # failure the handlers switch it to a failure reaction.
-    if any(
-        [
-            is_twitter,
-            is_pixiv,
-            is_bluesky,
-            is_instagram,
-            is_tiktok,
-            is_reddit,
-            video_url,
-        ]
-    ):
+    if any([is_twitter, is_pixiv, is_bluesky, is_instagram, is_tiktok, video_url]):
         await set_reaction(message, REACTION_WORKING)
 
     if is_twitter:
@@ -702,10 +689,6 @@ async def media_message_handler(
         logger.info("Routing to TikTok handler")
         if await check_access_and_reply(update, "convert_link"):
             await handle_tiktok_links(update, context)
-    elif is_reddit:
-        logger.info("Routing to Reddit handler")
-        if await check_access_and_reply(update, "convert_link"):
-            await handle_reddit_links(update, context)
     elif video_url:
         logger.info("Routing to generic video handler for URL: %s", video_url)
         # Check fetch_metadata permission & quota

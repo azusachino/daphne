@@ -4,14 +4,14 @@
 
 **A fast, stateless Telegram bot that turns raw media links into native, Telegram-friendly media.**
 
-Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Reddit · Bilibili · YouTube — pasted as a link, delivered as playable media.
+Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-124%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-111%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -57,7 +57,6 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | **Pixiv** | Artwork/gallery resolver | Photo / media groups | — |
 | **Bluesky** | XRPC identity + HLS parsing | Image carousels, videos | — |
 | **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback) | Direct video | — |
-| **Reddit** | Reddit's public `.json` API (+ `yt-dlp` for `v.redd.it`) | Photos, galleries, videos | — |
 | **Image galleries** | `gallery-dl` (`/gallery`) | Batched photo groups | — |
 
 > Pixiv is intentionally excluded from inline: its CDN rejects hotlinking (requires a `Referer` header), and inline results hand Telegram a bare URL to fetch — so it works **in-chat** only.
