@@ -5,6 +5,10 @@ from typing import Optional
 
 PARSE_MODE_HTML = "HTML"
 
+# Pixiv artworks especially can carry a dozen+ tags; past this count, collapse
+# them into a tap-to-expand blockquote instead of a wall of hashtags.
+TAGS_EXPANDABLE_THRESHOLD = 6
+
 
 def escape_html(value: object) -> str:
     return html.escape(str(value), quote=True)
@@ -14,7 +18,7 @@ def bot_version() -> str:
     try:
         return version("daphne")
     except PackageNotFoundError:
-        return "0.1.2"
+        return "0.3.0"
 
 
 def sender_attribution(user) -> Optional[str]:
@@ -64,6 +68,13 @@ class HtmlMessage:
             self.blocks.append("\n".join(lines))
         return self
 
+    def raw(self, html_value: str) -> "HtmlMessage":
+        """Appends a block that is already-safe HTML (pieces pre-escaped by the
+        caller), bypassing text()'s whole-string escaping."""
+        if html_value:
+            self.blocks.append(html_value)
+        return self
+
     def link(self, url: str, label: Optional[str] = None) -> "HtmlMessage":
         if not url:
             return self
@@ -89,8 +100,12 @@ class HtmlMessage:
             if not tag:
                 continue
             normalized.append(tag if tag.startswith("#") else f"#{tag}")
-        if normalized:
-            self.blocks.append(" ".join(escape_html(tag) for tag in normalized))
+        if not normalized:
+            return self
+        line = " ".join(escape_html(tag) for tag in normalized)
+        if len(normalized) > TAGS_EXPANDABLE_THRESHOLD:
+            line = f"<blockquote expandable>{line}</blockquote>"
+        self.blocks.append(line)
         return self
 
     def render(self) -> str:
