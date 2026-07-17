@@ -18,6 +18,7 @@ REDDIT_USER_AGENT = (
 
 REDDIT_REGEX = re.compile(
     r"https?://(?:www\.|old\.|new\.|np\.|m\.)?reddit\.com/r/[^/\s]+/comments/[a-zA-Z0-9]+(?:/[^\s]*)?"
+    r"|https?://(?:www\.|old\.|new\.|np\.|m\.)?reddit\.com/r/[^/\s]+/s/[a-zA-Z0-9]+"
     r"|https?://redd\.it/[a-zA-Z0-9]+",
     re.IGNORECASE,
 )
@@ -32,10 +33,30 @@ def extract_reddit_link(text: str) -> Optional[str]:
     return match.group(0) if match else None
 
 
+async def resolve_share_link(url: str) -> str:
+    """Resolves a mobile-app share link (/r/<sub>/s/<shortcode>) to its
+    canonical /comments/... permalink. Appending .json directly to a share
+    link doesn't reliably follow Reddit's redirect, so the plain URL is
+    resolved first and .json is appended to the result."""
+    headers = {"User-Agent": REDDIT_USER_AGENT}
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(
+                url.split("?")[0], headers=headers, timeout=15.0
+            )
+        return str(response.url).split("?")[0].rstrip("/")
+    except Exception as exc:
+        logger.warning("Failed to resolve Reddit share link %s: %s", url, exc)
+        return url
+
+
 async def fetch_post(url: str) -> Optional[dict]:
     """Fetches Reddit's own public .json listing for a post — no auth needed
     for public subreddits, so no login-wall workaround is required here."""
-    json_url = url.split("?")[0].rstrip("/") + ".json"
+    clean_url = url.split("?")[0].rstrip("/")
+    if "/s/" in clean_url:
+        clean_url = await resolve_share_link(clean_url)
+    json_url = f"{clean_url}.json"
     headers = {"User-Agent": REDDIT_USER_AGENT}
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:

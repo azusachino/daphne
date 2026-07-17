@@ -9,6 +9,8 @@ from daphne.reddit import (
     single_image_url,
     build_caption,
     handle_reddit_links,
+    fetch_post,
+    resolve_share_link,
 )
 
 
@@ -22,6 +24,9 @@ class TestReddit(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(contains_reddit_link("check this https://redd.it/abc123"))
         self.assertTrue(
             contains_reddit_link("https://old.reddit.com/r/aww/comments/abc123/")
+        )
+        self.assertTrue(
+            contains_reddit_link("https://www.reddit.com/r/rickandmorty/s/7jlByn5RL5")
         )
         self.assertFalse(contains_reddit_link("https://twitter.com/user/status/123"))
 
@@ -94,6 +99,54 @@ class TestReddit(unittest.IsolatedAsyncioTestCase):
         self.assertIn("u/someone", caption)
         self.assertIn("#reddit #aww", caption)
         self.assertIn("via @haru", caption)
+
+    async def test_resolve_share_link_follows_redirect(self):
+        resolved_response = MagicMock()
+        resolved_response.url = (
+            "https://www.reddit.com/r/aww/comments/abc123/cute_cat/?utm_source=share"
+        )
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=resolved_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("daphne.reddit.httpx.AsyncClient", return_value=mock_client):
+            resolved = await resolve_share_link(
+                "https://www.reddit.com/r/aww/s/7jlByn5RL5"
+            )
+
+        self.assertEqual(
+            resolved, "https://www.reddit.com/r/aww/comments/abc123/cute_cat"
+        )
+
+    async def test_fetch_post_resolves_share_link_before_json_fetch(self):
+        json_response = MagicMock()
+        json_response.status_code = 200
+        json_response.json.return_value = [
+            {"data": {"children": [{"data": {"title": "Cute Cat"}}]}}
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=json_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "daphne.reddit.resolve_share_link",
+                new_callable=AsyncMock,
+                return_value="https://www.reddit.com/r/aww/comments/abc123/cute_cat",
+            ) as mock_resolve,
+            patch("daphne.reddit.httpx.AsyncClient", return_value=mock_client),
+        ):
+            post = await fetch_post("https://www.reddit.com/r/aww/s/7jlByn5RL5")
+
+        mock_resolve.assert_called_once()
+        self.assertEqual(post, {"title": "Cute Cat"})
+        called_json_url = mock_client.get.call_args[0][0]
+        self.assertEqual(
+            called_json_url,
+            "https://www.reddit.com/r/aww/comments/abc123/cute_cat.json",
+        )
 
     @patch("daphne.reddit.fetch_post")
     @patch("daphne.reddit.send_photos", new_callable=AsyncMock)
