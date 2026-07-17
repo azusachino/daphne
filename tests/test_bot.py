@@ -7,10 +7,13 @@ from daphne import bot as bot_module
 from daphne.bot import (
     extract_video_url,
     help_command,
+    start_command,
     handle_video_link,
     audio_command,
     gallery_command,
     inline_query_handler,
+    log_update,
+    log_handler,
 )
 from daphne.config import (
     load_config,
@@ -19,6 +22,7 @@ from daphne.config import (
 )
 from daphne.messages import PARSE_MODE_HTML
 from daphne.rbac import RbacService, get_rbac_config_path
+from daphne.bot import grant_command, revoke_command, roles_command
 
 
 class TestRbac(unittest.TestCase):
@@ -109,7 +113,7 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.token.assert_called_once_with("token")
         builder.job_queue.assert_called_once_with(None)
         builder.base_url.assert_not_called()
-        self.assertEqual(app.add_handler.call_count, 6)
+        self.assertEqual(app.add_handler.call_count, 11)
 
     def test_build_application_uses_local_bot_api(self):
         app = MagicMock()
@@ -146,6 +150,75 @@ class TestApplicationBuilder(unittest.TestCase):
         builder.connect_timeout.assert_called_once_with(30.0)
 
 
+class TestLogUpdate(unittest.IsolatedAsyncioTestCase):
+    async def test_logs_message_updates(self):
+        update = MagicMock()
+        update.update_id = 42
+        update.effective_user.id = 111
+        update.effective_chat.id = -100
+        update.message.text = "/grant standard_group"
+        update.callback_query = None
+        update.inline_query = None
+
+        with self.assertLogs("daphne.bot", level="INFO") as cm:
+            await log_update(update, MagicMock())
+
+        self.assertTrue(
+            any(
+                "update_id=42" in line and "/grant standard_group" in line
+                for line in cm.output
+            )
+        )
+
+    async def test_logs_callback_query_updates(self):
+        update = MagicMock()
+        update.update_id = 43
+        update.effective_user.id = 111
+        update.effective_chat.id = -100
+        update.message = None
+        update.callback_query.data = "dl:abc123"
+        update.inline_query = None
+
+        with self.assertLogs("daphne.bot", level="INFO") as cm:
+            await log_update(update, MagicMock())
+
+        self.assertTrue(any("dl:abc123" in line for line in cm.output))
+
+
+class TestLogHandler(unittest.IsolatedAsyncioTestCase):
+    def _update(self):
+        update = MagicMock()
+        update.effective_user.id = 111
+        update.effective_chat.id = -100
+        return update
+
+    async def test_logs_start_and_end_on_success(self):
+        async def inner(update, context):
+            return "ok"
+
+        wrapped = log_handler("my_handler")(inner)
+        with self.assertLogs("daphne.bot", level="INFO") as cm:
+            result = await wrapped(self._update(), MagicMock())
+
+        self.assertEqual(result, "ok")
+        joined = "\n".join(cm.output)
+        self.assertIn("Handler start: name=my_handler", joined)
+        self.assertIn("Handler end: name=my_handler", joined)
+
+    async def test_logs_failure_and_reraises(self):
+        async def inner(update, context):
+            raise ValueError("boom")
+
+        wrapped = log_handler("my_handler")(inner)
+        with self.assertLogs("daphne.bot", level="INFO") as cm:
+            with self.assertRaises(ValueError):
+                await wrapped(self._update(), MagicMock())
+
+        joined = "\n".join(cm.output)
+        self.assertIn("Handler start: name=my_handler", joined)
+        self.assertIn("Handler failed: name=my_handler", joined)
+
+
 class TestBotCommands(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.update = MagicMock()
@@ -164,6 +237,40 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.update.message.reply_text.call_args[1]["parse_mode"], PARSE_MODE_HTML
         )
+
+    async def test_start_command_responds(self):
+        await start_command(self.update, self.context)
+        self.update.message.reply_text.assert_called_once()
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Welcome", text)
+        self.assertIn("Twitter/X", text)
+        self.assertNotIn("Admin:", text)
+
+    async def test_start_command_admin_sees_admin_section(self):
+        rbac = RbacService(
+            {"roles": {"admin": {"permissions": ["*"]}}, "users": {123456789: "admin"}}
+        )
+        with patch.object(bot_module, "rbac_service", rbac):
+            await start_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Admin:", text)
+        # Placeholders must render as literal text, not be parsed as HTML tags
+        # (regression check for the "unsupported start tag" HTML-parse crash).
+        self.assertIn("&lt;link&gt;", text)
+
+    async def test_help_command_non_admin_hides_admin_section(self):
+        rbac = RbacService({"roles": {"admin": {"permissions": ["*"]}}, "users": {}})
+        with patch.object(bot_module, "rbac_service", rbac):
+            await help_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertNotIn("Admin:", text)
+
+    @patch("daphne.bot.check_access_and_reply", return_value=False)
+    async def test_start_command_bypasses_rbac(self, mock_check):
+        # /start must always answer, even for a chat/user RBAC would deny.
+        await start_command(self.update, self.context)
+        mock_check.assert_not_called()
+        self.update.message.reply_text.assert_called_once()
 
     @patch("daphne.bot.check_access_and_reply", return_value=True)
     async def test_audio_command_no_link(self, mock_check):
@@ -942,6 +1049,120 @@ class TestDownloadSlot(unittest.IsolatedAsyncioTestCase):
             async with bot_module.download_slot(7, on_wait=waited):
                 pass
             waited.assert_not_awaited()
+
+
+class TestGrantRevokeRoles(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.rbac = RbacService(
+            {
+                "roles": {
+                    "admin": {"permissions": ["*"]},
+                    # Deliberately includes "grant"/"revoke"/"roles" as regular
+                    # permissions to prove the config-driven permission system
+                    # cannot itself unlock the hardcoded admin-only commands.
+                    "sneaky": {"permissions": ["grant", "revoke", "roles", "*"]},
+                },
+                "users": {111: "admin", 222: "sneaky"},
+                "chats": {-100: "sneaky"},
+            }
+        )
+        self.rbac_patch = patch.object(bot_module, "rbac_service", self.rbac)
+        self.rbac_patch.start()
+        self.addCleanup(self.rbac_patch.stop)
+
+        self.update = MagicMock()
+        self.update.effective_user.id = 222
+        self.update.effective_user.username = "nonadmin"
+        self.update.effective_user.full_name = "Non Admin"
+        self.update.effective_chat.id = -100
+        self.update.message.reply_text = AsyncMock()
+        self.update.message.reply_to_message = None
+        self.context = MagicMock()
+        self.context.args = []
+
+    async def test_non_admin_cannot_grant(self):
+        self.context.args = ["admin"]
+        await grant_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("admin only", text)
+        # No role change happened despite "sneaky" having grant/revoke/roles
+        # listed as regular permissions.
+        self.assertNotIn(333, self.rbac.users)
+
+    async def test_non_admin_cannot_revoke(self):
+        await revoke_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("admin only", text)
+        self.assertEqual(self.rbac.chats.get(-100), "sneaky")
+
+    async def test_non_admin_cannot_list_roles(self):
+        await roles_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("admin only", text)
+
+    async def test_admin_grant_unknown_role_rejected(self):
+        self.update.effective_user.id = 111
+        self.context.args = ["ghost_role"]
+        await grant_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Unknown role", text)
+
+    async def test_admin_grant_user_via_reply(self):
+        self.update.effective_user.id = 111
+        self.context.args = ["admin"]
+        target = MagicMock()
+        target.id = 333
+        target.full_name = "Target User"
+        self.update.message.reply_to_message = MagicMock(from_user=target)
+
+        await grant_command(self.update, self.context)
+
+        self.assertEqual(self.rbac.users[333], "admin")
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Granted", text)
+        self.assertIn("not persisted", text)
+
+    async def test_admin_grant_chat_when_no_reply(self):
+        self.update.effective_user.id = 111
+        self.update.effective_chat.id = -500
+        self.context.args = ["admin"]
+        self.update.message.reply_to_message = None
+
+        await grant_command(self.update, self.context)
+
+        self.assertEqual(self.rbac.chats[-500], "admin")
+
+    async def test_admin_revoke_user_via_reply(self):
+        self.update.effective_user.id = 111
+        target = MagicMock()
+        target.id = 222
+        target.full_name = "Sneaky User"
+        self.update.message.reply_to_message = MagicMock(from_user=target)
+
+        await revoke_command(self.update, self.context)
+
+        self.assertNotIn(222, self.rbac.users)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Revoked", text)
+
+    async def test_admin_revoke_nonexistent_reports_no_role(self):
+        self.update.effective_user.id = 111
+        target = MagicMock()
+        target.id = 999999
+        target.full_name = "Nobody"
+        self.update.message.reply_to_message = MagicMock(from_user=target)
+
+        await revoke_command(self.update, self.context)
+
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("No role was set", text)
+
+    async def test_admin_can_list_roles(self):
+        self.update.effective_user.id = 111
+        await roles_command(self.update, self.context)
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("admin", text)
+        self.assertIn("sneaky", text)
 
 
 if __name__ == "__main__":
