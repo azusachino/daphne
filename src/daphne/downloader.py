@@ -156,6 +156,14 @@ def download_video(
         "best[vcodec^=avc1][ext=mp4]/best"
     )
 
+    embed_flags = [
+        "--embed-metadata",
+        "--embed-thumbnail",
+        "--embed-subs",
+        "--sub-langs",
+        "en.*,ja.*",
+    ]
+
     def cmd_pass1() -> list[str]:
         return [
             "uvx",
@@ -166,6 +174,7 @@ def download_video(
             f"{out_dir}/%(id)s.%(ext)s",
             "--no-playlist",
             "--restrict-filenames",
+            *embed_flags,
             "--",
             url,
         ]
@@ -180,6 +189,7 @@ def download_video(
             f"{out_dir}/%(id)s.%(ext)s",
             "--no-playlist",
             "--restrict-filenames",
+            *embed_flags,
             "--user-agent",
             random.choice(USER_AGENTS),
         ]
@@ -234,6 +244,8 @@ def download_audio(url: str, out_dir: str) -> str:
         "--extract-audio",
         "--audio-format",
         "mp3",
+        "--embed-metadata",
+        "--embed-thumbnail",
         "--output",
         f"{out_dir}/%(id)s.%(ext)s",
         "--no-playlist",

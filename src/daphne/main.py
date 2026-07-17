@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import logging
@@ -43,12 +44,17 @@ load_env_file(".env")
 load_env_file(os.path.expanduser("~/.config/daphne/daphne.env"))
 
 # Import remaining modules after loading environment variables
-from daphne.bot import build_application  # noqa: E402
+from daphne.bot import build_application, register_bot_commands, rbac_service  # noqa: E402
+from daphne.rbac import refresh_rbac_from_valkey, valkey_rbac_refresh_loop  # noqa: E402
 
 
 async def post_init(app) -> None:
-    """Reserved for future startup hooks."""
-    return None
+    await register_bot_commands(app)
+    if rbac_service.valkey_url:
+        await refresh_rbac_from_valkey(rbac_service)
+        app.bot_data["valkey_rbac_task"] = asyncio.create_task(
+            valkey_rbac_refresh_loop(rbac_service)
+        )
 
 
 def run_init(local: bool = False) -> None:
@@ -79,16 +85,23 @@ video_upload_limit_mb = 256
 
 [rbac]
 public_commands = ["help"]
+# Optional: back RBAC with Valkey for live /grant, /revoke edits without a
+# redeploy. Prefer the DAPHNE_VALKEY_URL env var over this key so credentials
+# stay out of git. Unset means fully static, config.toml-only RBAC.
+# valkey_url = "redis://valkey.default.svc:6379/0"
 
 [rbac.roles.admin]
 permissions = ["*"]
 
-# Example non-admin role. Available permissions include: convert_link,
-# fetch_metadata, preview_video, download_video, extract_audio, download_gallery,
-# inline_convert. NOTE: inline_convert is user-level only — inline queries carry
-# no chat_id, so it must be granted via [rbac.users], not [rbac.chats].
-# [rbac.roles.standard]
-# permissions = ["convert_link", "fetch_metadata", "extract_audio", "download_gallery"]
+# Example non-admin roles, graduated from minimal to full. Available
+# permissions include: convert_link, fetch_metadata, preview_video,
+# download_video, extract_audio, download_gallery, inline_convert. NOTE:
+# inline_convert is user-level only — inline queries carry no chat_id, so it
+# must be granted via [rbac.users], not [rbac.chats].
+# [rbac.roles.default]
+# permissions = ["convert_link"]
+# [rbac.roles.power_user]
+# permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
 
 [rbac.users]
 # Add user IDs mapping to roles here. Example:
@@ -96,7 +109,7 @@ permissions = ["*"]
 
 [rbac.chats]
 # Add chat/group IDs mapping to roles here. Example:
-# -1001111111111 = "standard_group"  # Replace with your chat ID
+# -1001111111111 = "power_user"  # Replace with your chat ID
 """
     if os.path.exists(config_path):
         print(f"Skipping config.toml (already exists at {config_path})")
