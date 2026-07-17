@@ -11,6 +11,7 @@ from daphne.reddit import (
     handle_reddit_links,
     fetch_post,
     resolve_share_link,
+    RedditBlocked,
 )
 
 
@@ -232,6 +233,31 @@ class TestReddit(unittest.IsolatedAsyncioTestCase):
         await handle_reddit_links(update, context)
 
         mock_handle_video_link.assert_called_once()
+
+    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.reddit.fetch_post", side_effect=RedditBlocked("status=429"))
+    async def test_handle_reddit_links_blocked_fails_fast(
+        self, mock_fetch, mock_handle_video_link
+    ):
+        update = MagicMock()
+        update.message.text = "https://www.reddit.com/r/aww/comments/abc123/x/"
+        update.message.chat_id = 999
+        update.effective_user.username = "haru"
+        update.effective_user.full_name = "Haru"
+
+        context = MagicMock()
+        context.bot.send_chat_action = AsyncMock()
+        context.bot.send_message = AsyncMock()
+
+        await handle_reddit_links(update, context)
+
+        # Must not burn the full multi-engine video pipeline on a request
+        # Reddit itself already refused — that's just retrying into the same
+        # wall four more times.
+        mock_handle_video_link.assert_not_called()
+        context.bot.send_message.assert_called_once()
+        text = context.bot.send_message.call_args[1]["text"]
+        self.assertIn("rate-limiting", text)
 
     @patch("daphne.reddit.fetch_post")
     @patch("daphne.reddit.try_delete_message", new_callable=AsyncMock)

@@ -50,6 +50,13 @@ async def resolve_share_link(url: str) -> str:
         return url
 
 
+class RedditBlocked(Exception):
+    """Reddit's own API refused the request (403/429). yt-dlp's Reddit
+    extractor hits this same .json API internally, so falling back to the
+    full multi-engine video pipeline would almost certainly hit the same
+    wall again — callers should fail fast instead of retrying elsewhere."""
+
+
 async def fetch_post(url: str) -> Optional[dict]:
     """Fetches Reddit's own public .json listing for a post — no auth needed
     for public subreddits, so no login-wall workaround is required here."""
@@ -61,6 +68,8 @@ async def fetch_post(url: str) -> Optional[dict]:
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(json_url, headers=headers, timeout=15.0)
+        if response.status_code in (403, 429):
+            raise RedditBlocked(f"status={response.status_code}")
         if response.status_code != 200:
             logger.warning(
                 "Reddit JSON fetch failed: url=%s status=%s",
@@ -70,6 +79,8 @@ async def fetch_post(url: str) -> Optional[dict]:
             return None
         data = response.json()
         return data[0]["data"]["children"][0]["data"]
+    except RedditBlocked:
+        raise
     except Exception as exc:
         logger.warning("Failed to fetch Reddit post JSON for %s: %s", url, exc)
         return None
@@ -141,7 +152,18 @@ async def handle_reddit_links(
     except Exception:
         pass
 
-    post = await fetch_post(url)
+    try:
+        post = await fetch_post(url)
+    except RedditBlocked:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Reddit is rate-limiting or blocking this request right now "
+                f"— try again shortly.\n{url}"
+            ),
+        )
+        return
+
     if not post:
         # Not a reachable/public post (deleted, quarantined, private
         # subreddit) — fall back to the generic video card so the link
