@@ -1,3 +1,4 @@
+import asyncio
 import re
 import os
 import httpx
@@ -119,13 +120,42 @@ async def handle_instagram_links(
         data = None
 
     if not data:
-        logger.warning(
-            "No data extracted for Instagram URL: %s. Falling back to video card.", url
-        )
-        # Fallback: call the standard handle_video_link which sends an info card
-        from daphne.bot import handle_video_link
+        # parth-dl failed outright (its 4 scraping methods are fragile to
+        # Instagram markup/API changes). Before giving up, try yt-dlp's own
+        # Instagram extractor: it reaches the same public post but, unlike
+        # parth-dl, is actively maintained and can still succeed anonymously
+        # even when the post has no video (it just needs
+        # --ignore-no-formats-error to hand back the metadata it already
+        # extracted instead of raising).
+        logger.info("parth-dl found nothing for %s; trying yt-dlp fallback", clean_url)
+        from daphne.downloader import fetch_instagram_fallback_media
 
-        await handle_video_link(update, context, url)
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(
+            None, fetch_instagram_fallback_media, clean_url
+        )
+
+    if not data:
+        logger.warning(
+            "No data extracted for Instagram URL: %s. Content may be private, "
+            "deleted, or Instagram is blocking the request.",
+            url,
+        )
+        # Do NOT fall back to handle_video_link here: yt-dlp's own Instagram
+        # extractor hits the same public post/API endpoints parth-dl already
+        # tried (and we just tried it above), so the full yt-dlp/you-get/lux
+        # chain would just retry into the same wall at real cost (multiple
+        # engines, ~15s) for no benefit.
+        from daphne.bot import REACTION_FAILED, set_reaction
+
+        await set_reaction(message, REACTION_FAILED)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Couldn't fetch this Instagram post — it may be private, deleted, "
+                f"or Instagram is blocking the request right now.\n{url}"
+            ),
+        )
         return
 
     uploader = data.get("uploader", "unknown")

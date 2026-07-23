@@ -1,8 +1,11 @@
-.PHONY: dev init init-local test fmt fmt-check lint ready image-base image-base-push image-base-cross image-build image-push verify up down
+.PHONY: dev init init-local test fmt fmt-check lint ready image-base image-base-push image-base-cross image-build image-push image-local verify up down
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
 IMAGE ?= docker.io/azusachino/daphne
+# Local-only tag the k3s deployment actually runs (imagePullPolicy: Never —
+# imported straight into containerd, never pulled from a registry).
+LOCAL_IMAGE ?= azusachino.icu/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
 # Base image (OS tools + lux); tagged by toolchain, bumped only when tools change.
 BASE_IMAGE ?= docker.io/azusachino/daphne-base
@@ -50,6 +53,10 @@ image-build: image-base
 image-push: image-build
 	$(CONTAINER_TOOL) tag daphne:latest $(IMAGE):$(VERSION)
 	$(CONTAINER_TOOL) push $(IMAGE):$(VERSION)
+
+image-local: image-base ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
+	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t $(LOCAL_IMAGE):$(VERSION) .
+	$(CONTAINER_TOOL) save $(LOCAL_IMAGE):$(VERSION) | sudo k3s ctr images import -
 
 verify: image-build
 	$(CONTAINER_TOOL) run --rm daphne:latest --help | grep "Daphne - Telegram Media Converter"
