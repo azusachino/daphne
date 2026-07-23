@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-23
+
+### Fixed
+- `instagram.py`: when `parth-dl` failed to extract a post, the handler fell back to `handle_video_link`'s full yt-dlp/you-get/lux engine chain — but yt-dlp's own Instagram extractor hits the same public endpoints parth-dl already failed against, so this just retried into the same wall at real cost (~15s across 4 doomed engines) before failing with a confusing "There is no video in this post" error on ordinary image posts. Extraction failure now fails fast instead: a clear message + 😢 reaction, no engine chain.
+- `instagram.py` / `downloader.py`: added a `fetch_instagram_fallback_media()` recovery step between the two — yt-dlp's Instagram extractor can still read a post anonymously even when it has no video, it just needs `--ignore-no-formats-error` to hand back the metadata (thumbnail/image URLs) it already extracted instead of raising. Recovers the common case (parth-dl fails on an image/carousel post) without needing yt-dlp's video engine chain or any Instagram login/cookies.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

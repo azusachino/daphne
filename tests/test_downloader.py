@@ -10,6 +10,7 @@ from daphne.downloader import (
     download_video,
     probe_video_dimensions,
     fetch_video_metadata,
+    fetch_instagram_fallback_media,
     format_duration,
     format_video_caption,
     download_audio,
@@ -189,6 +190,78 @@ class TestDownloader(unittest.TestCase):
         second_cmd = mock_run.call_args_list[1][0][0]
         self.assertIn("Referer:https://www.bilibili.com/", second_cmd)
         self.assertIn("Origin:https://www.bilibili.com", second_cmd)
+
+    @patch("subprocess.run")
+    def test_fetch_instagram_fallback_media_single_image(self, mock_run):
+        # Real case that motivated this fallback: an Instagram photo post
+        # parth-dl couldn't read. yt-dlp --dump-json --ignore-no-formats-error
+        # still returns one JSON object with no "formats" but a "thumbnail".
+        mock_run.return_value = MagicMock(
+            stdout=json.dumps(
+                {
+                    "id": "DRZSlC7D3OT",
+                    "description": "Happy birthday!",
+                    "uploader": "nyarumaa.cosplay",
+                    "formats": [],
+                    "thumbnail": "https://instagram.fna.fbcdn.net/photo.jpg",
+                }
+            )
+            + "\n",
+            returncode=0,
+        )
+
+        data = fetch_instagram_fallback_media("https://www.instagram.com/p/DRZSlC7D3OT")
+
+        self.assertEqual(data["type"], "image")
+        self.assertEqual(
+            data["images"], [{"url": "https://instagram.fna.fbcdn.net/photo.jpg"}]
+        )
+        self.assertEqual(data["formats"], [])
+        self.assertEqual(data["uploader"], "nyarumaa.cosplay")
+        self.assertEqual(data["title"], "Happy birthday!")
+
+    @patch("subprocess.run")
+    def test_fetch_instagram_fallback_media_carousel(self, mock_run):
+        # Carousels are dumped as one JSON object per line (no --no-playlist),
+        # mixing an image slide and a video slide.
+        lines = [
+            json.dumps(
+                {
+                    "id": "ABC123",
+                    "uploader": "someone",
+                    "formats": [],
+                    "thumbnail": "https://cdn/img1.jpg",
+                }
+            ),
+            json.dumps(
+                {
+                    "id": "ABC123",
+                    "uploader": "someone",
+                    "formats": [{"url": "https://cdn/video.mp4"}],
+                    "thumbnail": "https://cdn/img2.jpg",
+                }
+            ),
+        ]
+        mock_run.return_value = MagicMock(stdout="\n".join(lines), returncode=0)
+
+        data = fetch_instagram_fallback_media("https://www.instagram.com/p/ABC123")
+
+        self.assertEqual(data["images"], [{"url": "https://cdn/img1.jpg"}])
+        self.assertEqual(data["formats"], [{"url": "https://cdn/video.mp4"}])
+        self.assertEqual(data["type"], "video")
+
+    @patch("subprocess.run")
+    def test_fetch_instagram_fallback_media_no_usable_data(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", returncode=0)
+        self.assertIsNone(
+            fetch_instagram_fallback_media("https://www.instagram.com/p/Nope")
+        )
+
+    @patch("subprocess.run", side_effect=Exception("yt-dlp not found"))
+    def test_fetch_instagram_fallback_media_subprocess_error(self, mock_run):
+        self.assertIsNone(
+            fetch_instagram_fallback_media("https://www.instagram.com/p/Nope")
+        )
 
     @patch("daphne.downloader.scan_largest_media_file")
     @patch("subprocess.run")

@@ -352,6 +352,70 @@ def fetch_video_metadata(url: str) -> dict:
     return {}
 
 
+def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
+    """
+    Fallback for Instagram posts parth-dl couldn't read. yt-dlp's own
+    Instagram extractor normally raises "There is no video in this post"
+    and returns nothing for image-only content, even though it already
+    extracted the post's metadata by that point --ignore-no-formats-error
+    suppresses that raise so we get the metadata (including image
+    thumbnail URLs) anyway. No --no-playlist here: carousels are dumped as
+    one JSON object per line, one per slide.
+    """
+    cmd = [
+        "uvx",
+        "yt-dlp",
+        "--dump-json",
+        "--ignore-no-formats-error",
+        "--user-agent",
+        random.choice(USER_AGENTS),
+        "--",
+        url,
+    ]
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=30.0
+        )
+    except Exception as e:
+        logger.warning(f"Instagram yt-dlp fallback failed: {e}")
+        return None
+
+    entries = []
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    if not entries:
+        return None
+
+    images = []
+    formats = []
+    for entry in entries:
+        entry_formats = entry.get("formats") or []
+        if entry_formats:
+            formats.append({"url": entry_formats[-1].get("url")})
+        elif entry.get("thumbnail"):
+            images.append({"url": entry["thumbnail"]})
+
+    if not images and not formats:
+        return None
+
+    first = entries[0]
+    return {
+        "id": first.get("id", ""),
+        "title": (first.get("description") or first.get("title") or "")[:100],
+        "uploader": first.get("uploader") or first.get("channel") or "unknown",
+        "type": "video" if formats else "image",
+        "images": images,
+        "formats": formats,
+        "thumbnail": first.get("thumbnail"),
+    }
+
+
 def format_duration(seconds: int) -> str:
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
