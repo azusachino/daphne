@@ -330,6 +330,89 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_sends_cover_photo_with_title_and_preview(
+        self, mock_get
+    ):
+        # X Articles (long-form posts) carry an empty `text` (just the t.co
+        # link) and `media: null` — content lives under `article` instead.
+        self.update.message.text = (
+            "https://x.com/waterloo_intern/status/2081762065392541951"
+        )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "2081762065392541951",
+                "text": "",
+                "url": "https://x.com/waterloo_intern/status/2081762065392541951",
+                "author": {"screen_name": "waterloo_intern", "name": "ali"},
+                "media": None,
+                "article": {
+                    "title": "22580: From GPT2 to Kimi3, Explained",
+                    "preview_text": "Twenty-two thousand five hundred and eighty...",
+                    "cover_media": {
+                        "media_info": {
+                            "original_img_url": "https://pbs.twimg.com/media/HOPJVdUb0AEabce.jpg"
+                        }
+                    },
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_called_once()
+        kwargs = self.context.bot.send_photo.call_args[1]
+        self.assertEqual(kwargs["chat_id"], 123456)
+        self.assertEqual(
+            kwargs["photo"], "https://pbs.twimg.com/media/HOPJVdUb0AEabce.jpg"
+        )
+        self.assertIn("22580: From GPT2 to Kimi3, Explained", kwargs["caption"])
+        self.assertIn("Twenty-two thousand five hundred and eighty", kwargs["caption"])
+        self.assertIn(
+            "https://x.com/waterloo_intern/status/2081762065392541951",
+            kwargs["caption"],
+        )
+        self.context.bot.send_message.assert_not_called()
+        self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_without_cover_sends_text_message(self, mock_get):
+        self.update.message.text = (
+            "https://x.com/waterloo_intern/status/2081762065392541951"
+        )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "2081762065392541951",
+                "text": "",
+                "url": "https://x.com/waterloo_intern/status/2081762065392541951",
+                "author": {"screen_name": "waterloo_intern", "name": "ali"},
+                "media": None,
+                "article": {
+                    "title": "A cover-less article",
+                    "preview_text": "No cover image here.",
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_not_called()
+        self.context.bot.send_message.assert_called_once()
+        kwargs = self.context.bot.send_message.call_args[1]
+        self.assertIn("A cover-less article", kwargs["text"])
+        self.assertIn("No cover image here.", kwargs["text"])
+        self.update.message.delete.assert_called_once()
+
     @patch("daphne.twitter.logger.warning")
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_api_404_sends_fallback_url(self, mock_get, mock_log_warn):
