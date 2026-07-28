@@ -117,6 +117,58 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         _, kwargs = self.context.bot.send_photo.call_args
         self.assertEqual(kwargs["chat_id"], -1002058191932)
         self.assertEqual(kwargs["photo"], "https://instagram.fna.fbcdn.net/photo.jpg")
+        # Uploader name with a "." (a real production value) collapses into
+        # one author hashtag rather than splitting or being dropped.
+        self.assertIn("#instagram #nyarumaa_cosplay", kwargs["caption"])
+
+    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
+    async def test_no_uploader_skips_author_hashtag(
+        self, mock_extract, mock_handle_video_link
+    ):
+        fallback_data = {
+            "id": "DRZSlC7D3OT",
+            "title": "An image post",
+            "uploader": "unknown",
+            "type": "image",
+            "images": [{"url": "https://instagram.fna.fbcdn.net/photo.jpg"}],
+            "formats": [],
+            "thumbnail": "https://instagram.fna.fbcdn.net/photo.jpg",
+        }
+        with patch(
+            "daphne.downloader.fetch_instagram_fallback_media",
+            return_value=fallback_data,
+        ):
+            await handle_instagram_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_called_once()
+        _, kwargs = self.context.bot.send_photo.call_args
+        self.assertIn("#instagram", kwargs["caption"])
+        self.assertNotIn("#unknown", kwargs["caption"])
+
+    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
+    async def test_multi_word_and_non_ascii_uploader_hashtag(
+        self, mock_extract, mock_handle_video_link
+    ):
+        fallback_data = {
+            "id": "DRZSlC7D3OT",
+            "title": "An image post",
+            "uploader": "Ali Taha 山田",
+            "type": "image",
+            "images": [{"url": "https://instagram.fna.fbcdn.net/photo.jpg"}],
+            "formats": [],
+            "thumbnail": "https://instagram.fna.fbcdn.net/photo.jpg",
+        }
+        with patch(
+            "daphne.downloader.fetch_instagram_fallback_media",
+            return_value=fallback_data,
+        ):
+            await handle_instagram_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_called_once()
+        _, kwargs = self.context.bot.send_photo.call_args
+        self.assertIn("#instagram #ali_taha_山田", kwargs["caption"])
 
 
 if __name__ == "__main__":

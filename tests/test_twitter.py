@@ -331,6 +331,87 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_single_photo_uses_api_author_not_url_username(self, mock_get):
+        # URL says "nasa", but X redirects any username segment to the tweet
+        # by ID regardless of what's typed - the API's author record is
+        # authoritative, and can differ (renamed handle, wrong guess, etc).
+        self.update.message.text = "https://twitter.com/nasa/status/999"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "999",
+                "text": "Beautiful space view",
+                "author": {"screen_name": "NASAHubble", "name": "Hubble"},
+                "media": {
+                    "photos": [{"url": "https://pbs.twimg.com/media/test.jpg"}],
+                    "videos": [],
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        kwargs = self.context.bot.send_photo.call_args[1]
+        self.assertIn("#twitter #nasahubble", kwargs["caption"])
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_no_author_skips_author_hashtag(self, mock_get):
+        self.update.message.text = "https://x.com/jack/status/20"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "20",
+                "text": "no author record at all",
+                "media": {"photos": [], "videos": []},
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        _, kwargs = self.context.bot.send_message.call_args
+        # Falls back to the URL's username ("jack") since there's no author
+        # record, so a hashtag is still added from that.
+        self.assertIn("#jack", kwargs["text"])
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_author_hashtag_not_duplicated_with_text_hashtag(
+        self, mock_get
+    ):
+        # X handles can't contain spaces/non-ASCII (that edge case is covered
+        # for Instagram/YouTube uploader display names instead, which can).
+        # The Twitter-specific edge case is dedup: the author's own handle
+        # already appearing as a hashtag in the tweet text shouldn't be
+        # added twice.
+        self.update.message.text = "https://x.com/nasa/status/999"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "999",
+                "text": "Check this out #NASA",
+                "author": {"screen_name": "nasa", "name": "NASA"},
+                "media": {"photos": [], "videos": []},
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        _, kwargs = self.context.bot.send_message.call_args
+        self.assertIn("#twitter #nasa", kwargs["text"])
+        self.assertEqual(kwargs["text"].count("#nasa"), 1)
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_article_sends_cover_photo_with_title_and_preview(
         self, mock_get
     ):

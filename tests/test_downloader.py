@@ -105,6 +105,30 @@ class TestDownloader(unittest.TestCase):
         self.assertIn("#bilibili", cap_bili)
         self.assertIn("via @haru", cap_bili)
 
+        # Multi-word uploader name collapses into one author hashtag
+        cap_multi = format_video_caption(
+            "Some Video", "The New York Times", "01:00", "http://x.com", "youtube"
+        )
+        self.assertIn("#youtube #the_new_york_times", cap_multi)
+
+        # Non-ASCII uploader name is preserved, not stripped
+        cap_unicode = format_video_caption(
+            "Some Video", "山田太郎", "01:00", "http://x.com", "youtube"
+        )
+        self.assertIn("#youtube #山田太郎", cap_unicode)
+
+        # No uploader ("unknown" or empty) -> no author hashtag added
+        cap_unknown = format_video_caption(
+            "Some Video", "unknown", "01:00", "http://x.com", "youtube"
+        )
+        self.assertIn("#youtube", cap_unknown)
+        self.assertNotIn("#unknown", cap_unknown)
+
+        cap_empty = format_video_caption(
+            "Some Video", "", "01:00", "http://x.com", "youtube"
+        )
+        self.assertIn("#youtube", cap_empty)
+
     @patch("subprocess.run")
     def test_probe_video_dimensions(self, mock_run):
         # 1. Success case

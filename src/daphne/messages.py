@@ -1,4 +1,6 @@
 import html
+import re
+import unicodedata
 from importlib.metadata import PackageNotFoundError, version
 from typing import Optional
 
@@ -9,9 +11,38 @@ PARSE_MODE_HTML = "HTML"
 # them into a tap-to-expand blockquote instead of a wall of hashtags.
 TAGS_EXPANDABLE_THRESHOLD = 6
 
+_UNKNOWN_AUTHORS = {"", "unknown"}
+
 
 def escape_html(value: object) -> str:
     return html.escape(str(value), quote=True)
+
+
+def slugify_tag(value: object) -> str:
+    """
+    Normalizes an arbitrary author/uploader name into a single hashtag-safe
+    slug: Unicode-normalized (NFKC, so full-width/half-width and combining
+    variants of the same name collapse together), non-word runs (spaces,
+    punctuation, emoji, "#" itself) folded to a single underscore, and
+    leading/trailing underscores trimmed. `\\w` matches Unicode letters, so
+    non-Latin names (Japanese, Chinese, etc.) are preserved rather than
+    stripped down to nothing. Returns "" for input with no word characters
+    at all (e.g. an author name that's pure emoji).
+    """
+    text = unicodedata.normalize("NFKC", str(value))
+    return re.sub(r"\W+", "_", text).strip("_").lower()
+
+
+def author_tag(value: object) -> Optional[str]:
+    """
+    Returns a hashtag-safe slug for an author/uploader name, or None when
+    there's no usable author (missing, empty, the "unknown" placeholder
+    fallback name, or a name with no word characters to slugify).
+    """
+    if not value or str(value).strip().lower() in _UNKNOWN_AUTHORS:
+        return None
+    slug = slugify_tag(value)
+    return slug or None
 
 
 def bot_version() -> str:

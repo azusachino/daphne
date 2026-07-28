@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from daphne.messages import (
     HtmlMessage,
     PARSE_MODE_HTML,
+    author_tag,
     sender_attribution,
 )
 
@@ -241,11 +242,17 @@ def extract_hashtags(text: str) -> list[str]:
     return tags
 
 
-def build_caption(tweet_text: str, tweet_url: str, sender: str | None) -> str:
+def build_caption(
+    tweet_text: str, tweet_url: str, sender: str | None, username: str | None = None
+) -> str:
     tags = ["twitter"]
     for tag in extract_hashtags(tweet_text):
-        if tag != "twitter":
+        if tag != "twitter" and tag not in tags:
             tags.append(tag)
+
+    slug = author_tag(username)
+    if slug and slug not in tags:
+        tags.append(slug)
 
     if len(tweet_text) > 900:
         tweet_text = tweet_text[:900] + "..."
@@ -268,14 +275,23 @@ def article_cover_url(article: dict) -> str | None:
 
 
 def build_article_caption(
-    title: str, preview_text: str, tweet_url: str, sender: str | None
+    title: str,
+    preview_text: str,
+    tweet_url: str,
+    sender: str | None,
+    username: str | None = None,
 ) -> str:
+    tags = ["twitter"]
+    slug = author_tag(username)
+    if slug and slug not in tags:
+        tags.append(slug)
+
     return (
         HtmlMessage(sender=sender)
         .title(title)
         .text(preview_text)
         .link(tweet_url)
-        .tags("twitter")
+        .tags(*tags)
         .render()
     )
 
@@ -326,6 +342,12 @@ async def handle_twitter_links(
             if data.get("code") == 200 and data.get("tweet"):
                 tweet = data["tweet"]
                 tweet_text = tweet.get("text", "")
+                # The URL's username segment is whatever the sender typed; X
+                # redirects it to the right tweet by ID regardless, so it can
+                # be stale or wrong. The API's author record is authoritative.
+                author_username = (tweet.get("author") or {}).get(
+                    "screen_name"
+                ) or username
 
                 # Check for media
                 media_info = tweet.get("media", {}) or {}
@@ -373,6 +395,7 @@ async def handle_twitter_links(
                         article.get("preview_text", ""),
                         tweet_url,
                         sender_attribution(update.effective_user),
+                        username=author_username,
                     )
                     cover_url = article_cover_url(article)
                     if cover_url:
@@ -396,6 +419,7 @@ async def handle_twitter_links(
                         tweet.get("url")
                         or f"https://{domain}/{username}/status/{tweet_id}",
                         sender_attribution(update.effective_user),
+                        username=author_username,
                     )
 
                     caption_available = True
@@ -448,6 +472,7 @@ async def handle_twitter_links(
                         tweet.get("url")
                         or f"https://{domain}/{username}/status/{tweet_id}",
                         sender_attribution(update.effective_user),
+                        username=author_username,
                     )
                     await context.bot.send_message(
                         chat_id=chat_id,

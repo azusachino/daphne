@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-28
+
+### Added
+- **Author Hashtags**: Twitter/X, YouTube (and the other yt-dlp-backed video platforms sharing its caption builder: Bilibili, TikTok, Bluesky), and Instagram captions now include an extra hashtag for the post's author/uploader (e.g. `#waterloo_intern`), alongside the existing platform tag. Names are Unicode-normalized (NFKC) and folded to a single underscore-joined slug — multi-word and non-Latin names collapse into one tag instead of splitting or being dropped, and a missing/"unknown" author is skipped rather than producing an empty or `#unknown` tag.
+
 ## [0.3.2] - 2026-07-28
 
 ### Fixed
