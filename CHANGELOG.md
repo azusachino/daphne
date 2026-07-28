@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-07-28
+
+### Fixed
+- `twitter.py`: X Articles (long-form posts) have an empty `text` field (just the raw `t.co` short link) and a `media: null` field — real content lives under a separate `article` object (`title`, `preview_text`, `cover_media`). `tweet.get("media", {})` doesn't fall back to `{}` when the key exists with a `null` value, so the article branch crashed with an `AttributeError` swallowed by the handler's broad `except`, silently degrading to a bare fallback link. Articles now render as a cover-photo message with the title and preview snippet as caption (falling back to a text message when there's no cover image).
+
 ## [0.3.1] - 2026-07-23
 
 ### Fixed

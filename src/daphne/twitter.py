@@ -259,6 +259,27 @@ def build_caption(tweet_text: str, tweet_url: str, sender: str | None) -> str:
     )
 
 
+def article_cover_url(article: dict) -> str | None:
+    """
+    Extracts the cover image URL from an X Article's media info, if present.
+    """
+    cover_media = article.get("cover_media") or {}
+    return (cover_media.get("media_info") or {}).get("original_img_url")
+
+
+def build_article_caption(
+    title: str, preview_text: str, tweet_url: str, sender: str | None
+) -> str:
+    return (
+        HtmlMessage(sender=sender)
+        .title(title)
+        .text(preview_text)
+        .link(tweet_url)
+        .tags("twitter")
+        .render()
+    )
+
+
 async def try_delete_message(update: Update) -> None:
     message = update.message
     if not message:
@@ -307,7 +328,7 @@ async def handle_twitter_links(
                 tweet_text = tweet.get("text", "")
 
                 # Check for media
-                media_info = tweet.get("media", {})
+                media_info = tweet.get("media", {}) or {}
                 media_all = media_info.get("all", [])
                 if media_all:
                     photos = [
@@ -340,8 +361,36 @@ async def handle_twitter_links(
                 ]
 
                 has_media = bool(photo_urls or video_urls or gif_urls)
+                article = tweet.get("article")
 
-                if has_media:
+                if not tweet_text and not has_media and article:
+                    tweet_url = (
+                        tweet.get("url")
+                        or f"https://{domain}/{username}/status/{tweet_id}"
+                    )
+                    caption = build_article_caption(
+                        article.get("title", ""),
+                        article.get("preview_text", ""),
+                        tweet_url,
+                        sender_attribution(update.effective_user),
+                    )
+                    cover_url = article_cover_url(article)
+                    if cover_url:
+                        await send_photo_helper(
+                            context.bot,
+                            chat_id,
+                            cover_url,
+                            caption,
+                            parse_mode=PARSE_MODE_HTML,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=caption,
+                            parse_mode=PARSE_MODE_HTML,
+                        )
+                    success = True
+                elif has_media:
                     caption = build_caption(
                         tweet_text,
                         tweet.get("url")
