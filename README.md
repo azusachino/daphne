@@ -7,11 +7,11 @@
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.3.1-blue)](https://github.com/azusachino/daphne/releases)
+[![Version](https://img.shields.io/badge/version-0.3.3-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -44,14 +44,14 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 - **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml` or, optionally, live-edited via Valkey and the admin-only `/grant`, `/revoke`, `/roles` commands. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a *Queued…* notice.
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
-- **🎨 Rich HTML captions** — title, uploader, duration, source link, platform tag, and requester attribution.
+- **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform tag plus an author hashtag, and requester attribution.
 - **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
 
 ## Supported Platforms
 
 | Platform | Method | Media | Inline |
 | --- | --- | --- | :---: |
-| **Twitter / X** | FxTwitter API | Photos, GIFs, videos | ✅ |
+| **Twitter / X** | FxTwitter API | Photos, GIFs, videos, Articles (cover + preview) | ✅ |
 | **Instagram** | `parth-dl` (GraphQL) | Images, carousels, reels | ✅ |
 | **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux` | Video downloads | ✅ |
 | **Pixiv** | Artwork/gallery resolver | Photo / media groups | — |
