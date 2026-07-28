@@ -336,7 +336,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     ):
         # X Articles (long-form posts) carry an empty `text` (just the t.co
         # link) and `media: null` — content lives under `article` instead.
-        self.update.message.text = "https://x.com/waterloo_intern/status/2081762065392541951"
+        self.update.message.text = (
+            "https://x.com/waterloo_intern/status/2081762065392541951"
+        )
 
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
@@ -380,7 +382,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_article_without_cover_sends_text_message(self, mock_get):
-        self.update.message.text = "https://x.com/waterloo_intern/status/2081762065392541951"
+        self.update.message.text = (
+            "https://x.com/waterloo_intern/status/2081762065392541951"
+        )
 
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 200
