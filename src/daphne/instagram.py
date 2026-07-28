@@ -7,7 +7,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
+from daphne.messages import HtmlMessage, PARSE_MODE_HTML, author_tag, sender_attribution
 from daphne.twitter import send_photos, try_delete_message
 from daphne.downloader import probe_video_dimensions
 from daphne.config import video_upload_limit_mb
@@ -172,6 +172,9 @@ async def handle_instagram_links(
 
     # Construct caption
     tags = ["instagram"]
+    slug = author_tag(uploader)
+    if slug and slug not in tags:
+        tags.append(slug)
     caption = (
         HtmlMessage(sender=sender)
         .title(title or f"Instagram Post by @{uploader}")

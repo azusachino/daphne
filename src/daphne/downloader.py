@@ -6,7 +6,7 @@ import json
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Tuple, Optional
 
-from daphne.messages import HtmlMessage
+from daphne.messages import HtmlMessage, author_tag
 
 logger = logging.getLogger(__name__)
 
@@ -445,6 +445,10 @@ def format_video_caption(
         "pixiv": "🎨",
     }
     icon = platform_icons.get(platform.lower(), "🎥")
+    tags = [source_tag]
+    slug = author_tag(uploader)
+    if slug and slug not in tags:
+        tags.append(slug)
     return (
         HtmlMessage(sender=sender)
         .title(title)
@@ -453,6 +457,6 @@ def format_video_caption(
             ("🕒 Duration", duration),
         )
         .link(url, f"🔗 Source ({icon} {platform.capitalize()})")
-        .tags(source_tag)
+        .tags(*tags)
         .render()
     )
