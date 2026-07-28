@@ -344,10 +344,10 @@ async def handle_twitter_links(
                 tweet_text = tweet.get("text", "")
                 # The URL's username segment is whatever the sender typed; X
                 # redirects it to the right tweet by ID regardless, so it can
-                # be stale or wrong. The API's author record is authoritative.
-                author_username = (tweet.get("author") or {}).get(
-                    "screen_name"
-                ) or username
+                # be stale or wrong. Only the API's author record is used for
+                # the hashtag - no fallback to the URL segment, so a missing
+                # author means no tag rather than a guessed one.
+                author_username = (tweet.get("author") or {}).get("screen_name")
 
                 # Check for media
                 media_info = tweet.get("media", {}) or {}

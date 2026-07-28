@@ -377,9 +377,10 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         await handle_twitter_links(self.update, self.context)
 
         _, kwargs = self.context.bot.send_message.call_args
-        # Falls back to the URL's username ("jack") since there's no author
-        # record, so a hashtag is still added from that.
-        self.assertIn("#jack", kwargs["text"])
+        # No author record from the API -> no author hashtag at all. No
+        # fallback to the URL's username ("jack") for the tag.
+        self.assertNotIn("#jack", kwargs["text"])
+        self.assertIn("#twitter", kwargs["text"])
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_author_hashtag_not_duplicated_with_text_hashtag(
