@@ -6,12 +6,12 @@
 
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
-[![Python](https://img.shields.io/badge/python-3.12+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.3.3-blue)](https://github.com/azusachino/daphne/releases)
+[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.3.4-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-133%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -40,37 +40,37 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 - **🎬 Multi-engine video downloads** — `yt-dlp` → `you-get` → `lux` fallback with automatic dimension/duration probing and **truncation detection** (a partial download is retried on the next engine rather than accepted).
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
-- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from *any* chat (user-allowlisted).
+- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
 - **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml` or, optionally, live-edited via Valkey and the admin-only `/grant`, `/revoke`, `/roles` commands. See [RBAC.md](RBAC.md).
-- **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a *Queued…* notice.
+- **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a _Queued…_ notice.
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform tag plus an author hashtag, and requester attribution.
 - **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
 
 ## Supported Platforms
 
-| Platform | Method | Media | Inline |
-| --- | --- | --- | :---: |
-| **Twitter / X** | FxTwitter API | Photos, GIFs, videos, Articles (cover + preview) | ✅ |
-| **Instagram** | `parth-dl` (GraphQL) | Images, carousels, reels | ✅ |
-| **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux` | Video downloads | ✅ |
-| **Pixiv** | Artwork/gallery resolver | Photo / media groups | — |
-| **Bluesky** | XRPC identity + HLS parsing | Image carousels, videos | — |
-| **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback) | Direct video | — |
-| **Image galleries** | `gallery-dl` (`/gallery`) | Batched photo groups | — |
+| Platform                     | Method                          | Media                                            | Inline |
+| ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
+| **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (cover + preview) |   ✅   |
+| **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
+| **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux`    | Video downloads                                  |   ✅   |
+| **Pixiv**                    | Artwork/gallery resolver        | Photo / media groups                             |   —    |
+| **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
+| **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
+| **Image galleries**          | `gallery-dl` (`/gallery`)       | Batched photo groups                             |   —    |
 
 > Pixiv is intentionally excluded from inline: its CDN rejects hotlinking (requires a `Referer` header), and inline results hand Telegram a bare URL to fetch — so it works **in-chat** only.
 
 ## Commands & Modes
 
-| Command | Description |
-| --- | --- |
-| Paste a link | Auto-detect the platform and convert it in the chat |
-| `/start` | Welcome message; answers even before RBAC has whitelisted you |
-| `/audio <link>` | Extract the audio track as MP3 |
-| `/gallery <link>` | Download an image gallery and send it as media group(s) |
-| `/help` | Show usage |
-| `@daphne <link>` | **Inline mode** — convert from any chat (requires `inline_convert`) |
+| Command           | Description                                                         |
+| ----------------- | ------------------------------------------------------------------- |
+| Paste a link      | Auto-detect the platform and convert it in the chat                 |
+| `/start`          | Welcome message; answers even before RBAC has whitelisted you       |
+| `/audio <link>`   | Extract the audio track as MP3                                      |
+| `/gallery <link>` | Download an image gallery and send it as media group(s)             |
+| `/help`           | Show usage                                                          |
+| `@daphne <link>`  | **Inline mode** — convert from any chat (requires `inline_convert`) |
 
 Admins get three additional commands (`/grant`, `/revoke`, `/roles`) — deliberately left out of Telegram's `/` picker for everyone else. See [RBAC.md](RBAC.md#5-live-edits-grant-revoke-roles).
 
@@ -96,10 +96,10 @@ For inline mode, enable it once with `@BotFather` → `/setinline`.
 
 ### Secrets (environment)
 
-| Variable | Purpose |
-| --- | --- |
-| `DAPHNE_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Credentials for the local Bot API sidecar |
+| Variable                                | Purpose                                             |
+| --------------------------------------- | --------------------------------------------------- |
+| `DAPHNE_BOT_TOKEN`                      | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Credentials for the local Bot API sidecar           |
 
 ## Configuration
 
@@ -150,7 +150,7 @@ Daphne resolves access in order: **admin bypass → public commands → chat-lev
 make fmt      # Format code (ruff)
 make lint     # Lint check (ruff)
 make test     # Run unit tests
-make ready    # fmt + lint + test + container smoke build
+make ready    # fmt + lint + test
 ```
 
 - **Nix-first** tooling from the devShell; `uv` for the Python runtime.
@@ -158,7 +158,7 @@ make ready    # fmt + lint + test + container smoke build
 
 ## Architecture
 
-- **Python 3.12+**, `python-telegram-bot`, polling-based.
+- **Python 3.14**, `python-telegram-bot`, polling-based.
 - **Stateless**: no database; secrets in env, everything else in `config.toml`.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 

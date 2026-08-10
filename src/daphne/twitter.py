@@ -20,6 +20,8 @@ TWITTER_REGEX = re.compile(
     r"https?://(?:www\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/([a-zA-Z0-9_]+)/status/(\d+)",
     re.IGNORECASE,
 )
+TWITTER_MAX_VIDEO_DIMENSION = 1280
+TWITTER_VIDEO_DIMENSIONS_REGEX = re.compile(r"/(?P<width>\d+)x(?P<height>\d+)(?:/|$)")
 
 
 def contains_twitter_link(text: str) -> bool:
@@ -40,6 +42,41 @@ def extract_twitter_link(text: str):
         tweet_id = match.group(3)
         return domain, username, tweet_id
     return None
+
+
+def select_twitter_video_url(video: dict) -> str:
+    """Select the highest-bitrate H.264 MP4 within the iOS-safe size cap."""
+    candidates = []
+    for format_info in video.get("formats", []) or []:
+        if (
+            str(format_info.get("container", "")).lower() != "mp4"
+            or str(format_info.get("codec", "")).lower() != "h264"
+            or not format_info.get("url")
+        ):
+            continue
+
+        try:
+            width = int(format_info.get("width", 0))
+            height = int(format_info.get("height", 0))
+        except (TypeError, ValueError):
+            width = height = 0
+
+        if not width or not height:
+            dimensions = TWITTER_VIDEO_DIMENSIONS_REGEX.search(format_info["url"])
+            if dimensions:
+                width = int(dimensions.group("width"))
+                height = int(dimensions.group("height"))
+
+        if width and height and max(width, height) <= TWITTER_MAX_VIDEO_DIMENSION:
+            try:
+                bitrate = int(format_info.get("bitrate", 0) or 0)
+            except (TypeError, ValueError):
+                bitrate = 0
+            candidates.append((bitrate, format_info["url"]))
+
+    if candidates:
+        return max(candidates)[1]
+    return video["url"]
 
 
 def _media_lists_from_tweet(tweet: dict) -> tuple[list[str], list[dict], list[dict]]:
@@ -68,8 +105,12 @@ def _media_lists_from_tweet(tweet: dict) -> tuple[list[str], list[dict], list[di
     for v in vids:
         if "url" not in v:
             continue
-        entry = {"url": v["url"], "thumbnail": v.get("thumbnail_url")}
-        if str(v.get("type", "")).lower() in {"gif", "animated_gif"}:
+        is_gif = str(v.get("type", "")).lower() in {"gif", "animated_gif"}
+        entry = {
+            "url": v["url"] if is_gif else select_twitter_video_url(v),
+            "thumbnail": v.get("thumbnail_url"),
+        }
+        if is_gif:
             gifs.append(entry)
         else:
             videos.append(entry)
@@ -370,7 +411,7 @@ async def handle_twitter_links(
 
                 photo_urls = [p["url"] for p in photos if "url" in p]
                 video_urls = [
-                    v["url"]
+                    select_twitter_video_url(v)
                     for v in videos
                     if "url" in v
                     and str(v.get("type", "")).lower() not in {"gif", "animated_gif"}
