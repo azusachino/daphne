@@ -49,7 +49,7 @@ def bot_version() -> str:
     try:
         return version("daphne")
     except PackageNotFoundError:
-        return "0.3.0"
+        return "0.3.4"
 
 
 def sender_attribution(user) -> Optional[str]:

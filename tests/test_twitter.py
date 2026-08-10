@@ -9,6 +9,7 @@ from daphne.twitter import (
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
+    select_twitter_video_url,
 )
 
 
@@ -59,6 +60,36 @@ class TestTwitterExtraction(unittest.TestCase):
         self.assertEqual(domain, "x.com")
         self.assertEqual(username, "some_user")
         self.assertEqual(tweet_id, "1234567890")
+
+    def test_select_twitter_video_url_uses_bounded_h264_rendition(self):
+        video = {
+            "url": "https://video.twimg.com/vid/avc1/2160x3840/high.mp4?tag=29",
+            "formats": [
+                {
+                    "url": "https://video.twimg.com/vid/avc1/480x852/low.mp4?tag=29",
+                    "container": "mp4",
+                    "codec": "h264",
+                    "bitrate": 640000,
+                },
+                {
+                    "url": "https://video.twimg.com/vid/avc1/720x1280/safe.mp4?tag=29",
+                    "container": "mp4",
+                    "codec": "h264",
+                    "bitrate": 1280000,
+                },
+                {
+                    "url": "https://video.twimg.com/vid/avc1/2160x3840/high.mp4?tag=29",
+                    "container": "mp4",
+                    "codec": "h264",
+                    "bitrate": 4000000,
+                },
+            ],
+        }
+
+        self.assertEqual(
+            select_twitter_video_url(video),
+            "https://video.twimg.com/vid/avc1/720x1280/safe.mp4?tag=29",
+        )
 
 
 class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
@@ -198,7 +229,24 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
                 "media": {
                     "photos": [],
                     "videos": [
-                        {"url": "https://video.twimg.com/test.mp4", "type": "video"}
+                        {
+                            "url": "https://video.twimg.com/vid/avc1/2160x3840/high.mp4?tag=29",
+                            "type": "video",
+                            "formats": [
+                                {
+                                    "url": "https://video.twimg.com/vid/avc1/720x1280/safe.mp4?tag=29",
+                                    "container": "mp4",
+                                    "codec": "h264",
+                                    "bitrate": 1280000,
+                                },
+                                {
+                                    "url": "https://video.twimg.com/vid/avc1/2160x3840/high.mp4?tag=29",
+                                    "container": "mp4",
+                                    "codec": "h264",
+                                    "bitrate": 4000000,
+                                },
+                            ],
+                        }
                     ],
                 },
             },
@@ -211,7 +259,10 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_video.assert_called_once()
         kwargs = self.context.bot.send_video.call_args[1]
         self.assertEqual(kwargs["chat_id"], 123456)
-        self.assertEqual(kwargs["video"], "https://video.twimg.com/test.mp4")
+        self.assertEqual(
+            kwargs["video"],
+            "https://video.twimg.com/vid/avc1/720x1280/safe.mp4?tag=29",
+        )
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
