@@ -28,7 +28,9 @@ DOCKERFILE_BASE = REPO_ROOT / "Dockerfile.base"
 
 
 def latest_github_release(repo: str) -> str:
-    resp = httpx.get(f"https://api.github.com/repos/{repo}/releases/latest", timeout=10.0)
+    resp = httpx.get(
+        f"https://api.github.com/repos/{repo}/releases/latest", timeout=10.0
+    )
     resp.raise_for_status()
     return resp.json()["tag_name"].lstrip("v")
 
@@ -42,7 +44,9 @@ def current_lux_version() -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", action="store_true", help="Build the base image after resolving")
+    parser.add_argument(
+        "--build", action="store_true", help="Build the base image after resolving"
+    )
     parser.add_argument("--container-tool", default="podman")
     args = parser.parse_args()
 
