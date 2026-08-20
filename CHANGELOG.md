@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-08-20
+
+### Fixed
+
+- **YouTube Downloads (EJS)**: yt-dlp's YouTube extractor now requires an external JS runtime to solve its challenge (see [yt-dlp/yt-dlp wiki: EJS](https://github.com/yt-dlp/yt-dlp/wiki/EJS)); the base image had none, so every YouTube download failed with a 403. Added `deno` to `Dockerfile.base` and `--remote-components ejs:github` to every yt-dlp invocation -- deno alone finds a runtime but still needs that flag to actually fetch its solver script. `downloader.py` also now classifies each engine's failure (missing JS runtime, EJS fetch failure, bot/login check, private/unavailable video, 403) into an actionable reason instead of a generic "all engines failed" message.
+
 ## [0.3.4] - 2026-08-10
 
 ### Fixed
