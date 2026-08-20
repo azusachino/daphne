@@ -1,6 +1,11 @@
-# Base image: OS tools + lux. These layers change rarely, so building/pushing
-# this separately keeps the slow apt/lux steps out of every app rebuild.
-# The app Dockerfile builds FROM this image.
+# Base image: OS tools + lux + deno. These layers change rarely, so building/
+# pushing this separately keeps the slow apt/lux steps out of every app
+# rebuild. The app Dockerfile builds FROM this image.
+#
+# deno is yt-dlp's default JS runtime for its EJS challenge solver (YouTube
+# extraction silently degrades to 403s without one, see
+# https://github.com/yt-dlp/yt-dlp/wiki/EJS) -- yt-dlp auto-detects it on
+# PATH, no extra flag needed.
 #
 # Multi-arch capable: lux is fetched per target arch. Build the default amd64
 # with `make image-base`; build other arches with buildx, e.g.
@@ -11,7 +16,7 @@ ARG LUX_VERSION=0.24.1
 # TARGETARCH is provided automatically by BuildKit for the target platform.
 ARG TARGETARCH
 
-RUN apk add --no-cache ca-certificates coreutils curl ffmpeg tar tzdata tini \
+RUN apk add --no-cache ca-certificates coreutils curl deno ffmpeg tar tzdata tini \
     && case "${TARGETARCH}" in \
          amd64) LUX_ARCH=x86_64 ;; \
          arm64) LUX_ARCH=arm64 ;; \

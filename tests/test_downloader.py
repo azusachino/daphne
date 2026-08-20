@@ -3,6 +3,7 @@ import unittest
 import tempfile
 import shutil
 import json
+import subprocess
 from unittest.mock import patch, MagicMock
 
 from daphne.downloader import (
@@ -335,6 +336,27 @@ class TestDownloader(unittest.TestCase):
         mock_scan.side_effect = [None, None, None, None]
         with self.assertRaises(RuntimeError):
             download_video("http://x.com", self.test_dir)
+
+    @patch("daphne.downloader.scan_largest_media_file", return_value=None)
+    @patch("subprocess.run")
+    def test_download_video_raises_specific_reason_for_missing_js_runtime(
+        self, mock_run, mock_scan
+    ):
+        # Real case that motivated this classification: YouTube's extractor
+        # warns and then 403s when yt-dlp has no JS runtime to solve its
+        # challenge -- every engine fails identically, and the raised error
+        # should say *that*, not a generic "all engines failed".
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1,
+            ["yt-dlp"],
+            stderr="WARNING: [youtube] No supported JavaScript runtime could "
+            "be found. See https://github.com/yt-dlp/yt-dlp/wiki/EJS for "
+            "details.\nERROR: unable to download video data: HTTP Error 403: "
+            "Forbidden",
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            download_video("https://youtube.com/watch?v=x", self.test_dir)
+        self.assertIn("JavaScript runtime", str(ctx.exception))
 
     @patch("daphne.downloader.probe_video_duration")
     @patch("daphne.downloader.scan_largest_media_file")

@@ -1,7 +1,9 @@
-# App image: built FROM the prebuilt base (OS tools + lux). Only the Python
-# dependency sync and source copy live here, so day-to-day rebuilds skip the
-# slow tool layers. See Dockerfile.base. Override the base with --build-arg.
-ARG BASE_IMAGE=docker.io/azusachino/daphne-base:py3.14-lux0.24.1
+# App image: built FROM the prebuilt base (OS tools + lux + deno). Only the
+# Python dependency sync and source copy live here, so day-to-day rebuilds
+# skip the slow tool layers. See Dockerfile.base. The base is local-only
+# (built by `make image-base`, never pushed to a registry) — override with
+# --build-arg if you built it under a different tag.
+ARG BASE_IMAGE=azusachino.icu/daphne-base:py3.14-lux0.24.1-deno
 FROM ${BASE_IMAGE}
 
 WORKDIR /app
