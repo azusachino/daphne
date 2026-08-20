@@ -1,4 +1,4 @@
-.PHONY: dev init init-local test fmt fmt-check lint ready image-base image-base-push image-base-cross image-build image-push image-local verify up down
+.PHONY: dev init init-local test fmt fmt-check lint ready image-base image-base-latest check-base-versions image-build image-push image-local verify up down
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
@@ -7,12 +7,12 @@ IMAGE ?= docker.io/azusachino/daphne
 # imported straight into containerd, never pulled from a registry).
 LOCAL_IMAGE ?= azusachino.icu/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
-# Base image (OS tools + lux); tagged by toolchain, bumped only when tools change.
-BASE_IMAGE ?= docker.io/azusachino/daphne-base
-BASE_TAG ?= py3.14-lux0.24.1
+# Base image (OS tools + lux + deno); tagged by toolchain, bumped only when
+# tools change. Local-only like LOCAL_IMAGE above — never pushed to a
+# registry, just built once (image-base) and reused as a --build-arg.
+BASE_IMAGE ?= azusachino.icu/daphne-base
+BASE_TAG ?= py3.14-lux0.24.1-deno
 BASE_REF := $(BASE_IMAGE):$(BASE_TAG)
-# Arches to build for the cross (multi-arch) base; default app build stays amd64.
-PLATFORMS ?= linux/amd64,linux/arm64
 
 dev:
 	uv run daphne
@@ -40,12 +40,11 @@ ready: fmt lint test
 image-base:
 	$(CONTAINER_TOOL) build -f Dockerfile.base -t $(BASE_REF) .
 
-image-base-push: image-base
-	$(CONTAINER_TOOL) push $(BASE_REF)
+check-base-versions: ## Report lux's pinned vs. latest GitHub release, and deno's latest (informational -- it floats via apk)
+	uv run scripts/resolve_base_versions.py
 
-# Build and push a multi-arch base in one shot (requires docker buildx).
-image-base-cross:
-	docker buildx build -f Dockerfile.base --platform $(PLATFORMS) -t $(BASE_REF) --push .
+image-base-latest: ## Resolve lux's latest release and build the base image pinned to it (deno always floats to Alpine's latest via apk)
+	uv run scripts/resolve_base_versions.py --build --container-tool $(CONTAINER_TOOL)
 
 image-build: image-base
 	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t daphne:latest .

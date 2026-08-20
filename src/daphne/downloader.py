@@ -50,6 +50,15 @@ def sanitize_video_url(url: str) -> str:
     return url
 
 
+# yt-dlp's EJS challenge solver (see https://github.com/yt-dlp/yt-dlp/wiki/EJS)
+# needs a JS runtime (deno, installed in Dockerfile.base) *and* this explicit
+# opt-in to fetch its solver script from GitHub -- without it, YouTube
+# extraction silently degrades to a blocked format set even with deno
+# present. Harmless on non-YouTube extractors, so it's applied to every
+# yt-dlp invocation rather than threaded through per-platform.
+YT_DLP_REMOTE_COMPONENTS = ["--remote-components", "ejs:github"]
+
+
 def bilibili_headers() -> list[str]:
     return [
         "--add-header",
@@ -97,22 +106,65 @@ def scan_largest_media_file(out_dir: str) -> Optional[str]:
     return largest_file
 
 
-def _run_cmd(cmd: list[str]) -> bool:
+def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
     logger.info(f"Running command: {' '.join(cmd)}")
     try:
         res = subprocess.run(
             cmd, capture_output=True, text=True, check=True, timeout=300.0
         )
         logger.info(f"Command succeeded. stdout: {res.stdout[:500]}")
-        return True
+        return True, ""
     except subprocess.CalledProcessError as e:
         logger.warning(
             f"Command failed with exit code {e.returncode}. stderr: {e.stderr}"
         )
-        return False
+        return False, e.stderr or ""
     except Exception as e:
         logger.warning(f"Failed to run command {cmd}: {e}")
-        return False
+        return False, str(e)
+
+
+# Ordered (most specific/actionable first) substrings to look for across every
+# failed engine's stderr, mapped to a message a Telegram user can actually act
+# on. Falls through to a generic message when nothing recognizable is found,
+# so an unclassified failure still fails loud rather than lying about the cause.
+_FAILURE_PATTERNS: list[tuple[str, str]] = [
+    (
+        "No supported JavaScript runtime",
+        "YouTube extraction needs a JavaScript runtime that isn't installed on "
+        "the server yet — this is a known server-side issue, not a problem "
+        "with your link.",
+    ),
+    (
+        "solving failed",
+        "YouTube's JS challenge solver couldn't fetch its solver script "
+        "(likely blocked network access to GitHub from the server) — this is "
+        "a known server-side issue, not a problem with your link.",
+    ),
+    (
+        "Sign in to confirm",
+        "The platform is asking for a bot/login check that yt-dlp can't pass "
+        "right now — try again later.",
+    ),
+    ("Private video", "This video is private."),
+    (
+        "Video unavailable",
+        "This video is unavailable (removed, region-locked, or age-restricted).",
+    ),
+    (
+        "HTTP Error 403",
+        "The platform blocked this download (403 Forbidden) — may be "
+        "temporary rate-limiting or a blocked format.",
+    ),
+]
+
+
+def _classify_failure(engine_errors: list[str]) -> str:
+    combined = "\n".join(engine_errors)
+    for needle, message in _FAILURE_PATTERNS:
+        if needle in combined:
+            return message
+    return "All download engines failed for this link."
 
 
 # A download is treated as complete when its probed duration covers at least
@@ -175,6 +227,7 @@ def download_video(
             "--no-playlist",
             "--restrict-filenames",
             *embed_flags,
+            *YT_DLP_REMOTE_COMPONENTS,
             "--",
             url,
         ]
@@ -190,6 +243,7 @@ def download_video(
             "--no-playlist",
             "--restrict-filenames",
             *embed_flags,
+            *YT_DLP_REMOTE_COMPONENTS,
             "--user-agent",
             random.choice(USER_AGENTS),
         ]
@@ -209,9 +263,12 @@ def download_video(
     # complete, we still return the best partial rather than failing outright.
     best_path: Optional[str] = None
     best_duration = -1.0
+    engine_errors: list[str] = []
 
     for build_cmd in engines:
-        _run_cmd(build_cmd())
+        _, stderr = _run_cmd(build_cmd())
+        if stderr:
+            engine_errors.append(stderr)
         largest = scan_largest_media_file(out_dir)
         if not largest:
             continue
@@ -230,7 +287,7 @@ def download_video(
         )
         return best_path
 
-    raise RuntimeError("Failed to download video using all engines")
+    raise RuntimeError(_classify_failure(engine_errors))
 
 
 def download_audio(url: str, out_dir: str) -> str:
@@ -250,10 +307,11 @@ def download_audio(url: str, out_dir: str) -> str:
         f"{out_dir}/%(id)s.%(ext)s",
         "--no-playlist",
         "--restrict-filenames",
+        *YT_DLP_REMOTE_COMPONENTS,
         "--",
         url,
     ]
-    _run_cmd(cmd)
+    _, stderr = _run_cmd(cmd)
     largest = scan_largest_audio_file(out_dir)
     if largest:
         return largest
@@ -262,7 +320,7 @@ def download_audio(url: str, out_dir: str) -> str:
     if largest_media:
         return largest_media
 
-    raise RuntimeError("Failed to download audio using all engines")
+    raise RuntimeError(_classify_failure([stderr] if stderr else []))
 
 
 def probe_video_dimensions(
@@ -317,6 +375,7 @@ def fetch_video_metadata(url: str) -> dict:
         "yt-dlp",
         "--dump-json",
         "--no-playlist",
+        *YT_DLP_REMOTE_COMPONENTS,
         "--user-agent",
         random.choice(USER_AGENTS),
     ]
@@ -367,6 +426,7 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
         "yt-dlp",
         "--dump-json",
         "--ignore-no-formats-error",
+        *YT_DLP_REMOTE_COMPONENTS,
         "--user-agent",
         random.choice(USER_AGENTS),
         "--",
