@@ -110,30 +110,5 @@ Public commands are rate-limited per user to prevent denial-of-service attempts.
 
 ---
 
-## 5. Live Edits: `/grant`, `/revoke`, `/roles`
-
-By default, changing RBAC means editing `config.toml` and restarting. Admins
-(role `"admin"`) can instead edit roles live from Telegram:
-
-| Command | Effect |
-| :--- | :--- |
-| `/roles` | Lists configured role names and their permissions. |
-| `/grant <role>` (reply to a message) | Grants `<role>` to the replied-to user. |
-| `/grant <role>` (no reply) | Grants `<role>` to the current chat. |
-| `/revoke` (reply to a message) | Removes the replied-to user's role. |
-| `/revoke` (no reply) | Removes the current chat's role. |
-
-These three commands are hardcoded to the `admin` role check — they can never
-be unlocked by listing `"grant"`, `"revoke"`, or `"roles"` in a role's
-`permissions`, and they are intentionally left out of the Telegram `/` command
-menu so non-admins don't see them.
-
-**Persistence**: without a Valkey URL configured, grants/revokes are
-in-memory only and reset on restart. Set `[rbac] valkey_url = "redis://..."`
-(or the `DAPHNE_VALKEY_URL` env var, which takes precedence and keeps
-credentials out of the git-tracked config) to persist them and pick up edits
-made directly in Valkey — the bot refreshes from Valkey every 30 seconds and
-once at startup. `config.toml` remains the fallback and, on first boot with
-an empty Valkey store, seeds it. Valkey key layout: `daphne:rbac:roles`,
-`daphne:rbac:users`, `daphne:rbac:chats`, `daphne:rbac:public_commands`,
-namespaced so other self-hosted bots can share the same Valkey instance.
+Changing RBAC means editing `config.toml` and restarting the bot — there is
+no live/runtime editing path.

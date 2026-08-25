@@ -39,19 +39,6 @@ def rbac_config() -> dict[str, Any]:
     return load_config().get("rbac", {})
 
 
-def rbac_valkey_url() -> str | None:
-    """Optional Valkey/Redis URL for live RBAC edits without a redeploy.
-
-    Env var takes precedence so the URL (which may carry credentials) need not
-    live in the git-tracked config.toml. When unset, RBAC stays fully static.
-    """
-    url = os.environ.get("DAPHNE_VALKEY_URL")
-    if url:
-        return url
-    url = rbac_config().get("valkey_url")
-    return str(url) if url else None
-
-
 def telegram_api_url() -> str | None:
     url = app_config().get("telegram_api_url")
     if url is None:

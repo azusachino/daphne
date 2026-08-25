@@ -1,23 +1,10 @@
-import asyncio
 import os
 import time
 import logging
 from typing import Dict, Any, Tuple, Optional
-from daphne.config import rbac_config, rbac_valkey_url
-
-try:
-    import valkey.asyncio as valkey_asyncio
-except ImportError:
-    valkey_asyncio = None
+from daphne.config import rbac_config
 
 logger = logging.getLogger(__name__)
-
-# Valkey key layout for live RBAC edits. Namespaced by app so other
-# self-hosted bots (e.g. suzuran) can share the same Valkey instance.
-VALKEY_ROLES_KEY = "daphne:rbac:roles"
-VALKEY_USERS_KEY = "daphne:rbac:users"
-VALKEY_CHATS_KEY = "daphne:rbac:chats"
-VALKEY_PUBLIC_COMMANDS_KEY = "daphne:rbac:public_commands"
 
 
 class AccessStatus:
@@ -42,14 +29,9 @@ class AccessResult:
 
 
 class RbacService:
-    def __init__(
-        self,
-        config_dict: Optional[Dict[str, Any]] = None,
-        valkey_url: Optional[str] = None,
-    ):
+    def __init__(self, config_dict: Optional[Dict[str, Any]] = None):
         if config_dict is None:
             config_dict = {}
-        self.valkey_url = valkey_url
 
         # Load public commands
         self.public_commands = set(
@@ -117,12 +99,10 @@ class RbacService:
 
     @classmethod
     def load(cls, path: str | None = None) -> "RbacService":
-        valkey_url = rbac_valkey_url()
-
         config_dict = rbac_config()
         if config_dict:
             logger.info("RBAC configuration loaded from config.toml")
-            return cls(config_dict, valkey_url=valkey_url)
+            return cls(config_dict)
 
         if path is None:
             path = get_rbac_config_path()
@@ -130,7 +110,7 @@ class RbacService:
             logger.warning(
                 f"RBAC configuration file not found at {path}. Falling back to default configuration."
             )
-            return cls(valkey_url=valkey_url)
+            return cls()
 
         try:
             import tomllib
@@ -138,12 +118,12 @@ class RbacService:
             with open(path, "rb") as f:
                 data = tomllib.load(f)
             logger.info(f"RBAC configuration loaded from {path}")
-            return cls(data, valkey_url=valkey_url)
+            return cls(data)
         except Exception as e:
             logger.error(
                 f"Failed to load RBAC configuration from {path}: {e}. Falling back to default configuration."
             )
-            return cls(valkey_url=valkey_url)
+            return cls()
 
     def has_permission(self, role_name: str, command: str) -> bool:
         perms = self.roles.get(role_name)
@@ -309,168 +289,8 @@ class RbacService:
     def is_admin(self, user_id: int) -> bool:
         return self.users.get(user_id) == "admin"
 
-    def role_exists(self, role: str) -> bool:
-        return role in self.roles
-
-    def list_roles(self) -> list[tuple[str, list[str]]]:
-        return sorted((name, sorted(perms)) for name, perms in self.roles.items())
-
-    def grant_user(self, user_id: int, role: str) -> None:
-        self.users[str(user_id)] = role
-        self.users[user_id] = role
-
-    def revoke_user(self, user_id: int) -> bool:
-        existed = user_id in self.users or str(user_id) in self.users
-        self.users.pop(user_id, None)
-        self.users.pop(str(user_id), None)
-        return existed
-
-    def grant_chat(self, chat_id: int, role: str) -> None:
-        self.chats[str(chat_id)] = role
-        self.chats[chat_id] = role
-
-    def revoke_chat(self, chat_id: int) -> bool:
-        existed = chat_id in self.chats or str(chat_id) in self.chats
-        self.chats.pop(chat_id, None)
-        self.chats.pop(str(chat_id), None)
-        return existed
-
 
 def get_rbac_config_path() -> str:
     if os.path.exists("rbac.toml"):
         return "rbac.toml"
     return os.path.expanduser("~/.config/daphne/rbac.toml")
-
-
-async def refresh_rbac_from_valkey(rbac: RbacService) -> bool:
-    """Re-reads roles/users/chats from Valkey, replacing the in-memory RBAC state.
-
-    Returns True on a successful refresh. On an empty store (first boot) this
-    seeds Valkey from the current in-memory config instead of wiping RBAC, and
-    returns False. On a connection error, the previous state is kept as-is.
-    """
-    if not rbac.valkey_url or valkey_asyncio is None:
-        return False
-
-    try:
-        client = valkey_asyncio.Redis.from_url(
-            rbac.valkey_url, decode_responses=True, socket_timeout=5
-        )
-        try:
-            roles_raw = await client.hgetall(VALKEY_ROLES_KEY)
-            users_raw = await client.hgetall(VALKEY_USERS_KEY)
-            chats_raw = await client.hgetall(VALKEY_CHATS_KEY)
-            public_raw = await client.smembers(VALKEY_PUBLIC_COMMANDS_KEY)
-        finally:
-            await client.aclose()
-    except Exception as e:
-        logger.warning("Valkey RBAC refresh failed; keeping previous config: %s", e)
-        return False
-
-    if not roles_raw and not users_raw and not chats_raw:
-        await seed_valkey_from_rbac(rbac)
-        return False
-
-    roles = {
-        name: set(p.lower() for p in perms.split(",") if p)
-        for name, perms in roles_raw.items()
-    }
-
-    users: Dict[Any, str] = {}
-    for k, v in users_raw.items():
-        users[str(k)] = v
-        try:
-            users[int(k)] = v
-        except ValueError:
-            pass
-
-    chats: Dict[Any, str] = {}
-    for k, v in chats_raw.items():
-        chats[str(k)] = v
-        try:
-            chats[int(k)] = v
-        except ValueError:
-            pass
-
-    rbac.roles = roles
-    rbac.users = users
-    rbac.chats = chats
-    if public_raw:
-        rbac.public_commands = set(c.lower() for c in public_raw)
-    logger.info(
-        "RBAC refreshed from Valkey; roles=%d users=%d chats=%d",
-        len(roles),
-        len(users_raw),
-        len(chats_raw),
-    )
-    return True
-
-
-async def seed_valkey_from_rbac(rbac: RbacService) -> None:
-    """One-time bootstrap: copies the statically-configured RBAC into Valkey
-    so it becomes the live, editable source of truth from then on."""
-    if not rbac.valkey_url or valkey_asyncio is None:
-        return
-    try:
-        client = valkey_asyncio.Redis.from_url(
-            rbac.valkey_url, decode_responses=True, socket_timeout=5
-        )
-        try:
-            for role_name, perms in rbac.roles.items():
-                await client.hset(VALKEY_ROLES_KEY, role_name, ",".join(sorted(perms)))
-            for user_id, role in rbac.users.items():
-                if isinstance(user_id, int):
-                    await client.hset(VALKEY_USERS_KEY, str(user_id), role)
-            for chat_id, role in rbac.chats.items():
-                if isinstance(chat_id, int):
-                    await client.hset(VALKEY_CHATS_KEY, str(chat_id), role)
-            if rbac.public_commands:
-                await client.sadd(VALKEY_PUBLIC_COMMANDS_KEY, *rbac.public_commands)
-        finally:
-            await client.aclose()
-        logger.info("Seeded Valkey RBAC store from config.toml (first boot).")
-    except Exception as e:
-        logger.warning("Failed to seed Valkey RBAC store: %s", e)
-
-
-async def persist_grant_to_valkey(
-    rbac: RbacService, key: str, field: str, value: str
-) -> bool:
-    if not rbac.valkey_url or valkey_asyncio is None:
-        return False
-    try:
-        client = valkey_asyncio.Redis.from_url(
-            rbac.valkey_url, decode_responses=True, socket_timeout=5
-        )
-        try:
-            await client.hset(key, field, value)
-        finally:
-            await client.aclose()
-        return True
-    except Exception as e:
-        logger.warning("Failed to persist RBAC grant to Valkey: %s", e)
-        return False
-
-
-async def persist_revoke_to_valkey(rbac: RbacService, key: str, field: str) -> bool:
-    if not rbac.valkey_url or valkey_asyncio is None:
-        return False
-    try:
-        client = valkey_asyncio.Redis.from_url(
-            rbac.valkey_url, decode_responses=True, socket_timeout=5
-        )
-        try:
-            await client.hdel(key, field)
-        finally:
-            await client.aclose()
-        return True
-    except Exception as e:
-        logger.warning("Failed to persist RBAC revoke to Valkey: %s", e)
-        return False
-
-
-async def valkey_rbac_refresh_loop(rbac: RbacService, interval: float = 30.0) -> None:
-    """Background task: periodically re-syncs RBAC state from Valkey."""
-    while True:
-        await asyncio.sleep(interval)
-        await refresh_rbac_from_valkey(rbac)

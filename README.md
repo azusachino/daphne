@@ -7,11 +7,11 @@
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.3.4-blue)](https://github.com/azusachino/daphne/releases)
+[![Version](https://img.shields.io/badge/version-0.3.6-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-133%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-114%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -32,7 +32,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state by default** — no database, secrets in the environment, everything else in a single `config.toml`. An optional Valkey connection can back live RBAC edits (see [RBAC.md](RBAC.md)); everything else stays stateless.
+Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state** — no database, no cache, secrets in the environment, everything else in a single `config.toml` (see [RBAC.md](RBAC.md)).
 
 ## Features
 
@@ -41,7 +41,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
-- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured in `config.toml` or, optionally, live-edited via Valkey and the admin-only `/grant`, `/revoke`, `/roles` commands. See [RBAC.md](RBAC.md).
+- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured statically in `config.toml`. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a _Queued…_ notice.
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform tag plus an author hashtag, and requester attribution.
@@ -71,8 +71,6 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | `/gallery <link>` | Download an image gallery and send it as media group(s)             |
 | `/help`           | Show usage                                                          |
 | `@daphne <link>`  | **Inline mode** — convert from any chat (requires `inline_convert`) |
-
-Admins get three additional commands (`/grant`, `/revoke`, `/roles`) — deliberately left out of Telegram's `/` picker for everyone else. See [RBAC.md](RBAC.md#5-live-edits-grant-revoke-roles).
 
 ## Quick Start
 
