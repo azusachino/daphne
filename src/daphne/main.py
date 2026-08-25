@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 import logging
@@ -44,17 +43,11 @@ load_env_file(".env")
 load_env_file(os.path.expanduser("~/.config/daphne/daphne.env"))
 
 # Import remaining modules after loading environment variables
-from daphne.bot import build_application, register_bot_commands, rbac_service  # noqa: E402
-from daphne.rbac import refresh_rbac_from_valkey, valkey_rbac_refresh_loop  # noqa: E402
+from daphne.bot import build_application, register_bot_commands  # noqa: E402
 
 
 async def post_init(app) -> None:
     await register_bot_commands(app)
-    if rbac_service.valkey_url:
-        await refresh_rbac_from_valkey(rbac_service)
-        app.bot_data["valkey_rbac_task"] = asyncio.create_task(
-            valkey_rbac_refresh_loop(rbac_service)
-        )
 
 
 def run_init(local: bool = False) -> None:
@@ -85,10 +78,6 @@ video_upload_limit_mb = 256
 
 [rbac]
 public_commands = ["help"]
-# Optional: back RBAC with Valkey for live /grant, /revoke edits without a
-# redeploy. Prefer the DAPHNE_VALKEY_URL env var over this key so credentials
-# stay out of git. Unset means fully static, config.toml-only RBAC.
-# valkey_url = "redis://valkey.default.svc:6379/0"
 
 [rbac.roles.admin]
 permissions = ["*"]

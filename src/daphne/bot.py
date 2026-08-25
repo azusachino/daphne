@@ -57,13 +57,7 @@ from daphne.messages import (
     escape_html,
     sender_attribution,
 )
-from daphne.rbac import (
-    RbacService,
-    VALKEY_CHATS_KEY,
-    VALKEY_USERS_KEY,
-    persist_grant_to_valkey,
-    persist_revoke_to_valkey,
-)
+from daphne.rbac import RbacService
 
 CALLBACK_URL_CACHE: dict[str, str] = {}
 
@@ -185,26 +179,13 @@ async def check_access_and_reply(update: Update, command: str) -> bool:
     return False
 
 
-def _daphne_overview(
-    sender: Optional[str], greeting: bool = False, is_admin: bool = False
-) -> str:
+def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
     body = (
         "Send a Twitter/X, Pixiv, Bilibili, b23, or YouTube link and I will "
         "convert it into Telegram-friendly media.\n\n"
         "/audio <link> — extract audio as MP3\n"
         "/gallery <link> — download an image gallery"
     )
-    if is_admin:
-        # Left out of BOT_COMMANDS on purpose (see register_bot_commands) so
-        # non-admins never see them in the "/" picker; surfaced here instead
-        # so an admin can actually discover they exist.
-        body += (
-            "\n\nAdmin:\n"
-            "/roles — list configured roles\n"
-            "/grant power_user — grant a role by name; reply to a user to "
-            "target them, or send with no reply to grant the current chat\n"
-            "/revoke — reply to revoke a user, or run with no reply to revoke the chat"
-        )
     return (
         HtmlMessage(sender=sender)
         .title("👋 Welcome to daphne" if greeting else "daphne")
@@ -217,159 +198,15 @@ def _daphne_overview(
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Always answers, bypassing RBAC: this is the one command Telegram expects
     # to respond even to a user/chat that isn't whitelisted yet.
-    user_id = update.effective_user.id if update.effective_user else 0
-    text = _daphne_overview(
-        sender_attribution(update.effective_user),
-        greeting=True,
-        is_admin=rbac_service.is_admin(user_id),
-    )
+    text = _daphne_overview(sender_attribution(update.effective_user), greeting=True)
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await check_access_and_reply(update, "help"):
         return
-    user_id = update.effective_user.id if update.effective_user else 0
-    text = _daphne_overview(
-        sender_attribution(update.effective_user),
-        is_admin=rbac_service.is_admin(user_id),
-    )
+    text = _daphne_overview(sender_attribution(update.effective_user))
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
-
-
-def _persistence_note(rbac: RbacService, persisted: bool) -> str:
-    if not rbac.valkey_url:
-        return "\n(not persisted — resets on restart; set a Valkey URL to persist)"
-    if not persisted:
-        return "\n⚠️ persist to Valkey failed — check logs"
-    return ""
-
-
-async def _reply_admin_only(update: Update) -> bool:
-    """Grant/revoke/roles are hardcoded to the admin role — they must never be
-    reachable via the regular config.toml permissions list (privilege escalation)."""
-    user_id = update.effective_user.id if update.effective_user else 0
-    if rbac_service.is_admin(user_id):
-        return True
-    await update.message.reply_text(
-        HtmlMessage(sender=sender_attribution(update.effective_user))
-        .text("Permission denied: admin only.")
-        .render(),
-        parse_mode=PARSE_MODE_HTML,
-    )
-    return False
-
-
-async def grant_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _reply_admin_only(update):
-        return
-    sender = sender_attribution(update.effective_user)
-
-    if not context.args:
-        await update.message.reply_text(
-            HtmlMessage(sender=sender)
-            .text(
-                "Usage: /grant power_user — replace power_user with the role "
-                "name. Reply to a user's message to grant them the role, or "
-                "send with no reply to grant the current chat."
-            )
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-        return
-
-    role = context.args[0]
-    if not rbac_service.role_exists(role):
-        known = ", ".join(name for name, _ in rbac_service.list_roles()) or "none"
-        await update.message.reply_text(
-            HtmlMessage(sender=sender)
-            .text(f"Unknown role: {role}\nKnown roles: {known}")
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-        return
-
-    reply = update.message.reply_to_message
-    if reply and reply.from_user:
-        target = reply.from_user
-        rbac_service.grant_user(target.id, role)
-        persisted = (
-            await persist_grant_to_valkey(
-                rbac_service, VALKEY_USERS_KEY, str(target.id), role
-            )
-            if rbac_service.valkey_url
-            else False
-        )
-        scope = f"user {target.full_name} ({target.id})"
-    else:
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        rbac_service.grant_chat(chat_id, role)
-        persisted = (
-            await persist_grant_to_valkey(
-                rbac_service, VALKEY_CHATS_KEY, str(chat_id), role
-            )
-            if rbac_service.valkey_url
-            else False
-        )
-        scope = f"this chat ({chat_id})"
-
-    note = _persistence_note(rbac_service, persisted)
-    line = f"Granted <b>{escape_html(role)}</b> to {escape_html(scope)}.{escape_html(note)}"
-    await update.message.reply_text(
-        HtmlMessage(sender=sender).raw(line).render(),
-        parse_mode=PARSE_MODE_HTML,
-    )
-
-
-async def revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _reply_admin_only(update):
-        return
-    sender = sender_attribution(update.effective_user)
-
-    reply = update.message.reply_to_message
-    if reply and reply.from_user:
-        target = reply.from_user
-        existed = rbac_service.revoke_user(target.id)
-        persisted = (
-            await persist_revoke_to_valkey(
-                rbac_service, VALKEY_USERS_KEY, str(target.id)
-            )
-            if rbac_service.valkey_url
-            else False
-        )
-        scope = f"user {target.full_name} ({target.id})"
-    else:
-        chat_id = update.effective_chat.id if update.effective_chat else 0
-        existed = rbac_service.revoke_chat(chat_id)
-        persisted = (
-            await persist_revoke_to_valkey(rbac_service, VALKEY_CHATS_KEY, str(chat_id))
-            if rbac_service.valkey_url
-            else False
-        )
-        scope = f"this chat ({chat_id})"
-
-    if not existed:
-        line = f"No role was set for {escape_html(scope)}."
-    else:
-        note = _persistence_note(rbac_service, persisted)
-        line = f"Revoked role for {escape_html(scope)}.{escape_html(note)}"
-    await update.message.reply_text(
-        HtmlMessage(sender=sender).raw(line).render(), parse_mode=PARSE_MODE_HTML
-    )
-
-
-async def roles_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _reply_admin_only(update):
-        return
-    sender = sender_attribution(update.effective_user)
-
-    roles = rbac_service.list_roles()
-    msg = HtmlMessage(sender=sender).title("Roles")
-    if roles:
-        msg.fields(*[(name, ", ".join(perms) or "(none)") for name, perms in roles])
-    else:
-        msg.text("No roles configured.")
-    await update.message.reply_text(msg.render(), parse_mode=PARSE_MODE_HTML)
 
 
 def detect_platform(url: str) -> str:
@@ -1550,11 +1387,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("help", log_handler("help")(help_command)))
     app.add_handler(CommandHandler("audio", log_handler("audio")(audio_command)))
     app.add_handler(CommandHandler("gallery", log_handler("gallery")(gallery_command)))
-    # Admin-only; intentionally left out of BOT_COMMANDS so they don't show up
-    # in the public "/" picker for non-admin users.
-    app.add_handler(CommandHandler("grant", log_handler("grant")(grant_command)))
-    app.add_handler(CommandHandler("revoke", log_handler("revoke")(revoke_command)))
-    app.add_handler(CommandHandler("roles", log_handler("roles")(roles_command)))
     app.add_handler(
         InlineQueryHandler(log_handler("inline_query")(inline_query_handler))
     )
