@@ -54,7 +54,6 @@ from daphne.gallery import chunk_images, download_gallery
 from daphne.messages import (
     HtmlMessage,
     PARSE_MODE_HTML,
-    escape_html,
     sender_attribution,
 )
 from daphne.rbac import RbacService
