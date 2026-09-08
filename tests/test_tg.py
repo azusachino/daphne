@@ -64,6 +64,31 @@ class TestTelegramBoundary(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapted_update.message.text, "/start")
         await raw_bot.session.close()
 
+    async def test_dispatcher_logs_unhandled_handler_errors(self):
+        message = Message(
+            message_id=1,
+            date=datetime.now(timezone.utc),
+            chat=Chat(id=7, type="private"),
+            from_user=User(id=9, is_bot=False, first_name="Test"),
+            text="/start",
+        )
+        raw_bot = Bot("123:token")
+        with (
+            patch.object(
+                bot_module,
+                "start_command",
+                new=AsyncMock(side_effect=RuntimeError("handler failed")),
+            ),
+            patch.object(bot_module, "log_update", new_callable=AsyncMock),
+            self.assertLogs("daphne.bot", level="ERROR") as logs,
+        ):
+            await bot_module.build_dispatcher().feed_update(
+                raw_bot, Update(update_id=2, message=message)
+            )
+
+        self.assertTrue(any("Unhandled update error" in line for line in logs.output))
+        await raw_bot.session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

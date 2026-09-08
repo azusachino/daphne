@@ -6,13 +6,15 @@ import re
 import shlex
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, Optional
+from typing import Any, Optional
 
 from aiogram import BaseMiddleware, Bot, F
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     BotCommand,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
@@ -23,6 +25,7 @@ from aiogram.types import (
     InputMediaPhoto,
     InputTextMessageContent,
     ReactionTypeEmoji,
+    TelegramObject,
 )
 import uuid
 
@@ -1366,7 +1369,12 @@ def log_handler(name: str):
 
 
 class UpdateLoggingMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
         if isinstance(event, TelegramUpdate):
             update = event
         else:
@@ -1397,6 +1405,16 @@ def _command_args(command: CommandObject) -> list[str]:
 
 def build_dispatcher():
     router = new_router()
+
+    @router.error()
+    async def unhandled_error(event: ErrorEvent) -> None:
+        exception = event.exception
+        logger.error(
+            "Unhandled update error: update_id=%s error=%s",
+            getattr(event.update, "update_id", None),
+            exception,
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
 
     @router.message(Command("start"))
     async def _start(message, bot: Bot):
