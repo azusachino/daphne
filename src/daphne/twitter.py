@@ -2,7 +2,12 @@ import re
 import httpx
 import logging
 import io
-from daphne.tg import InputMediaPhoto, TelegramContext, TelegramUpdate
+from daphne.tg import (
+    InputMediaPhoto,
+    TelegramContext,
+    TelegramUpdate,
+    as_input_file,
+)
 
 from daphne.messages import (
     HtmlMessage,
@@ -242,10 +247,14 @@ async def send_media_group_helper(
             bio.name = f"photo_{i}.jpg"
             if i == 0:
                 media.append(
-                    InputMediaPhoto(media=bio, caption=caption, parse_mode=parse_mode)
+                    InputMediaPhoto(
+                        media=as_input_file(bio),
+                        caption=caption,
+                        parse_mode=parse_mode,
+                    )
                 )
             else:
-                media.append(InputMediaPhoto(media=bio))
+                media.append(InputMediaPhoto(media=as_input_file(bio)))
         await bot.send_media_group(chat_id=chat_id, media=media)
 
 

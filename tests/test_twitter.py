@@ -6,6 +6,7 @@ from daphne.twitter import (
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
+    send_media_group_helper,
     select_twitter_video_url,
 )
 
@@ -377,6 +378,24 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.download_bytes", return_value=b"image_data")
+    async def test_media_group_fallback_uses_aiogram_input_files(self, mock_download):
+        bot = MagicMock()
+        bot.send_media_group = AsyncMock(side_effect=[Exception("URL rejected"), None])
+
+        await send_media_group_helper(
+            bot,
+            123456,
+            ["https://pbs.twimg.com/media/1.jpg"],
+            "caption",
+            "HTML",
+        )
+
+        media = bot.send_media_group.call_args_list[1].kwargs["media"]
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0].media.filename, "photo_0.jpg")
+        mock_download.assert_called_once_with("https://pbs.twimg.com/media/1.jpg")
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_single_photo_uses_api_author_not_url_username(self, mock_get):
