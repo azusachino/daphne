@@ -6,8 +6,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
-from telegram import Update
-from telegram.ext import ContextTypes
+from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import (
     HtmlMessage,
@@ -28,6 +27,7 @@ class PixivInfo:
     title: str
     author_name: str
     tags: list[str]
+    image_urls: list[str] | None = None
 
 
 def contains_pixiv_link(text: str) -> bool:
@@ -35,7 +35,7 @@ def contains_pixiv_link(text: str) -> bool:
 
 
 def _clean_url_token(value: str) -> str:
-    return value.strip("`\"',")
+    return value.strip("`\"',(").rstrip(".,!?;:)]}")
 
 
 def _is_pixiv_host(hostname: Optional[str]) -> bool:
@@ -82,33 +82,72 @@ def to_telegram_tag(tag: str) -> str:
 
 
 async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
-    url = f"{PHIXIV_API}?id={artwork_id}&language=en"
     headers = {"User-Agent": USER_AGENT}
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=headers, timeout=10.0)
-        if response.status_code != 200:
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                PHIXIV_API,
+                params={"id": artwork_id, "language": "en"},
+                headers=headers,
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("title") or data.get("author_name"):
+                    return PixivInfo(
+                        title=str(data.get("title") or ""),
+                        author_name=str(data.get("author_name") or ""),
+                        tags=[str(tag) for tag in data.get("tags", [])],
+                    )
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.info("Phixiv metadata unavailable for %s: %s", artwork_id, exc)
+
+        try:
+            response = await client.get(
+                f"https://www.pixiv.net/ajax/illust/{artwork_id}",
+                params={"lang": "en"},
+                headers={**headers, "Referer": "https://www.pixiv.net/"},
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                return None
+            body = response.json().get("body") or {}
+            if not body:
+                return None
+            tags = (body.get("tags") or {}).get("tags") or []
+            urls = body.get("urls") or {}
+            return PixivInfo(
+                title=str(body.get("title") or ""),
+                author_name=str(body.get("userName") or ""),
+                tags=[str(tag.get("tag") or tag) for tag in tags],
+                image_urls=[
+                    str(url)
+                    for url in (urls.get("original"), urls.get("regular"))
+                    if url
+                ],
+            )
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+            logger.warning("Failed to fetch Pixiv metadata for %s: %s", artwork_id, exc)
             return None
-        data = response.json()
-        return PixivInfo(
-            title=str(data.get("title") or ""),
-            author_name=str(data.get("author_name") or ""),
-            tags=[str(tag) for tag in data.get("tags", [])],
-        )
-    except Exception as exc:
-        logger.warning("Failed to fetch Pixiv metadata for %s: %s", artwork_id, exc)
-        return None
 
 
-async def fetch_pixiv_cat_image(artwork_id: str) -> tuple[bytes, str]:
+async def fetch_pixiv_image(
+    artwork_id: str, fallback_urls: list[str] | None = None
+) -> tuple[bytes, str]:
     headers = {"User-Agent": USER_AGENT, "Referer": "https://www.pixiv.net/"}
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        for ext in ("jpg", "png"):
-            url = f"{PIXIV_CAT_BASE}/{artwork_id}.{ext}"
-            response = await client.get(url, headers=headers, timeout=30.0)
-            if response.status_code == 200:
-                return response.content, url
-    raise ValueError(f"pixiv.cat: no image found for artwork {artwork_id}")
+        candidates = [
+            *(f"{PIXIV_CAT_BASE}/{artwork_id}.{ext}" for ext in ("jpg", "png")),
+            *(fallback_urls or []),
+        ]
+        for url in candidates:
+            try:
+                response = await client.get(url, headers=headers, timeout=30.0)
+                if response.status_code == 200:
+                    return response.content, url
+            except httpx.HTTPError as exc:
+                logger.info("Pixiv image candidate failed (%s): %s", url, exc)
+    raise ValueError(f"No Pixiv image found for artwork {artwork_id}")
 
 
 def build_caption(
@@ -135,9 +174,7 @@ def build_caption(
     )
 
 
-async def handle_pixiv_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -> None:
     message = update.message
     if not message or not message.text:
         return
@@ -160,10 +197,12 @@ async def handle_pixiv_links(
     sender = sender_attribution(update.effective_user)
 
     try:
-        image_bytes, pixiv_cat_url = await fetch_pixiv_cat_image(artwork_id)
-        caption = build_caption(original_url, pixiv_cat_url, info, sender)
+        image_bytes, image_url = await fetch_pixiv_image(
+            artwork_id, info.image_urls if info else None
+        )
+        caption = build_caption(original_url, image_url, info, sender)
         bio = io.BytesIO(image_bytes)
-        bio.name = f"pixiv.{pixiv_cat_url.rsplit('.', 1)[-1]}"
+        bio.name = f"pixiv.{image_url.rsplit('.', 1)[-1].split('?', 1)[0]}"
         if len(image_bytes) <= 10 * 1024 * 1024:
             await context.bot.send_photo(
                 chat_id=message.chat_id,

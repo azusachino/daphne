@@ -91,62 +91,14 @@ class TestPathsAndXDG(unittest.TestCase):
 
 
 class TestApplicationBuilder(unittest.TestCase):
-    def tearDown(self):
-        load_config.cache_clear()
+    def test_build_dispatcher_registers_all_update_paths(self):
+        dispatcher = bot_module.build_dispatcher()
 
-    def test_build_application_uses_default_bot_api(self):
-        app = MagicMock()
-        builder = MagicMock()
-        builder.token.return_value = builder
-        builder.job_queue.return_value = builder
-        builder.build.return_value = app
-
-        with (
-            patch.dict(os.environ, {"DAPHNE_BOT_TOKEN": "token"}, clear=True),
-            patch("daphne.bot.telegram_api_url", return_value=None),
-            patch("daphne.bot.Application.builder", return_value=builder),
-        ):
-            built = bot_module.build_application()
-
-        self.assertIs(built, app)
-        builder.token.assert_called_once_with("token")
-        builder.job_queue.assert_called_once_with(None)
-        builder.base_url.assert_not_called()
-        self.assertEqual(app.add_handler.call_count, 8)
-
-    def test_build_application_uses_local_bot_api(self):
-        app = MagicMock()
-        builder = MagicMock()
-        builder.token.return_value = builder
-        builder.job_queue.return_value = builder
-        builder.base_url.return_value = builder
-        builder.base_file_url.return_value = builder
-        builder.local_mode.return_value = builder
-        builder.media_write_timeout.return_value = builder
-        builder.read_timeout.return_value = builder
-        builder.connect_timeout.return_value = builder
-        builder.build.return_value = app
-
-        with (
-            patch.dict(os.environ, {"DAPHNE_BOT_TOKEN": "token"}, clear=True),
-            patch(
-                "daphne.bot.telegram_api_url",
-                return_value="http://telegram-bot-api:8081/",
-            ),
-            patch("daphne.bot.Application.builder", return_value=builder),
-        ):
-            built = bot_module.build_application()
-
-        self.assertIs(built, app)
-        builder.job_queue.assert_called_once_with(None)
-        builder.base_url.assert_called_once_with("http://telegram-bot-api:8081/bot")
-        builder.base_file_url.assert_called_once_with(
-            "http://telegram-bot-api:8081/file/bot"
-        )
-        builder.local_mode.assert_called_once_with(True)
-        builder.media_write_timeout.assert_called_once_with(7200)
-        builder.read_timeout.assert_called_once_with(7200)
-        builder.connect_timeout.assert_called_once_with(30.0)
+        self.assertEqual(len(dispatcher.sub_routers), 1)
+        router = dispatcher.sub_routers[0]
+        self.assertEqual(len(router.message.handlers), 5)
+        self.assertEqual(len(router.callback_query.handlers), 1)
+        self.assertEqual(len(router.inline_query.handlers), 1)
 
 
 class TestLogUpdate(unittest.IsolatedAsyncioTestCase):
@@ -869,7 +821,7 @@ class TestInlineQuery(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.twitter.resolve_twitter_media", new_callable=AsyncMock)
     async def test_inline_twitter_returns_media_results(self, mock_resolve):
-        from telegram import InlineQueryResultPhoto, InlineQueryResultVideo
+        from aiogram.types import InlineQueryResultPhoto, InlineQueryResultVideo
 
         mock_resolve.return_value = {
             "text": "hello",
@@ -900,7 +852,7 @@ class TestInlineQuery(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.instagram.resolve_instagram_media")
     async def test_inline_instagram_returns_photo_results(self, mock_resolve):
-        from telegram import InlineQueryResultPhoto
+        from aiogram.types import InlineQueryResultPhoto
 
         mock_resolve.return_value = {
             "uploader": "user",

@@ -2,9 +2,6 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import io
-from telegram import Update
-from telegram.ext import ContextTypes
-
 from daphne.twitter import (
     contains_twitter_link,
     extract_twitter_link,
@@ -94,7 +91,7 @@ class TestTwitterExtraction(unittest.TestCase):
 
 class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.update = MagicMock(spec=Update)
+        self.update = MagicMock()
         self.update.message = MagicMock()
         self.update.message.chat_id = 123456
         self.update.message.reply_to_message = None
@@ -106,7 +103,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.user.full_name = "Test User Full Name"
         self.update.effective_user = self.user
 
-        self.context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.context = MagicMock()
         self.context.bot = MagicMock()
         self.context.bot.send_photo = AsyncMock()
         self.context.bot.send_video = AsyncMock()

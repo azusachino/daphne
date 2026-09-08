@@ -2,8 +2,7 @@ import re
 import httpx
 import logging
 import io
-from telegram import Update, InputMediaPhoto
-from telegram.ext import ContextTypes
+from daphne.tg import InputMediaPhoto, TelegramContext, TelegramUpdate
 
 from daphne.messages import (
     HtmlMessage,
@@ -337,7 +336,7 @@ def build_article_caption(
     )
 
 
-async def try_delete_message(update: Update) -> None:
+async def try_delete_message(update: TelegramUpdate) -> None:
     message = update.message
     if not message:
         return
@@ -351,7 +350,7 @@ async def try_delete_message(update: Update) -> None:
 
 
 async def handle_twitter_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message
     if not message or not message.text:

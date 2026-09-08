@@ -7,11 +7,11 @@
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.3.6-blue)](https://github.com/azusachino/daphne/releases)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-114%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-118%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -54,7 +54,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (cover + preview) |   ✅   |
 | **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
 | **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux`    | Video downloads                                  |   ✅   |
-| **Pixiv**                    | Artwork/gallery resolver        | Photo / media groups                             |   —    |
+| **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |
 | **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
 | **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
 | **Image galleries**          | `gallery-dl` (`/gallery`)       | Batched photo groups                             |   —    |
@@ -156,7 +156,7 @@ make ready    # fmt + lint + test
 
 ## Architecture
 
-- **Python 3.14**, `python-telegram-bot`, polling-based.
+- **Python 3.14**, `aiogram`, polling-based.
 - **Stateless**: no database; secrets in env, everything else in `config.toml`.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 

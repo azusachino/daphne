@@ -2,8 +2,7 @@ import re
 import logging
 import httpx
 from typing import Optional, Tuple, List
-from telegram import Update
-from telegram.ext import ContextTypes
+from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import extract_hashtags, send_photos, try_delete_message
@@ -112,7 +111,7 @@ def build_bluesky_caption(
 
 
 async def handle_bluesky_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message
     if not message or not message.text:

@@ -5,7 +5,7 @@ COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
 IMAGE ?= docker.io/azusachino/daphne
 # Local-only tag the k3s deployment actually runs (imagePullPolicy: Never —
 # imported straight into containerd, never pulled from a registry).
-LOCAL_IMAGE ?= azusachino.icu/daphne
+LOCAL_IMAGE ?= azusachino.com/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
 # Base image (OS tools + lux + deno); tagged by toolchain, bumped only when
 # tools change. Local-only like LOCAL_IMAGE above — never pushed to a

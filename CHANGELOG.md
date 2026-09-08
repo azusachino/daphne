@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-08
+
+### Changed
+
+- Migrated Telegram polling from `python-telegram-bot` to `aiogram` behind a small compatibility boundary. Router wiring, update logging, local Bot API setup, file uploads and reactions are isolated from platform handlers.
+
+### Fixed
+
+- Pixiv metadata now falls back to Pixiv's AJAX artwork endpoint after the retired `phixiv.net` API, and image delivery falls back from `pixiv.cat` to Pixiv's direct CDN with its required referer.
+
 ## [0.3.6] - 2026-08-25
 
 ### Removed
