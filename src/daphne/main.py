@@ -52,8 +52,8 @@ async def run_bot() -> None:
     token = os.environ[ENV_BOT_TOKEN]
     bot = build_bot(token)
     dispatcher = build_dispatcher()
-    await register_bot_commands(bot)
     try:
+        await register_bot_commands(bot)
         await dispatcher.start_polling(bot.raw)
     finally:
         await bot.session.close()
