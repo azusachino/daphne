@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import io
 from daphne.twitter import (
+    article_media_lists,
+    article_preview_text,
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
@@ -12,6 +14,70 @@ from daphne.twitter import (
 
 
 class TestTwitterExtraction(unittest.TestCase):
+    def test_article_preview_uses_passages_and_truncates(self):
+        preview, truncated = article_preview_text(
+            {
+                "title": "Ignored title",
+                "preview_text": "fallback preview",
+                "content": {
+                    "blocks": [
+                        {"type": "header-one", "text": "Ignored title"},
+                        {"type": "unstyled", "text": "First passage."},
+                        {"type": "atomic", "text": "media placeholder"},
+                        {"type": "unstyled", "text": "x" * 800},
+                    ]
+                },
+            }
+        )
+
+        self.assertTrue(truncated)
+        self.assertIn("First passage.", preview)
+        self.assertNotIn("media placeholder", preview)
+        self.assertLessEqual(len(preview), 650)
+
+    def test_article_media_lists_supports_images_videos_and_gifs(self):
+        photos, videos, gifs = article_media_lists(
+            {
+                "media_entities": [
+                    {
+                        "media_info": {
+                            "__typename": "ApiImage",
+                            "original_img_url": "https://pbs.twimg.com/1.jpg",
+                        }
+                    },
+                    {
+                        "media_info": {
+                            "__typename": "ApiVideo",
+                            "variants": [
+                                {
+                                    "url": "https://video.twimg.com/live.m3u8",
+                                    "bitrate": 1,
+                                },
+                                {
+                                    "url": "https://video.twimg.com/low.mp4",
+                                    "bitrate": 1,
+                                },
+                                {
+                                    "url": "https://video.twimg.com/high.mp4",
+                                    "bitrate": 2,
+                                },
+                            ],
+                        }
+                    },
+                    {
+                        "media_info": {
+                            "__typename": "ApiGif",
+                            "variants": [{"url": "https://video.twimg.com/gif.mp4"}],
+                        }
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(photos, ["https://pbs.twimg.com/1.jpg"])
+        self.assertEqual(videos, ["https://video.twimg.com/high.mp4"])
+        self.assertEqual(gifs, ["https://video.twimg.com/gif.mp4"])
+
     def test_contains_twitter_link(self):
         self.assertTrue(
             contains_twitter_link("Check this out: https://twitter.com/jack/status/20")

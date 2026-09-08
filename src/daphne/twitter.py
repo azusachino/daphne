@@ -19,6 +19,8 @@ from daphne.messages import (
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+ARTICLE_PREVIEW_LIMIT = 650
+ARTICLE_MEDIA_LIMIT = 3
 
 TWITTER_REGEX = re.compile(
     r"https?://(?:www\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/([a-zA-Z0-9_]+)/status/(\d+)",
@@ -321,6 +323,74 @@ def article_cover_url(article: dict) -> str | None:
     """
     cover_media = article.get("cover_media") or {}
     return (cover_media.get("media_info") or {}).get("original_img_url")
+
+
+def _truncate_article_text(
+    text: str, limit: int = ARTICLE_PREVIEW_LIMIT
+) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    candidate = text[: limit - 1]
+    paragraph_break = candidate.rfind("\n\n")
+    if paragraph_break >= 0:
+        shortened = candidate[:paragraph_break].rstrip()
+    else:
+        shortened = candidate.rsplit(" ", 1)[0].rstrip()
+    return f"{shortened}…", True
+
+
+def article_preview_text(article: dict) -> tuple[str, bool]:
+    """Return readable article passages, falling back to the API preview."""
+    content = article.get("content") or {}
+    paragraphs = []
+    for block in content.get("blocks") or []:
+        if str(block.get("type", "")).lower() == "atomic":
+            continue
+        text = str(block.get("text") or "").strip()
+        if text == str(article.get("title") or "").strip():
+            continue
+        if text:
+            paragraphs.append(text)
+
+    body = "\n\n".join(paragraphs) or str(article.get("preview_text") or "").strip()
+    return _truncate_article_text(body)
+
+
+def _article_video_url(media_info: dict) -> str | None:
+    variants = media_info.get("variants") or (media_info.get("video_info") or {}).get(
+        "variants", []
+    )
+    usable = [
+        variant
+        for variant in variants
+        if variant.get("url") and ".m3u8" not in variant["url"]
+    ]
+    if not usable:
+        return None
+    selected = max(
+        usable,
+        key=lambda variant: variant.get("bitrate", variant.get("bit_rate", 0)),
+    )
+    return selected["url"]
+
+
+def article_media_lists(article: dict) -> tuple[list[str], list[str], list[str]]:
+    """Extract supported article media in the API's document order."""
+    photos, videos, gifs = [], [], []
+    seen = set()
+    for entity in article.get("media_entities") or []:
+        media_info = entity.get("media_info") or {}
+        kind = str(media_info.get("__typename") or media_info.get("type") or "").lower()
+        if kind == "apiimage":
+            url = media_info.get("original_img_url")
+            target = photos
+        else:
+            url = _article_video_url(media_info)
+            target = gifs if kind in {"apigif", "animated_gif", "gif"} else videos
+        if url and url not in seen:
+            seen.add(url)
+            target.append(url)
+    return photos, videos, gifs
 
 
 def build_article_caption(
