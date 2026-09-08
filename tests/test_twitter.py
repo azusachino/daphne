@@ -530,6 +530,49 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_with_promotional_tweet_text(self, mock_get):
+        self.update.message.text = (
+            "https://x.com/reactiverobot/status/2092638003789439075?s=20"
+        )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "2092638003789439075",
+                "text": (
+                    "Here's my advice for engineers looking to up their design game. "
+                    "https://x.com/i/article/2092403772534460416"
+                ),
+                "url": "https://x.com/reactiverobot/status/2092638003789439075",
+                "author": {"screen_name": "reactiverobot", "name": "Reactive Robot"},
+                "media": None,
+                "article": {
+                    "title": "How I Design with AI.",
+                    "preview_text": (
+                        "As an engineer who is not a designer and hates slop."
+                    ),
+                    "cover_media": {
+                        "media_info": {
+                            "original_img_url": "https://pbs.twimg.com/media/HQqK_LMaEAAUXxC.jpg"
+                        }
+                    },
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_called_once()
+        kwargs = self.context.bot.send_photo.call_args.kwargs
+        self.assertIn("How I Design with AI.", kwargs["caption"])
+        self.assertIn("As an engineer who is not a designer", kwargs["caption"])
+        self.assertNotIn("Here's my advice for engineers", kwargs["caption"])
+        self.context.bot.send_message.assert_not_called()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_article_without_cover_sends_text_message(self, mock_get):
         self.update.message.text = (
             "https://x.com/waterloo_intern/status/2081762065392541951"

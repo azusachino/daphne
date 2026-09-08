@@ -434,7 +434,7 @@ async def handle_twitter_links(
                 has_media = bool(photo_urls or video_urls or gif_urls)
                 article = tweet.get("article")
 
-                if not tweet_text and not has_media and article:
+                if article and not has_media:
                     tweet_url = (
                         tweet.get("url")
                         or f"https://{domain}/{username}/status/{tweet_id}"
