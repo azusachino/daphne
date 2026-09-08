@@ -738,7 +738,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         # Sends fallback URL
         self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456, text="https://fxtwitter.com/nasa/status/999"
+            chat_id=123456,
+            text="https://fxtwitter.com/nasa/status/999",
+            parse_mode=None,
         )
         self.update.message.delete.assert_called_once()
 
@@ -756,7 +758,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         # Sends fallback URL
         self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456, text="https://fxtwitter.com/nasa/status/999"
+            chat_id=123456,
+            text="https://fxtwitter.com/nasa/status/999",
+            parse_mode=None,
         )
         self.update.message.delete.assert_called_once()
 
