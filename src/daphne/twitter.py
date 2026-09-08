@@ -275,7 +275,7 @@ async def send_photos(
 async def send_fallback(bot, chat_id: int, username: str, tweet_id: str) -> bool:
     fallback_url = f"https://fxtwitter.com/{username}/status/{tweet_id}"
     try:
-        await bot.send_message(chat_id=chat_id, text=fallback_url)
+        await bot.send_message(chat_id=chat_id, text=fallback_url, parse_mode=None)
         return True
     except Exception as e:
         logger.error(f"Failed to send fallback URL {fallback_url}: {e}")

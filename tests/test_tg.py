@@ -40,6 +40,10 @@ class TestTelegramBoundary(unittest.IsolatedAsyncioTestCase):
         session_class.assert_called_once()
         self.assertEqual(session_class.call_args.kwargs["api"], api)
         bot_class.assert_called_once()
+        self.assertEqual(
+            bot_class.call_args.kwargs["default"].parse_mode.value,
+            "HTML",
+        )
         self.assertIs(bot.raw, raw_bot)
 
     async def test_dispatcher_feeds_native_update_to_compatibility_handler(self):

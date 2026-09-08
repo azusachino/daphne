@@ -16,6 +16,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.enums import ParseMode
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -276,7 +277,11 @@ def build_bot(token: str) -> TelegramBot:
         session_kwargs["api"] = TelegramAPIServer.from_base(api_url, is_local=True)
     session = AiohttpSession(**session_kwargs)
     return TelegramBot(
-        Bot(token=token, session=session, default=DefaultBotProperties())
+        Bot(
+            token=token,
+            session=session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
     )
 
 

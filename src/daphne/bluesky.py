@@ -193,7 +193,9 @@ async def handle_bluesky_links(
         # Post has no media. Send a fallback message
         fallback_msg = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
         try:
-            await context.bot.send_message(chat_id=chat_id, text=fallback_msg)
+            await context.bot.send_message(
+                chat_id=chat_id, text=fallback_msg, parse_mode=None
+            )
             success = True
         except Exception as e:
             logger.error("Failed to send Bluesky fallback message: %s", e)

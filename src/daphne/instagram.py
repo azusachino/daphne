@@ -154,6 +154,7 @@ async def handle_instagram_links(
                 "Couldn't fetch this Instagram post — it may be private, deleted, "
                 f"or Instagram is blocking the request right now.\n{url}"
             ),
+            parse_mode=None,
         )
         return
 
