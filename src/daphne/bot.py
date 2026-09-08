@@ -3,13 +3,18 @@ import functools
 import logging
 import os
 import re
+import shlex
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable, Optional
+from typing import Any, Optional
 
-from telegram import (
+from aiogram import BaseMiddleware, Bot, F
+from aiogram.filters import Command, CommandObject
+from aiogram.types import (
     BotCommand,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
@@ -20,24 +25,13 @@ from telegram import (
     InputMediaPhoto,
     InputTextMessageContent,
     ReactionTypeEmoji,
-    Update,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    InlineQueryHandler,
-    MessageHandler,
-    TypeHandler,
-    filters,
-    CallbackQueryHandler,
+    TelegramObject,
 )
 import uuid
 
 from daphne.config import (
     max_concurrent_downloads,
     max_user_concurrent_downloads,
-    telegram_api_url,
     video_upload_limit_mb,
 )
 from daphne.downloader import (
@@ -57,6 +51,19 @@ from daphne.messages import (
     sender_attribution,
 )
 from daphne.rbac import RbacService
+from daphne.tg import (
+    TelegramBot,
+    TelegramContext,
+    TelegramUpdate,
+    adapt_callback_query,
+    adapt_inline_query,
+    adapt_message,
+    adapt_update,
+    as_input_file,
+    context_for,
+    new_dispatcher,
+    new_router,
+)
 
 CALLBACK_URL_CACHE: dict[str, str] = {}
 
@@ -129,7 +136,7 @@ async def set_reaction(message, emoji: Optional[str]) -> None:
     if message is None:
         return
     try:
-        reaction = [ReactionTypeEmoji(emoji)] if emoji else []
+        reaction = [ReactionTypeEmoji(emoji=emoji)] if emoji else []
         await message.set_reaction(reaction=reaction)
     except Exception as exc:
         logger.debug("Failed to set reaction %s: %s", emoji, exc)
@@ -162,7 +169,7 @@ def preprocess_text_links(text: str) -> str:
 rbac_service = RbacService.load()
 
 
-async def check_access_and_reply(update: Update, command: str) -> bool:
+async def check_access_and_reply(update: TelegramUpdate, command: str) -> bool:
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
 
@@ -194,14 +201,14 @@ def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
     )
 
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_command(update: TelegramUpdate, context: TelegramContext) -> None:
     # Always answers, bypassing RBAC: this is the one command Telegram expects
     # to respond even to a user/chat that isn't whitelisted yet.
     text = _daphne_overview(sender_attribution(update.effective_user), greeting=True)
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(update: TelegramUpdate, context: TelegramContext) -> None:
     if not await check_access_and_reply(update, "help"):
         return
     text = _daphne_overview(sender_attribution(update.effective_user))
@@ -291,7 +298,7 @@ def _video_caption_from_metadata(
 
 
 async def send_video_card(
-    update: Update,
+    update: TelegramUpdate,
     url: str,
     metadata: dict,
     sender: str | None,
@@ -327,19 +334,19 @@ async def send_video_card(
     size = _metadata_size(metadata)
     if size is None or size <= TG_HARD_LIMIT_BYTES:
         buttons.append(
-            InlineKeyboardButton("Download Video", callback_data=f"dl:{short_id}")
+            InlineKeyboardButton(text="Download Video", callback_data=f"dl:{short_id}")
         )
-    buttons.append(InlineKeyboardButton("Open source", url=webpage_url))
+    buttons.append(InlineKeyboardButton(text="Open source", url=webpage_url))
 
     await update.message.reply_text(
         text,
         parse_mode=PARSE_MODE_HTML,
         disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup([buttons]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]),
     )
 
 
-async def delete_original_message(update: Update) -> None:
+async def delete_original_message(update: TelegramUpdate) -> None:
     try:
         await update.message.delete()
     except Exception:
@@ -347,8 +354,8 @@ async def delete_original_message(update: Update) -> None:
 
 
 async def handle_video_link(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update: TelegramUpdate,
+    context: TelegramContext,
     url: str,
     custom_metadata: dict | None = None,
 ) -> None:
@@ -467,7 +474,7 @@ async def handle_video_link(
 
 
 async def media_message_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message
     if not message or not message.text:
@@ -599,7 +606,7 @@ async def media_message_handler(
             await delete_original_message(update)
 
 
-async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def audio_command(update: TelegramUpdate, context: TelegramContext) -> None:
     if not await check_access_and_reply(update, "extract_audio"):
         return
 
@@ -750,7 +757,7 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await delete_original_message(update)
 
 
-async def gallery_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> None:
     if not await check_access_and_reply(update, "download_gallery"):
         return
 
@@ -856,13 +863,13 @@ async def gallery_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     if first_group and index == 0:
                         media.append(
                             InputMediaPhoto(
-                                media=handle,
+                                media=as_input_file(handle),
                                 caption=caption,
                                 parse_mode=PARSE_MODE_HTML,
                             )
                         )
                     else:
-                        media.append(InputMediaPhoto(media=handle))
+                        media.append(InputMediaPhoto(media=as_input_file(handle)))
                 await context.bot.send_media_group(chat_id=message.chat_id, media=media)
             finally:
                 for handle in open_files:
@@ -950,7 +957,7 @@ def _instagram_inline_results(media: dict, caption: str) -> list:
 
 
 async def inline_query_handler(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     """
     Inline conversion: ``@daphne <url>`` — resolves a link to native media
@@ -1103,7 +1110,7 @@ async def inline_query_handler(
 
 
 async def download_button_callback(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     query = update.callback_query
     if not query:
@@ -1293,7 +1300,7 @@ async def download_button_callback(
         pass
 
 
-async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:
     """Logs every update Telegram delivers, before RBAC or routing runs. This
     is the single source of truth for "did the bot even receive this" — every
     other handler only logs once it has already decided to act."""
@@ -1326,7 +1333,7 @@ def log_handler(name: str):
 
     def decorator(func: Callable[..., Awaitable[None]]):
         @functools.wraps(func)
-        async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        async def wrapper(update: TelegramUpdate, context: TelegramContext):
             user_id = update.effective_user.id if update.effective_user else None
             chat_id = update.effective_chat.id if update.effective_chat else None
             start = time.monotonic()
@@ -1361,57 +1368,112 @@ def log_handler(name: str):
     return decorator
 
 
-def build_application() -> Application:
-    token = os.environ.get(ENV_BOT_TOKEN)
-    if not token:
-        raise ValueError(f"{ENV_BOT_TOKEN} environment variable not set")
+class UpdateLoggingMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if isinstance(event, TelegramUpdate):
+            update = event
+        else:
+            update = adapt_update(event)
+        await log_update(update, context_for(TelegramBot(data["bot"])))
+        return await handler(event, data)
 
-    builder = Application.builder().token(token).job_queue(None)
-    local_api_url = telegram_api_url()
-    if local_api_url:
-        local_api_url = local_api_url.rstrip("/")
-        logger.info("Using local Telegram Bot API server: %s", local_api_url)
-        builder = (
-            builder.base_url(f"{local_api_url}/bot")
-            .base_file_url(f"{local_api_url}/file/bot")
-            .local_mode(True)
-            .media_write_timeout(LOCAL_BOT_API_TIMEOUT_SECONDS)
-            .read_timeout(LOCAL_BOT_API_TIMEOUT_SECONDS)
-            .connect_timeout(30.0)
+
+async def _dispatch_handler(
+    name: str,
+    handler: Callable[[TelegramUpdate, TelegramContext], Awaitable[None]],
+    update: TelegramUpdate,
+    bot: Bot,
+    args: list[str] | None = None,
+) -> None:
+    context = context_for(TelegramBot(bot), args)
+    await log_handler(name)(handler)(update, context)
+
+
+def _command_args(command: CommandObject) -> list[str]:
+    if not command.args:
+        return []
+    try:
+        return shlex.split(command.args)
+    except ValueError:
+        return command.args.split()
+
+
+def build_dispatcher():
+    router = new_router()
+
+    @router.error()
+    async def unhandled_error(event: ErrorEvent) -> None:
+        exception = event.exception
+        logger.error(
+            "Unhandled update error: update_id=%s error=%s",
+            getattr(event.update, "update_id", None),
+            exception,
+            exc_info=(type(exception), exception, exception.__traceback__),
         )
 
-    app = builder.build()
-    app.add_handler(TypeHandler(Update, log_update), group=-1)
-    app.add_handler(CommandHandler("start", log_handler("start")(start_command)))
-    app.add_handler(CommandHandler("help", log_handler("help")(help_command)))
-    app.add_handler(CommandHandler("audio", log_handler("audio")(audio_command)))
-    app.add_handler(CommandHandler("gallery", log_handler("gallery")(gallery_command)))
-    app.add_handler(
-        InlineQueryHandler(log_handler("inline_query")(inline_query_handler))
-    )
-    app.add_handler(
-        CallbackQueryHandler(
-            log_handler("download_button_callback")(download_button_callback),
-            pattern=r"^dl:",
+    @router.message(Command("start"))
+    async def _start(message, bot: Bot):
+        await _dispatch_handler("start", start_command, adapt_message(message), bot)
+
+    @router.message(Command("help"))
+    async def _help(message, bot: Bot):
+        await _dispatch_handler("help", help_command, adapt_message(message), bot)
+
+    @router.message(Command("audio"))
+    async def _audio(message, bot: Bot, command: CommandObject):
+        await _dispatch_handler(
+            "audio", audio_command, adapt_message(message), bot, _command_args(command)
         )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            log_handler("media_message")(media_message_handler),
+
+    @router.message(Command("gallery"))
+    async def _gallery(message, bot: Bot, command: CommandObject):
+        await _dispatch_handler(
+            "gallery",
+            gallery_command,
+            adapt_message(message),
+            bot,
+            _command_args(command),
         )
-    )
-    return app
+
+    @router.inline_query()
+    async def _inline(inline_query, bot: Bot):
+        await _dispatch_handler(
+            "inline_query", inline_query_handler, adapt_inline_query(inline_query), bot
+        )
+
+    @router.callback_query(F.data.startswith("dl:"))
+    async def _download_callback(callback_query, bot: Bot):
+        await _dispatch_handler(
+            "download_button_callback",
+            download_button_callback,
+            adapt_callback_query(callback_query),
+            bot,
+        )
+
+    @router.message(F.text, ~F.text.startswith("/"))
+    async def _media_message(message, bot: Bot):
+        await _dispatch_handler(
+            "media_message", media_message_handler, adapt_message(message), bot
+        )
+
+    dispatcher = new_dispatcher(router)
+    dispatcher.update.outer_middleware(UpdateLoggingMiddleware())
+    return dispatcher
 
 
 BOT_COMMANDS = [
-    BotCommand("start", "Welcome & quick overview"),
-    BotCommand("help", "Show what daphne can do"),
-    BotCommand("audio", "Extract audio as MP3 from a link"),
-    BotCommand("gallery", "Download an image gallery from a link"),
+    BotCommand(command="start", description="Welcome & quick overview"),
+    BotCommand(command="help", description="Show what daphne can do"),
+    BotCommand(command="audio", description="Extract audio as MP3 from a link"),
+    BotCommand(command="gallery", description="Download an image gallery from a link"),
 ]
 
 
-async def register_bot_commands(app: Application) -> None:
-    await app.bot.set_my_commands(BOT_COMMANDS)
+async def register_bot_commands(bot: TelegramBot) -> None:
+    await bot.set_my_commands(BOT_COMMANDS)
     logger.info("Registered Telegram bot commands; count=%d.", len(BOT_COMMANDS))

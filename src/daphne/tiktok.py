@@ -3,8 +3,7 @@ import os
 import httpx
 import tempfile
 import logging
-from telegram import Update
-from telegram.ext import ContextTypes
+from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
@@ -36,9 +35,7 @@ def extract_tiktok_link(text: str) -> str | None:
     return None
 
 
-async def handle_tiktok_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
+async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) -> None:
     """
     Downloads and sends video from a TikTok link using TikWM API, with fallback to yt-dlp.
     """

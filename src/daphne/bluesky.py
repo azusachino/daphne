@@ -2,8 +2,7 @@ import re
 import logging
 import httpx
 from typing import Optional, Tuple, List
-from telegram import Update
-from telegram.ext import ContextTypes
+from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import extract_hashtags, send_photos, try_delete_message
@@ -112,7 +111,7 @@ def build_bluesky_caption(
 
 
 async def handle_bluesky_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message
     if not message or not message.text:
@@ -194,7 +193,9 @@ async def handle_bluesky_links(
         # Post has no media. Send a fallback message
         fallback_msg = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
         try:
-            await context.bot.send_message(chat_id=chat_id, text=fallback_msg)
+            await context.bot.send_message(
+                chat_id=chat_id, text=fallback_msg, parse_mode=None
+            )
             success = True
         except Exception as e:
             logger.error("Failed to send Bluesky fallback message: %s", e)

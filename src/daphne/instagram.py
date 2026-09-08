@@ -4,8 +4,7 @@ import os
 import httpx
 import tempfile
 import logging
-from telegram import Update
-from telegram.ext import ContextTypes
+from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, author_tag, sender_attribution
 from daphne.twitter import send_photos, try_delete_message
@@ -78,7 +77,7 @@ def resolve_instagram_media(url: str) -> dict | None:
 
 
 async def handle_instagram_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     """
     Extracts, downloads, and sends media from an Instagram link using parth-dl.
@@ -155,6 +154,7 @@ async def handle_instagram_links(
                 "Couldn't fetch this Instagram post — it may be private, deleted, "
                 f"or Instagram is blocking the request right now.\n{url}"
             ),
+            parse_mode=None,
         )
         return
 

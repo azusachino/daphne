@@ -2,18 +2,82 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import io
-from telegram import Update
-from telegram.ext import ContextTypes
-
 from daphne.twitter import (
+    article_media_lists,
+    article_preview_text,
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
+    send_media_group_helper,
     select_twitter_video_url,
 )
 
 
 class TestTwitterExtraction(unittest.TestCase):
+    def test_article_preview_uses_passages_and_truncates(self):
+        preview, truncated = article_preview_text(
+            {
+                "title": "Ignored title",
+                "preview_text": "fallback preview",
+                "content": {
+                    "blocks": [
+                        {"type": "header-one", "text": "Ignored title"},
+                        {"type": "unstyled", "text": "First passage."},
+                        {"type": "atomic", "text": "media placeholder"},
+                        {"type": "unstyled", "text": "x" * 800},
+                    ]
+                },
+            }
+        )
+
+        self.assertTrue(truncated)
+        self.assertIn("First passage.", preview)
+        self.assertNotIn("media placeholder", preview)
+        self.assertLessEqual(len(preview), 650)
+
+    def test_article_media_lists_supports_images_videos_and_gifs(self):
+        photos, videos, gifs = article_media_lists(
+            {
+                "media_entities": [
+                    {
+                        "media_info": {
+                            "__typename": "ApiImage",
+                            "original_img_url": "https://pbs.twimg.com/1.jpg",
+                        }
+                    },
+                    {
+                        "media_info": {
+                            "__typename": "ApiVideo",
+                            "variants": [
+                                {
+                                    "url": "https://video.twimg.com/live.m3u8",
+                                    "bitrate": 1,
+                                },
+                                {
+                                    "url": "https://video.twimg.com/low.mp4",
+                                    "bitrate": 1,
+                                },
+                                {
+                                    "url": "https://video.twimg.com/high.mp4",
+                                    "bitrate": 2,
+                                },
+                            ],
+                        }
+                    },
+                    {
+                        "media_info": {
+                            "__typename": "ApiGif",
+                            "variants": [{"url": "https://video.twimg.com/gif.mp4"}],
+                        }
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(photos, ["https://pbs.twimg.com/1.jpg"])
+        self.assertEqual(videos, ["https://video.twimg.com/high.mp4"])
+        self.assertEqual(gifs, ["https://video.twimg.com/gif.mp4"])
+
     def test_contains_twitter_link(self):
         self.assertTrue(
             contains_twitter_link("Check this out: https://twitter.com/jack/status/20")
@@ -94,7 +158,7 @@ class TestTwitterExtraction(unittest.TestCase):
 
 class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.update = MagicMock(spec=Update)
+        self.update = MagicMock()
         self.update.message = MagicMock()
         self.update.message.chat_id = 123456
         self.update.message.reply_to_message = None
@@ -106,7 +170,7 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.user.full_name = "Test User Full Name"
         self.update.effective_user = self.user
 
-        self.context = MagicMock(spec=ContextTypes.DEFAULT_TYPE)
+        self.context = MagicMock()
         self.context.bot = MagicMock()
         self.context.bot.send_photo = AsyncMock()
         self.context.bot.send_video = AsyncMock()
@@ -381,6 +445,24 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
 
+    @patch("daphne.twitter.download_bytes", return_value=b"image_data")
+    async def test_media_group_fallback_uses_aiogram_input_files(self, mock_download):
+        bot = MagicMock()
+        bot.send_media_group = AsyncMock(side_effect=[Exception("URL rejected"), None])
+
+        await send_media_group_helper(
+            bot,
+            123456,
+            ["https://pbs.twimg.com/media/1.jpg"],
+            "caption",
+            "HTML",
+        )
+
+        media = bot.send_media_group.call_args_list[1].kwargs["media"]
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0].media.filename, "photo_0.jpg")
+        mock_download.assert_called_once_with("https://pbs.twimg.com/media/1.jpg")
+
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_single_photo_uses_api_author_not_url_username(self, mock_get):
         # URL says "nasa", but X redirects any username segment to the tweet
@@ -514,6 +596,102 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.update.message.delete.assert_called_once()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_with_promotional_tweet_text(self, mock_get):
+        self.update.message.text = (
+            "https://x.com/reactiverobot/status/2092638003789439075?s=20"
+        )
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "id": "2092638003789439075",
+                "text": (
+                    "Here's my advice for engineers looking to up their design game. "
+                    "https://x.com/i/article/2092403772534460416"
+                ),
+                "url": "https://x.com/reactiverobot/status/2092638003789439075",
+                "author": {"screen_name": "reactiverobot", "name": "Reactive Robot"},
+                "media": None,
+                "article": {
+                    "title": "How I Design with AI.",
+                    "preview_text": (
+                        "As an engineer who is not a designer and hates slop."
+                    ),
+                    "cover_media": {
+                        "media_info": {
+                            "original_img_url": "https://pbs.twimg.com/media/HQqK_LMaEAAUXxC.jpg"
+                        }
+                    },
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_photo.assert_called_once()
+        kwargs = self.context.bot.send_photo.call_args.kwargs
+        self.assertIn("How I Design with AI.", kwargs["caption"])
+        self.assertIn("As an engineer who is not a designer", kwargs["caption"])
+        self.assertNotIn("Here's my advice for engineers", kwargs["caption"])
+        self.context.bot.send_message.assert_not_called()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_sends_cover_and_first_three_media(self, mock_get):
+        self.update.message.text = "https://x.com/writer/status/999"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "text": "https://x.com/i/article/123",
+                "url": "https://x.com/writer/status/999",
+                "author": {"screen_name": "writer"},
+                "media": None,
+                "article": {
+                    "title": "A visual article",
+                    "preview_text": "A short fallback.",
+                    "content": {"blocks": [{"type": "unstyled", "text": "The body."}]},
+                    "cover_media": {
+                        "media_info": {
+                            "original_img_url": "https://pbs.twimg.com/cover.jpg"
+                        }
+                    },
+                    "media_entities": [
+                        {
+                            "media_info": {
+                                "__typename": "ApiImage",
+                                "original_img_url": f"https://pbs.twimg.com/{i}.jpg",
+                            }
+                        }
+                        for i in range(1, 5)
+                    ],
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_media_group.assert_called_once()
+        media = self.context.bot.send_media_group.call_args.kwargs["media"]
+        self.assertEqual(
+            [item.media for item in media],
+            [
+                "https://pbs.twimg.com/cover.jpg",
+                "https://pbs.twimg.com/1.jpg",
+                "https://pbs.twimg.com/2.jpg",
+                "https://pbs.twimg.com/3.jpg",
+            ],
+        )
+        self.assertIn("+1 media omitted", media[0].caption)
+        self.assertIn("The body.", media[0].caption)
+        self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_article_without_cover_sends_text_message(self, mock_get):
         self.update.message.text = (
             "https://x.com/waterloo_intern/status/2081762065392541951"
@@ -560,7 +738,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         # Sends fallback URL
         self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456, text="https://fxtwitter.com/nasa/status/999"
+            chat_id=123456,
+            text="https://fxtwitter.com/nasa/status/999",
+            parse_mode=None,
         )
         self.update.message.delete.assert_called_once()
 
@@ -578,7 +758,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         # Sends fallback URL
         self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456, text="https://fxtwitter.com/nasa/status/999"
+            chat_id=123456,
+            text="https://fxtwitter.com/nasa/status/999",
+            parse_mode=None,
         )
         self.update.message.delete.assert_called_once()
 

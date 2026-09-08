@@ -2,8 +2,12 @@ import re
 import httpx
 import logging
 import io
-from telegram import Update, InputMediaPhoto
-from telegram.ext import ContextTypes
+from daphne.tg import (
+    InputMediaPhoto,
+    TelegramContext,
+    TelegramUpdate,
+    as_input_file,
+)
 
 from daphne.messages import (
     HtmlMessage,
@@ -15,6 +19,8 @@ from daphne.messages import (
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+ARTICLE_PREVIEW_LIMIT = 650
+ARTICLE_MEDIA_LIMIT = 3
 
 TWITTER_REGEX = re.compile(
     r"https?://(?:www\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/([a-zA-Z0-9_]+)/status/(\d+)",
@@ -243,10 +249,14 @@ async def send_media_group_helper(
             bio.name = f"photo_{i}.jpg"
             if i == 0:
                 media.append(
-                    InputMediaPhoto(media=bio, caption=caption, parse_mode=parse_mode)
+                    InputMediaPhoto(
+                        media=as_input_file(bio),
+                        caption=caption,
+                        parse_mode=parse_mode,
+                    )
                 )
             else:
-                media.append(InputMediaPhoto(media=bio))
+                media.append(InputMediaPhoto(media=as_input_file(bio)))
         await bot.send_media_group(chat_id=chat_id, media=media)
 
 
@@ -265,7 +275,7 @@ async def send_photos(
 async def send_fallback(bot, chat_id: int, username: str, tweet_id: str) -> bool:
     fallback_url = f"https://fxtwitter.com/{username}/status/{tweet_id}"
     try:
-        await bot.send_message(chat_id=chat_id, text=fallback_url)
+        await bot.send_message(chat_id=chat_id, text=fallback_url, parse_mode=None)
         return True
     except Exception as e:
         logger.error(f"Failed to send fallback URL {fallback_url}: {e}")
@@ -315,29 +325,106 @@ def article_cover_url(article: dict) -> str | None:
     return (cover_media.get("media_info") or {}).get("original_img_url")
 
 
+def _truncate_article_text(
+    text: str, limit: int = ARTICLE_PREVIEW_LIMIT
+) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    candidate = text[: limit - 1]
+    paragraph_break = candidate.rfind("\n\n")
+    if paragraph_break >= 0:
+        shortened = candidate[:paragraph_break].rstrip()
+    else:
+        shortened = candidate.rsplit(" ", 1)[0].rstrip()
+    return f"{shortened}…", True
+
+
+def article_preview_text(article: dict) -> tuple[str, bool]:
+    """Return readable article passages, falling back to the API preview."""
+    content = article.get("content") or {}
+    paragraphs = []
+    for block in content.get("blocks") or []:
+        if str(block.get("type", "")).lower() == "atomic":
+            continue
+        text = str(block.get("text") or "").strip()
+        if text == str(article.get("title") or "").strip():
+            continue
+        if text:
+            paragraphs.append(text)
+
+    body = "\n\n".join(paragraphs) or str(article.get("preview_text") or "").strip()
+    return _truncate_article_text(body)
+
+
+def _article_video_url(media_info: dict) -> str | None:
+    variants = media_info.get("variants") or (media_info.get("video_info") or {}).get(
+        "variants", []
+    )
+    usable = [
+        variant
+        for variant in variants
+        if variant.get("url") and ".m3u8" not in variant["url"]
+    ]
+    if not usable:
+        return None
+
+    def bitrate(variant: dict) -> int:
+        try:
+            return int(variant.get("bitrate", variant.get("bit_rate", 0)) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    selected = max(
+        usable,
+        key=bitrate,
+    )
+    return selected["url"]
+
+
+def article_media_lists(article: dict) -> tuple[list[str], list[str], list[str]]:
+    """Extract supported article media in the API's document order."""
+    photos, videos, gifs = [], [], []
+    seen = set()
+    for entity in article.get("media_entities") or []:
+        media_info = entity.get("media_info") or {}
+        kind = str(media_info.get("__typename") or media_info.get("type") or "").lower()
+        if kind == "apiimage":
+            url = media_info.get("original_img_url")
+            target = photos
+        else:
+            url = _article_video_url(media_info)
+            target = gifs if kind in {"apigif", "animated_gif", "gif"} else videos
+        if url and url not in seen:
+            seen.add(url)
+            target.append(url)
+    return photos, videos, gifs
+
+
 def build_article_caption(
     title: str,
     preview_text: str,
     tweet_url: str,
     sender: str | None,
     username: str | None = None,
+    *,
+    text_truncated: bool = False,
+    omitted_media: int = 0,
 ) -> str:
     tags = ["twitter"]
     slug = author_tag(username)
     if slug and slug not in tags:
         tags.append(slug)
 
-    return (
-        HtmlMessage(sender=sender)
-        .title(title)
-        .text(preview_text)
-        .link(tweet_url)
-        .tags(*tags)
-        .render()
-    )
+    title, _ = _truncate_article_text(str(title), 180)
+    message = HtmlMessage(sender=sender).title(title).text(preview_text)
+    if text_truncated:
+        message.text("Article shortened; open the source for the full text.")
+    if omitted_media:
+        message.text(f"+{omitted_media} media omitted; open the source for the rest.")
+    return message.link(tweet_url).tags(*tags).render()
 
 
-async def try_delete_message(update: Update) -> None:
+async def try_delete_message(update: TelegramUpdate) -> None:
     message = update.message
     if not message:
         return
@@ -351,7 +438,7 @@ async def try_delete_message(update: Update) -> None:
 
 
 async def handle_twitter_links(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+    update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message
     if not message or not message.text:
@@ -426,32 +513,84 @@ async def handle_twitter_links(
                 has_media = bool(photo_urls or video_urls or gif_urls)
                 article = tweet.get("article")
 
-                if not tweet_text and not has_media and article:
+                if article:
                     tweet_url = (
                         tweet.get("url")
                         or f"https://{domain}/{username}/status/{tweet_id}"
                     )
+                    article_photos, article_videos, article_gifs = article_media_lists(
+                        article
+                    )
+                    if not article_photos and not article_videos and not article_gifs:
+                        article_photos = photo_urls
+                        article_videos = video_urls
+                        article_gifs = gif_urls
+
+                    cover_url = article_cover_url(article)
+                    article_photos = [
+                        url for url in article_photos if url and url != cover_url
+                    ]
+                    article_media = article_photos + article_videos + article_gifs
+                    selected_media = article_media[:ARTICLE_MEDIA_LIMIT]
+                    selected_photos = [
+                        url for url in selected_media if url in article_photos
+                    ]
+                    selected_videos = [
+                        url for url in selected_media if url in article_videos
+                    ]
+                    selected_gifs = [
+                        url for url in selected_media if url in article_gifs
+                    ]
+                    preview_text, text_truncated = article_preview_text(article)
                     caption = build_article_caption(
                         article.get("title", ""),
-                        article.get("preview_text", ""),
+                        preview_text,
                         tweet_url,
                         sender_attribution(update.effective_user),
                         username=author_username,
+                        text_truncated=text_truncated,
+                        omitted_media=max(0, len(article_media) - len(selected_media)),
                     )
-                    cover_url = article_cover_url(article)
-                    if cover_url:
-                        await send_photo_helper(
+
+                    photos_to_send = (
+                        [cover_url] if cover_url else []
+                    ) + selected_photos
+                    sent_media = False
+                    if photos_to_send:
+                        await send_photos(
                             context.bot,
                             chat_id,
-                            cover_url,
+                            photos_to_send,
                             caption,
-                            parse_mode=PARSE_MODE_HTML,
+                            PARSE_MODE_HTML,
                         )
-                    else:
+                        sent_media = True
+
+                    caption_available = not sent_media
+                    for video_url in selected_videos:
+                        await send_video_helper(
+                            context.bot,
+                            chat_id,
+                            video_url,
+                            caption if caption_available else "",
+                            PARSE_MODE_HTML,
+                        )
+                        caption_available = False
+                        sent_media = True
+                    for gif_url in selected_gifs:
+                        await send_animation_helper(
+                            context.bot,
+                            chat_id,
+                            gif_url,
+                            caption if caption_available else "",
+                            PARSE_MODE_HTML,
+                        )
+                        caption_available = False
+                        sent_media = True
+
+                    if not sent_media:
                         await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=caption,
-                            parse_mode=PARSE_MODE_HTML,
+                            chat_id=chat_id, text=caption, parse_mode=PARSE_MODE_HTML
                         )
                     success = True
                 elif has_media:

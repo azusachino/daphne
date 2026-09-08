@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import logging
@@ -43,11 +44,19 @@ load_env_file(".env")
 load_env_file(os.path.expanduser("~/.config/daphne/daphne.env"))
 
 # Import remaining modules after loading environment variables
-from daphne.bot import build_application, register_bot_commands  # noqa: E402
+from daphne.bot import build_dispatcher, register_bot_commands  # noqa: E402
+from daphne.tg import build_bot  # noqa: E402
 
 
-async def post_init(app) -> None:
-    await register_bot_commands(app)
+async def run_bot() -> None:
+    token = os.environ[ENV_BOT_TOKEN]
+    bot = build_bot(token)
+    dispatcher = build_dispatcher()
+    try:
+        await register_bot_commands(bot)
+        await dispatcher.start_polling(bot.raw)
+    finally:
+        await bot.session.close()
 
 
 def run_init(local: bool = False) -> None:
@@ -152,12 +161,9 @@ def main() -> None:
             )
             sys.exit(1)
 
-        app = build_application()
-        app.post_init = post_init
-
         try:
             logger.info("Starting Daphne bot polling...")
-            app.run_polling()
+            asyncio.run(run_bot())
         except (KeyboardInterrupt, SystemExit):
             logger.info("Daphne bot received exit signal. Shutting down gracefully...")
         except Exception as e:
