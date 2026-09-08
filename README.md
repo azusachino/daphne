@@ -51,7 +51,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 
 | Platform                     | Method                          | Media                                            | Inline |
 | ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
-| **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (cover + preview) |   ✅   |
+| **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (preview + up to 3 media) |   ✅   |
 | **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
 | **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux`    | Video downloads                                  |   ✅   |
 | **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |

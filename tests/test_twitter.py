@@ -639,6 +639,59 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_message.assert_not_called()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_handle_article_sends_cover_and_first_three_media(self, mock_get):
+        self.update.message.text = "https://x.com/writer/status/999"
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "text": "https://x.com/i/article/123",
+                "url": "https://x.com/writer/status/999",
+                "author": {"screen_name": "writer"},
+                "media": None,
+                "article": {
+                    "title": "A visual article",
+                    "preview_text": "A short fallback.",
+                    "content": {"blocks": [{"type": "unstyled", "text": "The body."}]},
+                    "cover_media": {
+                        "media_info": {
+                            "original_img_url": "https://pbs.twimg.com/cover.jpg"
+                        }
+                    },
+                    "media_entities": [
+                        {
+                            "media_info": {
+                                "__typename": "ApiImage",
+                                "original_img_url": f"https://pbs.twimg.com/{i}.jpg",
+                            }
+                        }
+                        for i in range(1, 5)
+                    ],
+                },
+            },
+        }
+        mock_get.return_value = mock_response
+
+        await handle_twitter_links(self.update, self.context)
+
+        self.context.bot.send_media_group.assert_called_once()
+        media = self.context.bot.send_media_group.call_args.kwargs["media"]
+        self.assertEqual(
+            [item.media for item in media],
+            [
+                "https://pbs.twimg.com/cover.jpg",
+                "https://pbs.twimg.com/1.jpg",
+                "https://pbs.twimg.com/2.jpg",
+                "https://pbs.twimg.com/3.jpg",
+            ],
+        )
+        self.assertIn("+1 media omitted", media[0].caption)
+        self.assertIn("The body.", media[0].caption)
+        self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_article_without_cover_sends_text_message(self, mock_get):
         self.update.message.text = (
             "https://x.com/waterloo_intern/status/2081762065392541951"
