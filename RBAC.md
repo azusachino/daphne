@@ -27,7 +27,8 @@ graph TD
     J -- No --> H
 ```
 
-### Evaluation Hierarchy:
+### Evaluation Hierarchy
+
 1. **Admin Bypass**: If the user is whitelisted with the `"admin"` role, access is granted unconditionally.
 2. **Public Commands**: If the command is listed in `public_commands`, access is granted to all users, subject to rate limits.
 3. **Chat Whitelist Enforcement**: The chat/group must be whitelisted in the configuration. If the chat ID is not found, access is immediately denied.
@@ -43,6 +44,7 @@ graph TD
 The RBAC system is configured under the `[rbac]` section of the configuration file.
 
 ### Complete Configuration Example
+
 ```toml
 [rbac]
 # Commands accessible by anyone in any chat (subject to rate limiting)
@@ -105,6 +107,7 @@ permissions = ["inline_convert"]
 ## 4. Rate Limiting for Public Commands
 
 Public commands are rate-limited per user to prevent denial-of-service attempts.
+
 - **Limit**: Maximum 10 calls per rolling 60-second window.
 - **Exceeding**: Daphne returns `AccessStatus.RATE_LIMITED` and logs the warning.
 
