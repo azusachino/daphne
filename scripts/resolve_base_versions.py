@@ -64,7 +64,7 @@ def main() -> None:
     if not args.build:
         return
 
-    ref = f"azusachino.icu/daphne-base:py3.14-lux{latest_lux}-deno"
+    ref = f"azusachino.com/daphne-base:py3.14-lux{latest_lux}-deno"
     cmd = [
         args.container_tool,
         "build",

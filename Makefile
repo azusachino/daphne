@@ -10,7 +10,7 @@ VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
 # Base image (OS tools + lux + deno); tagged by toolchain, bumped only when
 # tools change. Local-only like LOCAL_IMAGE above — never pushed to a
 # registry, just built once (image-base) and reused as a --build-arg.
-BASE_IMAGE ?= azusachino.icu/daphne-base
+BASE_IMAGE ?= azusachino.com/daphne-base
 BASE_TAG ?= py3.14-lux0.24.1-deno
 BASE_REF := $(BASE_IMAGE):$(BASE_TAG)
 
