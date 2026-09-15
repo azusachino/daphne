@@ -214,6 +214,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.update.message.reply_text.assert_called_once()
         text = self.update.message.reply_text.call_args[0][0]
         self.assertIn("Please provide a link", text)
+        self.assertIn("Example: /audio &lt;link&gt;", text)
 
     @patch("daphne.bot.check_access_and_reply", return_value=True)
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
@@ -293,6 +294,7 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         await gallery_command(self.update, self.context)
         text = self.update.message.reply_text.call_args[0][0]
         self.assertIn("Please provide a link", text)
+        self.assertIn("Example: /gallery &lt;link&gt;", text)
 
     @patch("daphne.bot.check_access_and_reply", return_value=True)
     @patch("daphne.bot.download_gallery")
@@ -422,7 +424,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Huge Video", text)
         button_download = kwargs["reply_markup"].inline_keyboard[0][0]
         button_source = kwargs["reply_markup"].inline_keyboard[0][1]
-        self.assertEqual(button_download.text, "Download Video")
+        self.assertEqual(button_download.text, "Download video")
         self.assertTrue(button_download.callback_data.startswith("dl:"))
         self.assertEqual(button_source.text, "Open source")
         self.assertEqual(button_source.url, "https://www.bilibili.com/video/BV1abc")

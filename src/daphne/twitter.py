@@ -311,7 +311,7 @@ def build_caption(
     return (
         HtmlMessage(sender=sender)
         .text(tweet_text or None)
-        .link(tweet_url)
+        .link(tweet_url, "🔗 Source (Twitter)")
         .tags(*tags)
         .render()
     )
@@ -421,7 +421,7 @@ def build_article_caption(
         message.text("Article shortened; open the source for the full text.")
     if omitted_media:
         message.text(f"+{omitted_media} media omitted; open the source for the rest.")
-    return message.link(tweet_url).tags(*tags).render()
+    return message.link(tweet_url, "🔗 Source (Twitter)").tags(*tags).render()
 
 
 async def try_delete_message(update: TelegramUpdate) -> None:

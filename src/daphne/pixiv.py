@@ -229,20 +229,20 @@ def _image_file(content: bytes, url: str, index: int):
 
 def build_caption(
     original_url: str,
-    pixiv_cat_url: str,
-    info: Optional[PixivInfo],
+    pixiv_cat_url: str = "",
+    info: Optional[PixivInfo] = None,
     sender: Optional[str] = None,
     remaining_images: int = 0,
 ) -> str:
     message = HtmlMessage(sender=sender)
     if info:
         tags = [to_telegram_tag(tag) for tag in info.tags]
-        message.title(info.title).fields(("Author:", info.author_name)).tags(
-            "pixiv", *tags
-        )
-    message.links(original_url, pixiv_cat_url).tags("pixiv")
+        message.title(info.title).fields(("Author:", info.author_name))
+    else:
+        tags = []
     if remaining_images:
         message.text(f"+{remaining_images} more images on Pixiv")
+    message.link(original_url, "🔗 Source (Pixiv)").tags("pixiv", *tags)
     return message.render()
 
 

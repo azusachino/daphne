@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-15
+
+### Changed
+
+- **Descriptive Source Links**: Replaced raw, unwrapped URLs in media captions across Twitter, Bluesky, Instagram, and video cards with labeled source anchors (`🔗 Source (<Platform>)`), reducing caption clutter and preventing line-wrapping over mobile bubbles.
+- **Button Casing**: Standardized video card button text to sentence case (`Download video`).
+- **Overview & Guidance**: Added Bluesky, Instagram, and TikTok to supported platforms in `/start` and `/help` overview, and provided concrete syntax examples when `/audio` or `/gallery` are invoked without arguments.
+
+### Fixed
+
+- **Pixiv Caption Formatting**: Removed duplicate `#pixiv` hashtag call, stopped exposing internal reverse-proxy mirror links (`pixiv.cat`) in user-visible captions, and moved `+{remaining} more images on Pixiv` above metadata.
+
 ## [0.4.0] - 2026-09-08
 
 ### Changed
