@@ -179,7 +179,7 @@ async def handle_instagram_links(
         HtmlMessage(sender=sender)
         .title(title or f"Instagram Post by @{uploader}")
         .fields(("Uploader:", f"@{uploader}"))
-        .link(original_url)
+        .link(original_url, "🔗 Source (Instagram)")
         .tags(*tags)
         .render()
     )

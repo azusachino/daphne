@@ -40,6 +40,11 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
         self.assertIn("artist &amp; co", caption)
         self.assertIn("#pixiv #fantasy_art", caption)
         self.assertIn("via @haru", caption)
+        self.assertIn(
+            '<a href="https://www.pixiv.net/en/artworks/123">🔗 Source (Pixiv)</a>',
+            caption,
+        )
+        self.assertNotIn("pixiv.cat", caption)
 
     async def test_metadata_falls_back_to_pixiv_ajax(self):
         phixiv_response = MagicMock(status_code=200)

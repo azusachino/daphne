@@ -187,8 +187,8 @@ async def check_access_and_reply(update: TelegramUpdate, command: str) -> bool:
 
 def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
     body = (
-        "Send a Twitter/X, Pixiv, Bilibili, b23, or YouTube link and I will "
-        "convert it into Telegram-friendly media.\n\n"
+        "Send a Twitter/X, Pixiv, Bluesky, Instagram, TikTok, Bilibili, or "
+        "YouTube link and I will convert it into Telegram-friendly media.\n\n"
         "/audio <link> — extract audio as MP3\n"
         "/gallery <link> — download an image gallery"
     )
@@ -314,6 +314,7 @@ async def send_video_card(
             duration_text = format_duration(int(float(duration)))
         except (TypeError, ValueError):
             pass
+    platform_name = detect_platform(url)
     text = (
         HtmlMessage(sender=sender)
         .title(reason)
@@ -322,8 +323,8 @@ async def send_video_card(
             ("Uploader:", uploader),
             ("Duration:", duration_text),
         )
-        .link(webpage_url)
-        .tags(detect_platform(url))
+        .link(webpage_url, f"🔗 Source ({platform_name.capitalize()})")
+        .tags(platform_name)
         .render()
     )
     buttons = []
@@ -334,7 +335,7 @@ async def send_video_card(
     size = _metadata_size(metadata)
     if size is None or size <= TG_HARD_LIMIT_BYTES:
         buttons.append(
-            InlineKeyboardButton(text="Download Video", callback_data=f"dl:{short_id}")
+            InlineKeyboardButton(text="Download video", callback_data=f"dl:{short_id}")
         )
     buttons.append(InlineKeyboardButton(text="Open source", url=webpage_url))
 
@@ -631,7 +632,10 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
     if not url:
         await message.reply_text(
             HtmlMessage()
-            .text("Please provide a link or reply to a message containing a link.")
+            .text(
+                "Please provide a link or reply to a message containing a link.\n\n"
+                "Example: /audio <link>"
+            )
             .render(),
             parse_mode=PARSE_MODE_HTML,
         )
@@ -781,7 +785,10 @@ async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> N
     if not url:
         await message.reply_text(
             HtmlMessage()
-            .text("Please provide a link or reply to a message containing a link.")
+            .text(
+                "Please provide a link or reply to a message containing a link.\n\n"
+                "Example: /gallery <link>"
+            )
             .render(),
             parse_mode=PARSE_MODE_HTML,
         )

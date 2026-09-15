@@ -104,7 +104,7 @@ def build_bluesky_caption(
         HtmlMessage(sender=sender)
         .title(title)
         .text(text or None)
-        .link(url)
+        .link(url, "🔗 Source (Bluesky)")
         .tags(*tags)
         .render()
     )
