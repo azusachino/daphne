@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-09-16
+
+### Fixed
+
+- **Pixiv Tag Normalization**: Preserved Unicode and CJK characters in Pixiv hashtags instead of stripping them to empty, preventing non-Latin tags from collapsing into fallback `#pixiv` strings.
+- **Hashtag Deduplication**: Added case-insensitive hashtag deduplication in `HtmlMessage.tags` and `build_caption` to eliminate redundant tag mentions.
+
 ## [0.4.1] - 2026-09-15
 
 ### Changed
