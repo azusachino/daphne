@@ -45,6 +45,16 @@ class TestMessages(unittest.TestCase):
         self.assertIn("#twitter #art", text)
         self.assertIn("via @haru", text)
 
+    def test_html_message_tags_deduplication(self):
+        text = (
+            HtmlMessage()
+            .tags("pixiv", "#pixiv", "PIXIV", "#art", "art", "#Art")
+            .render()
+        )
+        self.assertIn("#pixiv #art", text)
+        self.assertNotIn("#pixiv #pixiv", text)
+        self.assertNotIn("#art #art", text)
+
     def test_slugify_tag_multi_word_name(self):
         # Multiple words/punctuation collapse into one underscore-joined slug,
         # not a tag per word.

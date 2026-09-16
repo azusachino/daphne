@@ -127,10 +127,16 @@ class HtmlMessage:
 
     def tags(self, *tags: str) -> "HtmlMessage":
         normalized = []
+        seen = set()
         for tag in tags:
             if not tag:
                 continue
-            normalized.append(tag if tag.startswith("#") else f"#{tag}")
+            item = tag if tag.startswith("#") else f"#{tag}"
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(item)
         if not normalized:
             return self
         line = " ".join(escape_html(tag) for tag in normalized)

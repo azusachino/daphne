@@ -27,6 +27,18 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
     def test_to_telegram_tag(self):
         self.assertEqual(to_telegram_tag("#fantasy art"), "#fantasy_art")
         self.assertEqual(to_telegram_tag("R-18"), "#R_18")
+        self.assertEqual(to_telegram_tag("女の子"), "#女の子")
+        self.assertEqual(to_telegram_tag("オリジナル"), "#オリジナル")
+        self.assertEqual(
+            to_telegram_tag("Re:ゼロから始める異世界生活"),
+            "#Re_ゼロから始める異世界生活",
+        )
+        self.assertEqual(to_telegram_tag("＃東方Project"), "#東方Project")
+        self.assertEqual(to_telegram_tag("10000users入り"), "#10000users入り")
+        self.assertIsNone(to_telegram_tag("🎨🎨🎨"))
+        self.assertIsNone(to_telegram_tag(""))
+        self.assertIsNone(to_telegram_tag("   "))
+        self.assertIsNone(to_telegram_tag("###"))
 
     def test_build_caption_with_info(self):
         info = PixivInfo("A < B", "artist & co", ["fantasy art"])
@@ -45,6 +57,34 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
             caption,
         )
         self.assertNotIn("pixiv.cat", caption)
+
+    def test_build_caption_with_unicode_tags(self):
+        info = PixivInfo("双子", "柊", ["女の子", "オリジナル", "Skeb", "白髪"])
+        caption = build_caption(
+            "https://www.pixiv.net/artworks/149706124",
+            info=info,
+            sender="via @xxx",
+        )
+        self.assertIn("<b>双子</b>", caption)
+        self.assertIn("<b>Author:</b> 柊", caption)
+        self.assertIn("#pixiv #女の子 #オリジナル #Skeb #白髪", caption)
+        self.assertNotIn("#pixiv #pixiv", caption)
+
+    def test_build_caption_deduplicates_tags(self):
+        info = PixivInfo(
+            "Art",
+            "Author",
+            ["pixiv", "Pixiv", "Skeb", "skeb", "🎨🎨", "#fantasy art"],
+        )
+        caption = build_caption("https://www.pixiv.net/artworks/123", info=info)
+        self.assertIn("#pixiv #Skeb #fantasy_art", caption)
+        self.assertNotIn("#pixiv #pixiv", caption)
+        self.assertNotIn("#skeb", caption.lower().replace("#skeb", "", 1))
+
+    def test_build_caption_without_info(self):
+        caption = build_caption("https://www.pixiv.net/artworks/123")
+        self.assertIn("#pixiv", caption)
+        self.assertNotIn("#pixiv #pixiv", caption)
 
     async def test_metadata_falls_back_to_pixiv_ajax(self):
         phixiv_response = MagicMock(status_code=200)

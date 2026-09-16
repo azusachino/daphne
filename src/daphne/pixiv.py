@@ -1,6 +1,7 @@
 import io
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -76,11 +77,11 @@ def extract_pixiv_url(text: str) -> Optional[str]:
     return None
 
 
-def to_telegram_tag(tag: str) -> str:
-    raw = tag.strip().lstrip("#")
-    sanitized = re.sub(r"[^0-9A-Za-z_]+", "_", raw).strip("_")
+def to_telegram_tag(tag: str) -> Optional[str]:
+    raw = unicodedata.normalize("NFKC", tag.strip()).lstrip("#")
+    sanitized = re.sub(r"[^\w]+", "_", raw).strip("_")
     sanitized = re.sub(r"_+", "_", sanitized)
-    return f"#{sanitized}" if sanitized else "#pixiv"
+    return f"#{sanitized}" if sanitized else None
 
 
 def _expand_pixiv_pages(url: str, page_count: int) -> list[str]:
@@ -235,14 +236,21 @@ def build_caption(
     remaining_images: int = 0,
 ) -> str:
     message = HtmlMessage(sender=sender)
+    tags = ["pixiv"]
+    seen = {"pixiv"}
     if info:
-        tags = [to_telegram_tag(tag) for tag in info.tags]
         message.title(info.title).fields(("Author:", info.author_name))
-    else:
-        tags = []
+        for raw_tag in info.tags:
+            tag = to_telegram_tag(raw_tag)
+            if not tag:
+                continue
+            key = tag.lstrip("#").lower()
+            if key not in seen:
+                seen.add(key)
+                tags.append(tag)
     if remaining_images:
         message.text(f"+{remaining_images} more images on Pixiv")
-    message.link(original_url, "🔗 Source (Pixiv)").tags("pixiv", *tags)
+    message.link(original_url, "🔗 Source (Pixiv)").tags(*tags)
     return message.render()
 
 
