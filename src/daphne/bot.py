@@ -915,6 +915,9 @@ def _twitter_inline_results(media: dict, caption: str) -> list:
                 mime_type="video/mp4",
                 thumbnail_url=thumb,
                 title="Video",
+                video_width=video.get("width"),
+                video_height=video.get("height"),
+                video_duration=video.get("duration"),
                 caption=caption,
                 parse_mode=PARSE_MODE_HTML,
             )

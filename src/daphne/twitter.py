@@ -50,8 +50,22 @@ def extract_twitter_link(text: str):
     return None
 
 
-def select_twitter_video_url(video: dict) -> str:
-    """Select the highest-bitrate H.264 MP4 within the iOS-safe size cap."""
+def _positive_int(value) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def select_twitter_video(video: dict) -> dict:
+    """
+    Select the highest-bitrate H.264 MP4 within the iOS-safe size cap.
+
+    Returns ``{"url", "width", "height", "duration"}`` so callers can pass the
+    dimensions to Telegram; without them clients render the video in a
+    near-square frame.
+    """
     candidates = []
     for format_info in video.get("formats", []) or []:
         if (
@@ -78,11 +92,28 @@ def select_twitter_video_url(video: dict) -> str:
                 bitrate = int(format_info.get("bitrate", 0) or 0)
             except (TypeError, ValueError):
                 bitrate = 0
-            candidates.append((bitrate, format_info["url"]))
+            candidates.append((bitrate, format_info["url"], width, height))
+
+    duration = None
+    try:
+        duration = _positive_int(round(float(video.get("duration"))))
+    except (TypeError, ValueError, OverflowError):
+        duration = None
 
     if candidates:
-        return max(candidates)[1]
-    return video["url"]
+        _, url, width, height = max(candidates)
+        return {"url": url, "width": width, "height": height, "duration": duration}
+    return {
+        "url": video["url"],
+        "width": _positive_int(video.get("width")),
+        "height": _positive_int(video.get("height")),
+        "duration": duration,
+    }
+
+
+def select_twitter_video_url(video: dict) -> str:
+    """Select the highest-bitrate H.264 MP4 within the iOS-safe size cap."""
+    return select_twitter_video(video)["url"]
 
 
 def _media_lists_from_tweet(tweet: dict) -> tuple[list[str], list[dict], list[dict]]:
@@ -112,13 +143,11 @@ def _media_lists_from_tweet(tweet: dict) -> tuple[list[str], list[dict], list[di
         if "url" not in v:
             continue
         is_gif = str(v.get("type", "")).lower() in {"gif", "animated_gif"}
-        entry = {
-            "url": v["url"] if is_gif else select_twitter_video_url(v),
-            "thumbnail": v.get("thumbnail_url"),
-        }
         if is_gif:
-            gifs.append(entry)
+            gifs.append({"url": v["url"], "thumbnail": v.get("thumbnail_url")})
         else:
+            entry = select_twitter_video(v)
+            entry["thumbnail"] = v.get("thumbnail_url")
             videos.append(entry)
     return photo_urls, videos, gifs
 
@@ -188,11 +217,28 @@ async def send_photo_helper(
 
 
 async def send_video_helper(
-    bot, chat_id: int, url: str, caption: str, parse_mode: str
+    bot,
+    chat_id: int,
+    url: str,
+    caption: str,
+    parse_mode: str,
+    width: int | None = None,
+    height: int | None = None,
+    duration: int | None = None,
 ) -> None:
+    video_kwargs = {"supports_streaming": True}
+    if width and height:
+        video_kwargs["width"] = width
+        video_kwargs["height"] = height
+    if duration:
+        video_kwargs["duration"] = duration
     try:
         await bot.send_video(
-            chat_id=chat_id, video=url, caption=caption, parse_mode=parse_mode
+            chat_id=chat_id,
+            video=url,
+            caption=caption,
+            parse_mode=parse_mode,
+            **video_kwargs,
         )
     except Exception as e:
         logger.warning(
@@ -202,7 +248,11 @@ async def send_video_helper(
         bio = io.BytesIO(video_bytes)
         bio.name = "video.mp4"
         await bot.send_video(
-            chat_id=chat_id, video=bio, caption=caption, parse_mode=parse_mode
+            chat_id=chat_id,
+            video=bio,
+            caption=caption,
+            parse_mode=parse_mode,
+            **video_kwargs,
         )
 
 
@@ -497,12 +547,21 @@ async def handle_twitter_links(
                     videos = media_info.get("videos", [])
 
                 photo_urls = [p["url"] for p in photos if "url" in p]
-                video_urls = [
-                    select_twitter_video_url(v)
+                selected_videos_info = [
+                    select_twitter_video(v)
                     for v in videos
                     if "url" in v
                     and str(v.get("type", "")).lower() not in {"gif", "animated_gif"}
                 ]
+                video_urls = [info["url"] for info in selected_videos_info]
+                video_meta = {
+                    info["url"]: {
+                        "width": info["width"],
+                        "height": info["height"],
+                        "duration": info["duration"],
+                    }
+                    for info in selected_videos_info
+                }
                 gif_urls = [
                     v["url"]
                     for v in videos
@@ -574,6 +633,7 @@ async def handle_twitter_links(
                             video_url,
                             caption if caption_available else "",
                             PARSE_MODE_HTML,
+                            **video_meta.get(video_url, {}),
                         )
                         caption_available = False
                         sent_media = True
@@ -626,6 +686,7 @@ async def handle_twitter_links(
                             video_url,
                             caption if caption_available else "",
                             parse_mode=PARSE_MODE_HTML,
+                            **video_meta.get(video_url, {}),
                         )
                         caption_available = False
                         success = True
