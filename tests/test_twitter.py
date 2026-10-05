@@ -9,6 +9,8 @@ from daphne.twitter import (
     extract_twitter_link,
     handle_twitter_links,
     send_media_group_helper,
+    send_video_helper,
+    select_twitter_video,
     select_twitter_video_url,
 )
 
@@ -153,6 +155,60 @@ class TestTwitterExtraction(unittest.TestCase):
         self.assertEqual(
             select_twitter_video_url(video),
             "https://video.twimg.com/vid/avc1/720x1280/safe.mp4?tag=29",
+        )
+
+    def test_select_twitter_video_returns_dimensions_and_duration(self):
+        video = {
+            "url": "https://video.twimg.com/vid/avc1/fallback.mp4",
+            "duration": 487.2,
+            "formats": [
+                {
+                    "url": "https://video.twimg.com/vid/avc1/960x720/main.mp4?tag=12",
+                    "container": "mp4",
+                    "codec": "h264",
+                    "bitrate": 2176000,
+                    "width": 960,
+                    "height": 720,
+                },
+            ],
+        }
+
+        self.assertEqual(
+            select_twitter_video(video),
+            {
+                "url": "https://video.twimg.com/vid/avc1/960x720/main.mp4?tag=12",
+                "width": 960,
+                "height": 720,
+                "duration": 487,
+            },
+        )
+
+
+class TestSendVideoHelper(unittest.IsolatedAsyncioTestCase):
+    async def test_send_video_helper_passes_dimensions(self):
+        bot = MagicMock()
+        bot.send_video = AsyncMock()
+
+        await send_video_helper(
+            bot,
+            123,
+            "https://video.twimg.com/vid/avc1/960x720/main.mp4",
+            "caption",
+            "HTML",
+            width=960,
+            height=720,
+            duration=487,
+        )
+
+        bot.send_video.assert_awaited_once_with(
+            chat_id=123,
+            video="https://video.twimg.com/vid/avc1/960x720/main.mp4",
+            caption="caption",
+            parse_mode="HTML",
+            supports_streaming=True,
+            width=960,
+            height=720,
+            duration=487,
         )
 
 
