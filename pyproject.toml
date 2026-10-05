@@ -1,12 +1,12 @@
 [project]
 name = "daphne"
-version = "0.4.2"
+version = "0.4.3"
 description = "Telegram bot for converting raw media links into Telegram-friendly media"
 requires-python = ">=3.12"
 dependencies = [
     "aiogram>=3.31.0",
     "httpx>=0.28.1",
-    "parth-dl>=1.0.1",
+    "parth-dl>=1.2.1",
 ]
 
 [project.scripts]
