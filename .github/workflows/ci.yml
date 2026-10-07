@@ -5,8 +5,52 @@ on:
     branches: [ main, master, "feat/**", "fix/**" ]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - '.github/workflows/ci.yml'
+              - 'Makefile'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.python-version'
+              - 'src/**'
+              - 'tests/**'
+              - 'scripts/**'
+            image:
+              - '.github/workflows/ci.yml'
+              - 'Makefile'
+              - 'Dockerfile*'
+              - 'deploy/**'
+              - 'docker-compose*'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'src/**'
+
   test:
+    name: Unit tests & lint
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,9 +78,33 @@ jobs:
         run: make test
 
   image:
+    name: Build and verify container image
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.image == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Build and verify container image
         run: make verify CONTAINER_TOOL=docker
+
+  check:
+    name: make check
+    if: ${{ always() }}
+    needs: [changes, test, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+        run: |
+          for res in "$TEST_RESULT" "$IMAGE_RESULT"; do
+            if [[ "$res" != "success" && "$res" != "skipped" ]]; then
+              echo "Gate failed with state: $res"
+              exit 1
+            fi
+          done
+          if [[ "$TEST_RESULT" == "failure" || "$IMAGE_RESULT" == "failure" ]]; then
+            exit 1
+          fi
