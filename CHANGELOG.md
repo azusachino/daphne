@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime `uvx` calls. gallery-dl and yt-dlp run from the image's virtual environment.
 - Nix flake (`flake.nix`) and `Dockerfile.base`.
 
+### Fixed
+
+- **Failed video downloads from a card**: The error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
+
 ## [0.4.3] - 2026-10-05
 
 ### Fixed

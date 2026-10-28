@@ -604,7 +604,10 @@ async def media_message_handler(
                 sender,
                 reason,
             )
-            await delete_original_message(update)
+            # While the card offers a download, keep the original link so a failed
+            # download still leaves it in the chat. Delete it only for a final card.
+            if size is not None and size > TG_HARD_LIMIT_BYTES:
+                await delete_original_message(update)
 
 
 async def audio_command(update: TelegramUpdate, context: TelegramContext) -> None:
@@ -1221,15 +1224,17 @@ async def download_button_callback(
                 )
         except Exception as exc:
             logger.exception("Failed to download video")
+            failure = (
+                HtmlMessage(sender=sender)
+                .text(f"Video download failed: {exc}")
+                .render()
+            )
             try:
-                await query.edit_message_text(
-                    HtmlMessage(sender=sender)
-                    .text(f"Video download failed: {exc}")
-                    .render(),
-                    parse_mode=PARSE_MODE_HTML,
-                )
+                await query.edit_message_text(failure, parse_mode=PARSE_MODE_HTML)
             except Exception:
-                pass
+                logger.exception("Could not show the download failure on the card")
+                if query.message:
+                    await query.message.reply_text(failure, parse_mode=PARSE_MODE_HTML)
             return
 
         file_size = os.path.getsize(video_path)
