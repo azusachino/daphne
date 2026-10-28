@@ -19,6 +19,7 @@ from daphne.twitter import try_delete_message
 logger = logging.getLogger(__name__)
 
 PIXIV_CAT_BASE = "https://pixiv.cat"
+PIXIV_RESTRICTED_TEXT = "This Pixiv work is age-restricted. It needs a logged-in account, which this bot does not use."
 PHIXIV_API = "https://phixiv.net/api/info"
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
@@ -31,6 +32,7 @@ class PixivInfo:
     tags: list[str]
     image_urls: list[str] | None = None
     page_count: int = 1
+    restricted: bool = False
 
 
 def contains_pixiv_link(text: str) -> bool:
@@ -176,6 +178,7 @@ async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
                 tags=[str(tag.get("tag") or tag) for tag in tags],
                 image_urls=image_urls,
                 page_count=page_count,
+                restricted=bool(body.get("xRestrict")),
             )
         except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
             logger.warning("Failed to fetch Pixiv metadata for %s: %s", artwork_id, exc)
@@ -275,6 +278,14 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
     )
     info = await fetch_artwork_info(artwork_id)
     sender = sender_attribution(update.effective_user)
+
+    if info and info.restricted:
+        # Anonymous access cannot read age-restricted works; say so instead of failing silently.
+        from daphne.bot import REACTION_FAILED, set_reaction
+
+        await set_reaction(message, REACTION_FAILED)
+        await message.reply_text(PIXIV_RESTRICTED_TEXT)
+        return
 
     try:
         remaining_images = 0

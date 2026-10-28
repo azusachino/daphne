@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
 - Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
 - **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
