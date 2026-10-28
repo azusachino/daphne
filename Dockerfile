@@ -32,9 +32,9 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
 
-# uvx starts yt-dlp and yutto on demand, from PyPI, at the latest release. Its cache
-# lives in the daphne user's home, which is writable; /app stays read-only.
-ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/home/daphne/.cache/uv
+# uvx starts yt-dlp and yutto on demand, from PyPI, at the latest release. uv keeps
+# its cache and tool environments in /tmp, since /app stays read-only.
+ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/tmp/uv-cache UV_TOOL_DIR=/tmp/uv-tools
 
 # Place the virtual environment's bin directory on the PATH (daphne, gallery-dl)
 ENV PATH="/app/.venv/bin:$PATH"
