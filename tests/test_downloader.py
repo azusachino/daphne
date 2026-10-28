@@ -22,8 +22,29 @@ from daphne.downloader import (
 )
 
 
+def _text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _via_subprocess_run(cmd, timeout):
+    """Route run_tool through subprocess.run, so tests keep their subprocess.run fakes."""
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=timeout
+        )
+    except subprocess.CalledProcessError as e:
+        return e.returncode, _text(e.stdout), _text(e.stderr)
+    code = res.returncode if isinstance(res.returncode, int) else 0
+    return code, _text(res.stdout), _text(res.stderr)
+
+
 class TestDownloader(unittest.TestCase):
     def setUp(self):
+        tool_patch = patch(
+            "daphne.downloader.run_tool", side_effect=_via_subprocess_run
+        )
+        tool_patch.start()
+        self.addCleanup(tool_patch.stop)
         self.test_dir = tempfile.mkdtemp()
 
     def tearDown(self):
@@ -318,7 +339,7 @@ class TestDownloader(unittest.TestCase):
             download_video("http://x.com", self.test_dir)
         self.assertEqual(mock_run.call_count, 2)
         for call in mock_run.call_args_list:
-            self.assertEqual(call.args[0][:2], ["uvx", "--refresh-package"])
+            self.assertEqual(call.args[0][:2], ["uvx", "--from"])
             self.assertIn("yt-dlp", call.args[0])
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
@@ -480,14 +501,15 @@ class TestYuttoHardening(unittest.TestCase):
     def test_tools_do_not_inherit_the_bot_token(self):
         with patch.dict(
             os.environ,
-            {"TELEGRAM_BOT_TOKEN": "123:SECRET", "PATH": "/usr/bin"},
+            {"DAPHNE_BOT_TOKEN": "123:SECRET", "PATH": "/usr/bin"},
             clear=True,
         ):
-            with patch("daphne.downloader.subprocess.run") as run:
-                run.return_value = MagicMock(stdout="", returncode=0)
+            with patch("daphne.downloader.subprocess.Popen") as popen:
+                popen.return_value.communicate.return_value = ("", "")
+                popen.return_value.returncode = 0
                 downloader._run_cmd(["uvx", "yt-dlp"])
-        env = run.call_args.kwargs["env"]
-        self.assertNotIn("TELEGRAM_BOT_TOKEN", env)
+        env = popen.call_args.kwargs["env"]
+        self.assertNotIn("DAPHNE_BOT_TOKEN", env)
         self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_logs_name_the_host_not_the_full_link(self):
@@ -501,3 +523,14 @@ class TestYuttoHardening(unittest.TestCase):
         logged = str(warn.call_args_list)
         self.assertIn("www.bilibili.com", logged)
         self.assertNotIn("BV1aMEj62EdA", logged)
+
+
+class TestToolWarmUp(unittest.TestCase):
+    def test_refresh_never_raises_and_downloads_still_run(self):
+        with patch(
+            "daphne.downloader.run_tool",
+            side_effect=subprocess.TimeoutExpired("uvx", 1),
+        ):
+            downloader.warm_up_tools()
+        with patch("daphne.downloader.run_tool", side_effect=OSError("uvx missing")):
+            downloader.warm_up_tools()

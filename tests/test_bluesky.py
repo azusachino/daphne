@@ -114,3 +114,64 @@ class TestBluesky(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBlueskyFailureReporting(unittest.IsolatedAsyncioTestCase):
+    def _update(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.text = "https://bsky.app/profile/alice.test/post/3kabc"
+        update.message.chat_id = 1
+        update.message.reply_to_message = None
+        update.message.is_topic_message = False
+        update.message.delete = AsyncMock()
+        update.effective_user = MagicMock(username="u", full_name="U")
+        return update
+
+    async def test_unresolvable_handle_gets_failure_reaction_and_reply(self):
+        context = MagicMock()
+        context.bot.send_chat_action = AsyncMock()
+        context.bot.send_message = AsyncMock()
+        update = self._update()
+        with (
+            patch("daphne.bluesky.resolve_handle", AsyncMock(return_value=None)),
+            patch("daphne.bot.set_reaction", new=AsyncMock()) as react,
+        ):
+            await handle_bluesky_links(update, context)
+        react.assert_awaited_once()
+        self.assertEqual(react.await_args.args[1], "😢")
+        self.assertIn(
+            "Could not convert", context.bot.send_message.await_args.kwargs["text"]
+        )
+        update.message.delete.assert_not_called()
+
+    async def test_failed_photo_send_is_reported_not_raised(self):
+        context = MagicMock()
+        context.bot.send_chat_action = AsyncMock()
+        context.bot.send_message = AsyncMock()
+        update = self._update()
+        thread = {
+            "thread": {
+                "post": {
+                    "author": {"handle": "alice.test"},
+                    "record": {"text": "hi"},
+                    "embed": {},
+                }
+            }
+        }
+        with (
+            patch("daphne.bluesky.resolve_handle", AsyncMock(return_value="did:plc:x")),
+            patch("daphne.bluesky.fetch_post_thread", AsyncMock(return_value=thread)),
+            patch(
+                "daphne.bluesky.extract_media_from_embed",
+                return_value=(["https://cdn.bsky.app/a.jpg"], None),
+            ),
+            patch(
+                "daphne.bluesky.send_photos",
+                AsyncMock(side_effect=RuntimeError("telegram down")),
+            ),
+            patch("daphne.bot.set_reaction", new=AsyncMock()) as react,
+        ):
+            await handle_bluesky_links(update, context)
+        react.assert_awaited_once()
+        update.message.delete.assert_not_called()

@@ -5,6 +5,7 @@ import logging
 import argparse
 
 from daphne.redact import install_redaction
+from daphne.downloader import warm_up_tools
 
 # Setup basic logging
 logging.basicConfig(
@@ -55,6 +56,7 @@ async def run_bot() -> None:
     token = os.environ[ENV_BOT_TOKEN]
     bot = build_bot(token)
     dispatcher = build_dispatcher()
+    await asyncio.to_thread(warm_up_tools)
     try:
         await register_bot_commands(bot)
         await dispatcher.start_polling(bot.raw)

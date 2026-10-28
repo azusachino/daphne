@@ -726,7 +726,9 @@ async def handle_twitter_links(
         else:
             logger.warning(f"FxTwitter API returned HTTP status {resp.status_code}")
     except Exception as e:
-        logger.exception(f"Error processing Twitter link {api_url}: {e}")
+        logger.warning(
+            "Error processing Twitter post %s: %s", tweet_id, failure_reason(e)
+        )
 
     if not success:
         # No link fallback: say what failed and keep the original message.

@@ -109,27 +109,77 @@ def scan_largest_media_file(out_dir: str) -> Optional[str]:
     return largest_file
 
 
+def run_tool(cmd: list[str], timeout: float) -> tuple[int, str, str]:
+    """Run yt-dlp, yutto or another uvx tool with the scrubbed environment.
+
+    The tool runs in its own process group. On timeout the whole group is killed, so the
+    children it started (yt-dlp's ffmpeg, yutto's uvx child) cannot keep writing into a
+    folder that is about to be removed. Raises subprocess.TimeoutExpired after the kill.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=tool_env(),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return proc.returncode, stdout or "", stderr or ""
+
+
+def warm_up_tools() -> None:
+    """Fetch the latest yt-dlp and yutto once, at startup. A failure is logged, not fatal.
+
+    Downloads then run the cached release without touching PyPI. If the refresh fails,
+    the cache from the last successful start is used.
+    """
+    for name, cmd in TOOL_REFRESH_CMDS.items():
+        try:
+            code, stdout, _ = run_tool(cmd, TOOL_WARMUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "%s refresh timed out; the cached release will be used.", name
+            )
+            continue
+        except OSError as exc:
+            logger.warning(
+                "%s refresh could not start; reason=%s.", name, type(exc).__name__
+            )
+            continue
+        if code == 0:
+            logger.info("%s ready: %s.", name, stdout.strip()[:60])
+        else:
+            logger.warning(
+                "%s refresh failed (exit %s); the cached release will be used.",
+                name,
+                code,
+            )
+
+
 def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
     logger.info("Running command: %s", _redacted(cmd))
     try:
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=300.0,
-            env=tool_env(),
-        )
-        logger.info(f"Command succeeded. stdout: {res.stdout[:500]}")
-        return True, ""
-    except subprocess.CalledProcessError as e:
+        code, _, stderr = run_tool(cmd, 300.0)
+    except subprocess.TimeoutExpired:
+        logger.warning("Command timed out after 300s")
+        return False, "timed out"
+    except Exception as exc:
+        logger.warning("Command could not start; reason=%s", type(exc).__name__)
+        return False, str(exc)
+    if code != 0:
         logger.warning(
-            f"Command failed with exit code {e.returncode}. stderr: {e.stderr}"
+            "Command failed with exit code %s; stderr=%s", code, stderr[-500:]
         )
-        return False, e.stderr or ""
-    except Exception as e:
-        logger.warning(f"Failed to run command {cmd}: {e}")
-        return False, str(e)
+        return False, stderr
+    logger.info("Command succeeded.")
+    return True, ""
 
 
 # Ordered (most specific/actionable first) substrings from failed yt-dlp
@@ -213,17 +263,23 @@ def _is_complete(
 BILIBILI_BOTH_FAILED = (
     "Bilibili download failed: yt-dlp and yutto could not fetch this video."
 )
-# yt-dlp and yutto run through uvx. The refresh flag re-checks PyPI on every call, so
-# the newest release is used without rebuilding the image.
-YT_DLP_CMD = [
-    "uvx",
-    "--refresh-package",
-    "yt-dlp",
-    "--from",
-    "yt-dlp[default]",
-    "yt-dlp",
-]
-YUTTO_CMD = ["uvx", "--refresh-package", "yutto", "yutto"]
+# yt-dlp and yutto run through uvx. The latest releases are fetched once at startup
+# (warm_up_tools), so a download never waits on PyPI.
+YT_DLP_CMD = ["uvx", "--from", "yt-dlp[default]", "yt-dlp"]
+YUTTO_CMD = ["uvx", "yutto"]
+TOOL_REFRESH_CMDS = {
+    "yt-dlp": [
+        "uvx",
+        "--refresh-package",
+        "yt-dlp",
+        "--from",
+        "yt-dlp[default]",
+        "yt-dlp",
+        "--version",
+    ],
+    "yutto": ["uvx", "--refresh-package", "yutto", "yutto", "--version"],
+}
+TOOL_WARMUP_TIMEOUT_SECONDS = 180.0
 YUTTO_OPTIONS = ["--no-danmaku", "--no-subtitle", "--no-cover", "--no-progress"]
 YUTTO_TIMEOUT_SECONDS = 600.0
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -268,28 +324,16 @@ def _redacted(cmd: list[str]) -> str:
 
 
 def _run_yutto(args: list[str]) -> str:
-    """Run ``yutto download`` in its own process group. Its exit code is not trusted, so
-    the output is returned instead."""
+    """Run ``yutto download``. Its exit code is not trusted, so the output is returned."""
     try:
-        proc = subprocess.Popen(
-            [*YUTTO_CMD, "download", *args],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=tool_env(),
-            start_new_session=True,
+        _, stdout, stderr = run_tool(
+            [*YUTTO_CMD, "download", *args], YUTTO_TIMEOUT_SECONDS
         )
+    except subprocess.TimeoutExpired:
+        return "ERROR yutto did not finish (timeout)"
     except OSError as exc:
         return f"ERROR yutto did not start ({type(exc).__name__})"
-    try:
-        stdout, stderr = proc.communicate(timeout=YUTTO_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        # uvx starts yutto as a child and yutto runs ffmpeg, so kill the whole group.
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        return "ERROR yutto did not finish (timeout)"
-    return ANSI_ESCAPE.sub("", (stdout or "") + (stderr or ""))
+    return ANSI_ESCAPE.sub("", stdout + stderr)
 
 
 def yutto_fetch(
@@ -402,7 +446,7 @@ def download_video(
         except RuntimeError as exc:
             logger.warning("yutto could not fetch from %s: %s", _host(url), exc)
         if yutto_path and _is_complete(
-            yutto_duration, expected_duration, "Keeping the longest output."
+            yutto_duration, expected_duration, "Keeping the longest output"
         ):
             return yutto_path
         # Neither source is complete, so keep whichever file runs longest.
@@ -528,15 +572,10 @@ def fetch_video_metadata(url: str) -> dict:
 
     for cmd in commands:
         try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30.0,
-                env=tool_env(),
-            )
-            data = json.loads(res.stdout)
+            code, stdout, _ = run_tool(cmd, 30.0)
+            if code != 0:
+                raise RuntimeError(f"yt-dlp exited with {code}")
+            data = json.loads(stdout)
             return {
                 "title": data.get("title", ""),
                 "uploader": data.get("uploader", ""),
@@ -555,7 +594,9 @@ def fetch_video_metadata(url: str) -> dict:
                 ),
             }
         except Exception as e:
-            logger.warning(f"Failed to fetch video metadata via yt-dlp: {e}")
+            logger.warning(
+                "Failed to fetch video metadata via yt-dlp: %s", type(e).__name__
+            )
     return {}
 
 
@@ -580,20 +621,15 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
         url,
     ]
     try:
-        res = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30.0,
-            env=tool_env(),
-        )
+        code, stdout, _ = run_tool(cmd, 30.0)
+        if code != 0:
+            raise RuntimeError(f"yt-dlp exited with {code}")
     except Exception as e:
-        logger.warning(f"Instagram yt-dlp fallback failed: {e}")
+        logger.warning("Instagram yt-dlp fallback failed: %s", type(e).__name__)
         return None
 
     entries = []
-    for line in res.stdout.splitlines():
+    for line in stdout.splitlines():
         line = line.strip()
         if not line:
             continue
