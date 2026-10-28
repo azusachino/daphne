@@ -4,11 +4,14 @@ import sys
 import logging
 import argparse
 
+from daphne.redact import install_redaction
+
 # Setup basic logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger("daphne.main")
+install_redaction()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
