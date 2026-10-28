@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
 - **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
-- **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
+- **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv syncs the locked environment in the builder stage, and the runtime image carries uv for uvx.
 - **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
 - **yt-dlp and yutto run through uvx**: Each download starts the latest release from PyPI, so no image rebuild is needed for a new release. The runtime image carries uv for this.
 - **CI** runs the lockfile check, lint, format and unit tests. The image job is removed.
