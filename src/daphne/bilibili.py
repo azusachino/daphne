@@ -3,8 +3,14 @@
 yt-dlp's Bilibili extractor fails on most videos right now, so this module asks the
 endpoints the web player uses: ``view`` for metadata and ``playurl`` with
 ``fnval=4048`` for DASH streams. It downloads the video and audio tracks and merges
-them with ffmpeg. Requests are anonymous, so Bilibili caps quality at 480p, and it
-sometimes answers HTTP 412 (risk control). Those calls back off and retry.
+them with ffmpeg. Requests are anonymous, so Bilibili caps quality at 480p.
+
+Three things keep the request volume low:
+- a visitor session from ``x/frontend/finger/spi``, the call the site makes on a first
+  visit, reused for 30 minutes and refreshed once when Bilibili answers risk control;
+- an in-memory cache of ``view`` responses;
+- an on-disk cache of finished mp4 files, keyed by ``bvid`` and part, so a repeated link
+  is served without any API call.
 """
 
 import logging
@@ -13,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional
@@ -43,6 +50,16 @@ AVC_CODEC_ID = 7
 REDIRECT_CODES = {301, 302, 303, 307, 308}
 BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 AV_RE = re.compile(r"/av(\d+)", re.IGNORECASE)
+
+SESSION_TTL = 30 * 60
+VIEW_TTL = 30 * 60
+CACHE_TTL = 6 * 60 * 60
+CACHE_MAX_BYTES = 2 * 1024**3
+CACHE_DIR = os.path.join(tempfile.gettempdir(), "daphne-bilibili")
+
+_state_lock = threading.Lock()
+_session: dict[str, Any] = {"cookies": None, "at": 0.0}
+_view_cache: dict[tuple[tuple[str, str], ...], tuple[float, dict[str, Any]]] = {}
 
 
 class BilibiliError(RuntimeError):
@@ -100,8 +117,49 @@ def video_ref(url: str) -> tuple[dict[str, str], int]:
     raise BilibiliError("Not a Bilibili video link")
 
 
+def _spi_cookies(client: httpx.Client) -> dict[str, str]:
+    """The visitor cookies the site sets on a first visit (GET, as the site does)."""
+    resp = client.get(f"{API_BASE}/x/frontend/finger/spi", headers=_headers())
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("code") != 0:
+        raise BilibiliError(f"Bilibili visitor setup error {body.get('code')}")
+    data = body.get("data") or {}
+    cookies = {"buvid3": data["b_3"], "buvid4": data["b_4"]}
+    if data.get("b_nut"):
+        cookies["b_nut"] = data["b_nut"]
+    return cookies
+
+
+def _ensure_visitor_session(client: httpx.Client, force: bool = False) -> None:
+    """Attach visitor cookies to ``client``, reusing the shared session while it is fresh."""
+    with _state_lock:
+        fresh = (
+            _session["cookies"] is not None
+            and time.monotonic() - _session["at"] < SESSION_TTL
+        )
+        if force or not fresh:
+            try:
+                _session.update(cookies=_spi_cookies(client), at=time.monotonic())
+            except (
+                httpx.HTTPError,
+                BilibiliError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                # Carry on without cookies; the API may still answer, and the next call retries.
+                logger.info("Bilibili visitor setup failed: %s", describe_error(exc))
+                _session.update(cookies=None, at=0.0)
+                return
+        cookies = _session["cookies"]
+    for name, value in cookies.items():
+        client.cookies.set(name, value, domain=".bilibili.com")
+
+
 def _api(client: httpx.Client, path: str, params: dict[str, Any]) -> dict[str, Any]:
     """GET a Bilibili API, backing off on risk control. Returns the ``data`` object."""
+    refreshed = False
     for delay in (*RETRY_DELAYS, None):
         resp = client.get(f"{API_BASE}{path}", params=params, headers=_headers())
         if resp.status_code in RISK_CONTROL_STATUSES:
@@ -117,6 +175,10 @@ def _api(client: httpx.Client, path: str, params: dict[str, Any]) -> dict[str, A
             reason = f"API code {code}"
         if delay is None:
             break
+        if not refreshed:
+            # Risk control can be tied to the visitor session, so start a fresh one once.
+            refreshed = True
+            _ensure_visitor_session(client, force=True)
         logger.info(
             "Bilibili %s hit risk control (%s); retrying in %.0fs", path, reason, delay
         )
@@ -124,17 +186,14 @@ def _api(client: httpx.Client, path: str, params: dict[str, Any]) -> dict[str, A
     raise BilibiliError("Bilibili kept rate-limiting this video; try again later")
 
 
-def _warm_session(client: httpx.Client, ref: dict[str, str]) -> None:
-    """Load the watch page first, as a browser does, so Bilibili sets its visitor cookies."""
-    slug = ref["bvid"] if "bvid" in ref else f"av{ref['aid']}"
-    try:
-        client.get(f"https://www.bilibili.com/video/{slug}/", headers=_headers())
-    except httpx.HTTPError as exc:
-        logger.info("Bilibili watch page visit failed: %s", failure_reason(exc))
-
-
 def _view(client: httpx.Client, ref: dict[str, str]) -> dict[str, Any]:
-    return _api(client, "/x/web-interface/view", ref)
+    key = tuple(sorted(ref.items()))
+    cached = _view_cache.get(key)
+    if cached and time.monotonic() - cached[0] < VIEW_TTL:
+        return cached[1]
+    data = _api(client, "/x/web-interface/view", ref)
+    _view_cache[key] = (time.monotonic(), data)
+    return data
 
 
 def _page(view: dict[str, Any], page: int) -> dict[str, Any]:
@@ -167,7 +226,7 @@ def fetch_bilibili_metadata(
     """Metadata in the same shape as the yt-dlp path returns."""
     with _open(client) as open_client:
         ref, page = video_ref(_expand_short_link(open_client, url))
-        _warm_session(open_client, ref)
+        _ensure_visitor_session(open_client)
         view = _view(open_client, ref)
         part = _page(view, page)
     dimension = view.get("dimension") or {}
@@ -245,25 +304,82 @@ def _ffmpeg(args: list[str]) -> None:
 
 
 def _fetch_tracks(
-    url: str, work: str, client: Optional[httpx.Client], want_video: bool
+    client: httpx.Client,
+    ref: dict[str, str],
+    page: int,
+    work: str,
+    want_video: bool,
 ) -> tuple[str, str, str]:
     """Download the chosen streams into ``work``. Returns (bvid, video path, audio path)."""
-    with _open(client) as open_client:
-        ref, page = video_ref(_expand_short_link(open_client, url))
-        _warm_session(open_client, ref)
-        view = _view(open_client, ref)
-        part = _page(view, page)
-        play = _playurl(open_client, view["bvid"], part["cid"])
-        dash = play.get("dash") or {}
-        if not dash:
-            raise BilibiliError("Bilibili returned no DASH streams for this video")
-        audio = pick_audio_stream(dash)
-        video_path = os.path.join(work, "video.m4s")
-        audio_path = os.path.join(work, "audio.m4s")
-        if want_video:
-            _download_stream(open_client, pick_video_stream(dash), video_path)
-        _download_stream(open_client, audio, audio_path)
+    _ensure_visitor_session(client)
+    view = _view(client, ref)
+    part = _page(view, page)
+    play = _playurl(client, view["bvid"], part["cid"])
+    dash = play.get("dash") or {}
+    if not dash:
+        raise BilibiliError("Bilibili returned no DASH streams for this video")
+    audio = pick_audio_stream(dash)
+    video_path = os.path.join(work, "video.m4s")
+    audio_path = os.path.join(work, "audio.m4s")
+    if want_video:
+        _download_stream(client, pick_video_stream(dash), video_path)
+    _download_stream(client, audio, audio_path)
     return view["bvid"], video_path, audio_path
+
+
+def _cache_file(bvid: str, page: int) -> str:
+    return os.path.join(CACHE_DIR, f"{bvid}-p{page}.mp4")
+
+
+def _from_cache(bvid: str, page: int, out_dir: str) -> Optional[str]:
+    source = _cache_file(bvid, page)
+    try:
+        if time.time() - os.path.getmtime(source) > CACHE_TTL:
+            return None
+        out_path = os.path.join(out_dir, f"{bvid}.mp4")
+        shutil.copyfile(source, out_path)
+    except OSError:
+        return None
+    return out_path
+
+
+def _to_cache(path: str, bvid: str, page: int) -> None:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    dest = _cache_file(bvid, page)
+    partial = f"{dest}.part"
+    shutil.copyfile(path, partial)
+    os.replace(partial, dest)
+    _evict_cache(dest)
+
+
+def _evict_cache(keep: str) -> None:
+    """Drop expired entries, then the oldest, until the cache fits its size cap.
+
+    ``keep`` is the file that was just stored, so it is never evicted.
+    """
+    now = time.time()
+    entries = []
+    for name in os.listdir(CACHE_DIR):
+        if not name.endswith(".mp4"):
+            continue
+        path = os.path.join(CACHE_DIR, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        entries.append((stat.st_mtime, stat.st_size, path))
+    entries.sort()
+    total = sum(size for _, size, _ in entries)
+    for mtime, size, path in entries:
+        if path == keep:
+            continue
+        if now - mtime <= CACHE_TTL and total <= CACHE_MAX_BYTES:
+            break
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
 
 
 def download_bilibili(
@@ -271,30 +387,44 @@ def download_bilibili(
 ) -> str:
     """Download a Bilibili video as one mp4 in ``out_dir`` and return its path."""
     os.makedirs(out_dir, exist_ok=True)
-    work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
+    with _open(client) as open_client:
+        ref, page = video_ref(_expand_short_link(open_client, url))
+        if "bvid" in ref:
+            cached = _from_cache(ref["bvid"], page, out_dir)
+            if cached:
+                logger.info("Bilibili cache hit for %s part %d", ref["bvid"], page)
+                return cached
+        work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
+        try:
+            bvid, video_path, audio_path = _fetch_tracks(
+                open_client, ref, page, work, want_video=True
+            )
+            out_path = os.path.join(out_dir, f"{bvid}.mp4")
+            _ffmpeg(
+                [
+                    "-i",
+                    video_path,
+                    "-i",
+                    audio_path,
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "1:a:0",
+                    "-c",
+                    "copy",
+                    "-movflags",
+                    "+faststart",
+                    out_path,
+                ]
+            )
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
     try:
-        bvid, video_path, audio_path = _fetch_tracks(url, work, client, want_video=True)
-        out_path = os.path.join(out_dir, f"{bvid}.mp4")
-        _ffmpeg(
-            [
-                "-i",
-                video_path,
-                "-i",
-                audio_path,
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                out_path,
-            ]
-        )
-        return out_path
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+        _to_cache(out_path, bvid, page)
+    except OSError as exc:
+        # A full or read-only cache must not fail a download that already succeeded.
+        logger.warning("Bilibili cache store failed: %s", failure_reason(exc))
+    return out_path
 
 
 def download_bilibili_audio(
@@ -302,11 +432,15 @@ def download_bilibili_audio(
 ) -> str:
     """Download only the audio track of a Bilibili video as an m4a file."""
     os.makedirs(out_dir, exist_ok=True)
-    work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
-    try:
-        bvid, _, audio_path = _fetch_tracks(url, work, client, want_video=False)
-        out_path = os.path.join(out_dir, f"{bvid}.m4a")
-        _ffmpeg(["-i", audio_path, "-vn", "-c:a", "copy", out_path])
-        return out_path
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    with _open(client) as open_client:
+        ref, page = video_ref(_expand_short_link(open_client, url))
+        work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
+        try:
+            bvid, _, audio_path = _fetch_tracks(
+                open_client, ref, page, work, want_video=False
+            )
+            out_path = os.path.join(out_dir, f"{bvid}.m4a")
+            _ffmpeg(["-i", audio_path, "-vn", "-c:a", "copy", out_path])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    return out_path

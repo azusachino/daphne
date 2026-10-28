@@ -1,14 +1,18 @@
+import collections
 import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 
+from daphne import bilibili
 from daphne.bilibili import (
+    SESSION_TTL,
     BilibiliError,
     download_bilibili,
     fetch_bilibili_metadata,
@@ -18,6 +22,7 @@ from daphne.bilibili import (
 )
 from daphne.downloader import download_video
 
+SPI = {"code": 0, "data": {"b_3": "buvid3-test", "b_4": "buvid4-test", "b_nut": "1"}}
 VIEW = {
     "bvid": "BV1aMEj62EdA",
     "title": "Cat",
@@ -27,10 +32,86 @@ VIEW = {
     "dimension": {"width": 852, "height": 480, "rotate": 0},
     "pages": [{"cid": 111, "duration": 100}, {"cid": 222, "duration": 8}],
 }
+URL = "https://www.bilibili.com/video/BV1aMEj62EdA"
 
 
 def _json(payload: dict) -> httpx.Response:
     return httpx.Response(200, json=payload)
+
+
+class FakeBilibili:
+    """Serves the endpoints the module calls and records what it asked for."""
+
+    def __init__(self, view_statuses=(), media=None, spi_status=200):
+        self.calls = collections.Counter()
+        self.view_statuses = list(view_statuses)
+        self.view_cookies = []
+        self.media = media or {}
+        self.spi_status = spi_status
+        self.order = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        self.calls[path] += 1
+        self.order.append(request.url.host)
+        if path == "/x/frontend/finger/spi":
+            if self.spi_status != 200:
+                return httpx.Response(self.spi_status)
+            return _json(SPI)
+        if path == "/x/web-interface/view":
+            self.view_cookies.append(request.headers.get("cookie", ""))
+            if self.view_statuses:
+                status = self.view_statuses.pop(0)
+                if status != 200:
+                    return httpx.Response(status)
+            bvid = request.url.params.get("bvid", VIEW["bvid"])
+            return _json({"code": 0, "data": dict(VIEW, bvid=bvid)})
+        if path == "/x/player/playurl":
+            return _json(
+                {
+                    "code": 0,
+                    "data": {
+                        "dash": {
+                            "video": [
+                                {
+                                    "id": 32,
+                                    "codecid": 7,
+                                    "bandwidth": 1,
+                                    "baseUrl": "https://cdn.example/v.m4s",
+                                }
+                            ],
+                            "audio": [
+                                {
+                                    "id": 30280,
+                                    "bandwidth": 1,
+                                    "baseUrl": "https://cdn.example/a.m4s",
+                                }
+                            ],
+                        }
+                    },
+                }
+            )
+        if path == "/v.m4s" and "v" in self.media:
+            return httpx.Response(200, content=self.media["v"])
+        if path == "/a.m4s" and "a" in self.media:
+            return httpx.Response(200, content=self.media["a"])
+        return httpx.Response(404)
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self))
+
+
+class BilibiliTestCase(unittest.TestCase):
+    def setUp(self):
+        # Module state is shared across calls, so every test starts cold.
+        bilibili._session.update(cookies=None, at=0.0)
+        bilibili._view_cache.clear()
+        cache_dir = tempfile.mkdtemp(prefix="bili-cache-")
+        self.addCleanup(shutil.rmtree, cache_dir, True)
+        patcher = patch.object(bilibili, "CACHE_DIR", cache_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.cache_dir = cache_dir
 
 
 class TestUrlParsing(unittest.TestCase):
@@ -79,36 +160,20 @@ class TestStreamSelection(unittest.TestCase):
             pick_audio_stream({"audio": []})
 
 
-class TestApiBackoff(unittest.TestCase):
+class TestApiBackoff(BilibiliTestCase):
     def test_risk_control_412_is_retried_until_it_clears(self):
-        calls = []
-
-        def handler(request):
-            if request.url.host == "www.bilibili.com":
-                return httpx.Response(200, text="<html></html>")
-            calls.append(request)
-            if len(calls) < 3:
-                return httpx.Response(412)
-            return _json({"code": 0, "data": VIEW})
-
-        client = httpx.Client(transport=httpx.MockTransport(handler))
+        fake = FakeBilibili(view_statuses=[412, 412, 200])
         with patch("daphne.bilibili.time.sleep") as sleep:
-            meta = fetch_bilibili_metadata(
-                "https://www.bilibili.com/video/BV1aMEj62EdA", client=client
-            )
+            meta = fetch_bilibili_metadata(URL, client=fake.client())
         self.assertEqual(meta["title"], "Cat")
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(fake.calls["/x/web-interface/view"], 3)
         self.assertEqual(sleep.call_count, 2)
 
     def test_gives_up_after_all_retries(self):
-        client = httpx.Client(
-            transport=httpx.MockTransport(lambda request: httpx.Response(412))
-        )
+        fake = FakeBilibili(view_statuses=[412] * 10)
         with patch("daphne.bilibili.time.sleep"):
             with self.assertRaisesRegex(BilibiliError, "rate-limiting"):
-                fetch_bilibili_metadata(
-                    "https://www.bilibili.com/video/BV1aMEj62EdA", client=client
-                )
+                fetch_bilibili_metadata(URL, client=fake.client())
 
     def test_api_error_code_is_reported_without_retry(self):
         client = httpx.Client(
@@ -118,52 +183,74 @@ class TestApiBackoff(unittest.TestCase):
         )
         with patch("daphne.bilibili.time.sleep") as sleep:
             with self.assertRaisesRegex(BilibiliError, "-10403"):
-                fetch_bilibili_metadata(
-                    "https://www.bilibili.com/video/BV1aMEj62EdA", client=client
-                )
+                fetch_bilibili_metadata(URL, client=client)
         sleep.assert_not_called()
 
 
-class TestMetadataAndShortLinks(unittest.TestCase):
+class TestVisitorSession(BilibiliTestCase):
+    def test_spi_cookies_are_sent_and_reused_within_the_ttl(self):
+        fake = FakeBilibili()
+        fetch_bilibili_metadata(URL, client=fake.client())
+        bilibili._view_cache.clear()  # force a second view call so cookies are re-checked
+        fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(fake.calls["/x/frontend/finger/spi"], 1)
+        self.assertIn("buvid3=buvid3-test", fake.view_cookies[0])
+        self.assertIn("buvid4=buvid4-test", fake.view_cookies[-1])
+
+    def test_session_is_refreshed_after_the_ttl(self):
+        fake = FakeBilibili()
+        fetch_bilibili_metadata(URL, client=fake.client())
+        bilibili._session["at"] -= SESSION_TTL + 1
+        fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(fake.calls["/x/frontend/finger/spi"], 2)
+
+    def test_risk_control_refreshes_the_session_once(self):
+        fake = FakeBilibili(view_statuses=[412, 200])
+        with patch("daphne.bilibili.time.sleep"):
+            fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(fake.calls["/x/frontend/finger/spi"], 2)
+
+    def test_failed_visitor_setup_does_not_block_the_api_call(self):
+        fake = FakeBilibili(spi_status=500)
+        meta = fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(meta["title"], "Cat")
+        self.assertIsNone(bilibili._session["cookies"])
+
+
+class TestMetadataAndShortLinks(BilibiliTestCase):
     def test_metadata_matches_the_shape_the_yt_dlp_path_returns(self):
-        client = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request: _json({"code": 0, "data": VIEW})
-            )
-        )
-        meta = fetch_bilibili_metadata(
-            "https://www.bilibili.com/video/BV1aMEj62EdA?p=2", client=client
-        )
+        fake = FakeBilibili()
+        meta = fetch_bilibili_metadata(URL + "?p=2", client=fake.client())
         self.assertEqual(meta["title"], "Cat")
         self.assertEqual(meta["uploader"], "Uploader")
         self.assertEqual(meta["duration"], 8)  # part 2's duration
-        self.assertEqual(
-            meta["webpage_url"], "https://www.bilibili.com/video/BV1aMEj62EdA"
-        )
+        self.assertEqual(meta["webpage_url"], URL)
         self.assertEqual((meta["width"], meta["height"]), (852, 480))
 
-    def test_b23_short_link_is_expanded_before_the_view_call(self):
-        seen = []
+    def test_view_responses_are_cached_in_memory(self):
+        fake = FakeBilibili()
+        fetch_bilibili_metadata(URL, client=fake.client())
+        fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(fake.calls["/x/web-interface/view"], 1)
+
+    def test_b23_short_link_is_expanded_before_the_api_calls(self):
+        fake = FakeBilibili()
 
         def handler(request):
-            seen.append(request.url.host)
-            if request.url.host == "www.bilibili.com":
-                return httpx.Response(200, text="<html></html>")
             if request.url.host == "b23.tv":
-                return httpx.Response(
-                    302,
-                    headers={"location": "https://www.bilibili.com/video/BV1aMEj62EdA"},
-                )
-            return _json({"code": 0, "data": VIEW})
+                fake.order.append("b23.tv")
+                return httpx.Response(302, headers={"location": URL})
+            return fake(request)
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
         fetch_bilibili_metadata("https://b23.tv/abc123", client=client)
-        self.assertEqual(seen, ["b23.tv", "www.bilibili.com", "api.bilibili.com"])
+        self.assertEqual(fake.order[0], "b23.tv")
+        self.assertEqual(fake.calls["/x/web-interface/view"], 1)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
-class TestDownloadEndToEnd(unittest.TestCase):
-    """Mocked Bilibili API and CDN, real ffmpeg muxing of generated media."""
+class TestDownloadEndToEnd(BilibiliTestCase):
+    """Fake Bilibili API and CDN, real ffmpeg muxing of generated media."""
 
     @classmethod
     def setUpClass(cls):
@@ -211,99 +298,93 @@ class TestDownloadEndToEnd(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.src, ignore_errors=True)
 
-    def _client(self):
-        video_bytes = Path(self.video).read_bytes()
-        audio_bytes = Path(self.audio).read_bytes()
-        playurl = {
-            "code": 0,
-            "data": {
-                "dash": {
-                    "video": [
-                        {
-                            "id": 32,
-                            "codecid": 7,
-                            "bandwidth": 1,
-                            "baseUrl": "https://cdn.example/v.m4s",
-                        }
-                    ],
-                    "audio": [
-                        {
-                            "id": 30280,
-                            "bandwidth": 1,
-                            "baseUrl": "https://cdn.example/a.m4s",
-                        }
-                    ],
-                }
-            },
-        }
-
-        def handler(request):
-            path = request.url.path
-            if path == "/x/web-interface/view":
-                return _json({"code": 0, "data": VIEW})
-            if path == "/x/player/playurl":
-                self.assertEqual(request.url.params["fnval"], "4048")
-                self.assertEqual(request.url.params["cid"], "111")
-                return _json(playurl)
-            if path == "/v.m4s":
-                return httpx.Response(200, content=video_bytes)
-            if path == "/a.m4s":
-                return httpx.Response(200, content=audio_bytes)
-            return httpx.Response(404)
-
-        return httpx.Client(transport=httpx.MockTransport(handler))
+    def _fake(self) -> FakeBilibili:
+        return FakeBilibili(
+            media={
+                "v": Path(self.video).read_bytes(),
+                "a": Path(self.audio).read_bytes(),
+            }
+        )
 
     def test_merges_tracks_into_one_mp4_and_cleans_up(self):
         out_dir = tempfile.mkdtemp(prefix="bili-out-")
-        try:
-            path = download_bilibili(
-                "https://www.bilibili.com/video/BV1aMEj62EdA",
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = download_bilibili(URL, out_dir, client=self._fake().client())
+        self.assertEqual(os.path.basename(path), "BV1aMEj62EdA.mp4")
+        streams = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        self.assertEqual(sorted(streams), ["audio", "video"])
+        # Only the merged file remains; the intermediate work dir is gone.
+        self.assertEqual(os.listdir(out_dir), ["BV1aMEj62EdA.mp4"])
+
+    def test_repeat_link_is_served_from_the_disk_cache_without_api_calls(self):
+        first_dir = tempfile.mkdtemp(prefix="bili-out-")
+        second_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, first_dir, True)
+        self.addCleanup(shutil.rmtree, second_dir, True)
+        first = download_bilibili(URL, first_dir, client=self._fake().client())
+
+        silent = FakeBilibili()  # any API call from here on would be recorded
+        second = download_bilibili(URL, second_dir, client=silent.client())
+
+        self.assertEqual(sum(silent.calls.values()), 0)
+        self.assertEqual(Path(first).read_bytes(), Path(second).read_bytes())
+
+    def test_expired_cache_entry_is_downloaded_again(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        download_bilibili(URL, out_dir, client=self._fake().client())
+        cached = os.path.join(self.cache_dir, "BV1aMEj62EdA-p1.mp4")
+        old = time.time() - bilibili.CACHE_TTL - 60
+        os.utime(cached, (old, old))
+
+        fake = self._fake()
+        download_bilibili(URL, out_dir, client=fake.client())
+        self.assertEqual(fake.calls["/x/player/playurl"], 1)
+
+    def test_cache_evicts_the_oldest_entry_when_over_the_size_cap(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        with patch.object(bilibili, "CACHE_MAX_BYTES", 1):
+            download_bilibili(URL, out_dir, client=self._fake().client())
+            download_bilibili(
+                "https://www.bilibili.com/video/BV1kh4y1Y7Ko",
                 out_dir,
-                client=self._client(),
+                client=self._fake().client(),
             )
-            self.assertEqual(os.path.basename(path), "BV1aMEj62EdA.mp4")
-            streams = subprocess.run(
-                [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "stream=codec_type",
-                    "-of",
-                    "csv=p=0",
-                    path,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.split()
-            self.assertEqual(sorted(streams), ["audio", "video"])
-            # Only the merged file remains; the intermediate work dir is gone.
-            self.assertEqual(os.listdir(out_dir), ["BV1aMEj62EdA.mp4"])
-        finally:
-            shutil.rmtree(out_dir, ignore_errors=True)
+        names = sorted(os.listdir(self.cache_dir))
+        self.assertEqual(names, ["BV1kh4y1Y7Ko-p1.mp4"])
 
 
 class TestFallbackAndErrors(unittest.TestCase):
     def test_native_failure_message_surfaces_when_yt_dlp_also_fails(self):
         out_dir = tempfile.mkdtemp(prefix="bili-fallback-")
-        try:
-            with (
-                patch(
-                    "daphne.downloader.download_bilibili",
-                    side_effect=BilibiliError(
-                        "Bilibili kept rate-limiting this video; try again later"
-                    ),
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        with (
+            patch(
+                "daphne.downloader.download_bilibili",
+                side_effect=BilibiliError(
+                    "Bilibili kept rate-limiting this video; try again later"
                 ),
-                patch("daphne.downloader._run_cmd", return_value=(False, "")),
-                patch("daphne.downloader.scan_largest_media_file", return_value=None),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "kept rate-limiting"):
-                    download_video(
-                        "https://www.bilibili.com/video/BV1aMEj62EdA", out_dir
-                    )
-        finally:
-            shutil.rmtree(out_dir, ignore_errors=True)
+            ),
+            patch("daphne.downloader._run_cmd", return_value=(False, "")),
+            patch("daphne.downloader.scan_largest_media_file", return_value=None),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "kept rate-limiting"):
+                download_video(URL, out_dir)
 
 
 if __name__ == "__main__":
