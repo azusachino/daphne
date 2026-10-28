@@ -25,7 +25,10 @@ from daphne.twitter import try_delete_message
 logger = logging.getLogger(__name__)
 
 PIXIV_CAT_BASE = "https://pixiv.cat"
-PIXIV_RESTRICTED_TEXT = "This Pixiv work is age-restricted. It needs a logged-in account, which this bot does not use."
+PIXIV_RESTRICTED_TEXT = (
+    "This Pixiv work is age-restricted, so the bot can't convert it anonymously. "
+    "Open it in Pixiv while signed in. Your original link was kept."
+)
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
 
