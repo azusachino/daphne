@@ -6,7 +6,7 @@
 
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
-[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.15-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
@@ -32,12 +32,12 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. Daphne instead uses **purpose-built, login-wall-bypassing handlers per platform** for clean native rendering, and falls back to a multi-engine downloader (`yt-dlp` → `you-get` → `lux`) only where it helps. It keeps **zero persistent state** — no database, no cache, secrets in the environment, everything else in a single `config.toml` (see [RBAC.md](RBAC.md)).
+Daphne uses **purpose-built handlers per platform** for clean native rendering, and `yt-dlp` for general video and audio downloads. It keeps **zero persistent state** — no database, no cache, secrets in the environment, everything else in a single `config.toml` (see [RBAC.md](RBAC.md)).
 
 ## Features
 
 - **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
-- **🎬 Multi-engine video downloads** — `yt-dlp` → `you-get` → `lux` fallback with automatic dimension/duration probing and **truncation detection** (a partial download is retried on the next engine rather than accepted).
+- **🎬 Video downloads** — `yt-dlp` with automatic dimension/duration probing and truncation detection; an incomplete result is retried with yt-dlp.
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
@@ -53,7 +53,7 @@ Most link-downloader bots pipe every URL through a single blind `yt-dlp` call. D
 | ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
 | **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (preview + up to 3 media) |   ✅   |
 | **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
-| **YouTube · Bilibili · b23** | `yt-dlp` / `you-get` / `lux`    | Video downloads                                  |   ✅   |
+| **YouTube · Bilibili · b23** | `yt-dlp`                        | Video downloads                                  |   ✅   |
 | **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |
 | **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
 | **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
@@ -151,12 +151,12 @@ make test     # Run unit tests
 make ready    # fmt + lint + test
 ```
 
-- **Nix-first** tooling from the devShell; `uv` for the Python runtime.
-- Every `subprocess` call to an external downloader (`yt-dlp`, `you-get`, `lux`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
+- **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries no uv.
+- Every `subprocess` call to an external downloader (`yt-dlp`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
 
 ## Architecture
 
-- **Python 3.14**, `aiogram`, polling-based.
+- **Python 3.15**, `aiogram`, polling-based.
 - **Stateless**: no database; secrets in env, everything else in `config.toml`.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 

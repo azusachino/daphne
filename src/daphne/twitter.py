@@ -53,7 +53,7 @@ def extract_twitter_link(text: str):
 def _positive_int(value) -> int | None:
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return number if number > 0 else None
 
@@ -78,7 +78,7 @@ def select_twitter_video(video: dict) -> dict:
         try:
             width = int(format_info.get("width", 0))
             height = int(format_info.get("height", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             width = height = 0
 
         if not width or not height:
@@ -90,14 +90,14 @@ def select_twitter_video(video: dict) -> dict:
         if width and height and max(width, height) <= TWITTER_MAX_VIDEO_DIMENSION:
             try:
                 bitrate = int(format_info.get("bitrate", 0) or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 bitrate = 0
             candidates.append((bitrate, format_info["url"], width, height))
 
     duration = None
     try:
         duration = _positive_int(round(float(video.get("duration"))))
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         duration = None
 
     if candidates:
@@ -421,7 +421,7 @@ def _article_video_url(media_info: dict) -> str | None:
     def bitrate(variant: dict) -> int:
         try:
             return int(variant.get("bitrate", variant.get("bit_rate", 0)) or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return 0
 
     selected = max(

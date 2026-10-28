@@ -50,7 +50,7 @@ def video_upload_limit_mb() -> int:
     value = app_config().get("video_upload_limit_mb", 256)
     try:
         limit = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 256
     return max(1, limit)
 
@@ -60,7 +60,7 @@ def max_concurrent_downloads() -> int:
     value = app_config().get("max_concurrent_downloads", 3)
     try:
         limit = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 3
     return max(1, limit)
 
@@ -70,6 +70,6 @@ def max_user_concurrent_downloads() -> int:
     value = app_config().get("max_user_concurrent_downloads", 1)
     try:
         limit = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 1
     return max(1, limit)

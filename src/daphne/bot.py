@@ -246,7 +246,7 @@ def _metadata_size(metadata: dict) -> int | None:
             continue
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return None
 
@@ -257,7 +257,7 @@ def _expected_duration(metadata: dict) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -282,7 +282,7 @@ def _video_caption_from_metadata(
     if dur_secs is not None:
         try:
             dur_str = format_duration(int(float(dur_secs)))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             dur_str = "Unknown"
     else:
         dur_str = "Unknown"
@@ -312,7 +312,7 @@ async def send_video_card(
     if duration is not None:
         try:
             duration_text = format_duration(int(float(duration)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
     platform_name = detect_platform(url)
     text = (
@@ -729,7 +729,7 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
         if duration_secs is not None:
             try:
                 dur_val = int(float(duration_secs))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         # Construct simple caption

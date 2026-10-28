@@ -1,4 +1,4 @@
-.PHONY: dev init init-local test fmt fmt-check lint ready image-base image-base-latest check-base-versions image-build image-push image-local verify up down
+.PHONY: dev init init-local test fmt fmt-check lint ready image-build image-push image-local verify up down
 
 CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 COMPOSE_TOOL ?= $(CONTAINER_TOOL) compose
@@ -7,11 +7,10 @@ IMAGE ?= docker.io/azusachino/daphne
 # imported straight into containerd, never pulled from a registry).
 LOCAL_IMAGE ?= azusachino.com/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
-# Base image (OS tools + lux + deno); tagged by toolchain, bumped only when
-# tools change. Local-only like LOCAL_IMAGE above — never pushed to a
-# registry, just built once (image-base) and reused as a --build-arg.
-BASE_IMAGE ?= azusachino.com/daphne-base
-BASE_TAG ?= py3.14-lux0.24.1-deno
+# Shared media base, built once from harus-workstation (`make media-base-build`)
+# and never pushed. Local-only like LOCAL_IMAGE above.
+BASE_IMAGE ?= azusachino.com/media-base
+BASE_TAG ?= py3.15.2-v3
 BASE_REF := $(BASE_IMAGE):$(BASE_TAG)
 
 dev:
@@ -37,23 +36,14 @@ lint:
 
 ready: fmt lint test
 
-image-base:
-	$(CONTAINER_TOOL) build -f Dockerfile.base -t $(BASE_REF) .
-
-check-base-versions: ## Report lux's pinned vs. latest GitHub release, and deno's latest (informational -- it floats via apk)
-	uv run scripts/resolve_base_versions.py
-
-image-base-latest: ## Resolve lux's latest release and build the base image pinned to it (deno always floats to Alpine's latest via apk)
-	uv run scripts/resolve_base_versions.py --build --container-tool $(CONTAINER_TOOL)
-
-image-build: image-base
+image-build:
 	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t daphne:latest .
 
 image-push: image-build
 	$(CONTAINER_TOOL) tag daphne:latest $(IMAGE):$(VERSION)
 	$(CONTAINER_TOOL) push $(IMAGE):$(VERSION)
 
-image-local: image-base ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
+image-local: ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
 	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t $(LOCAL_IMAGE):$(VERSION) .
 	$(CONTAINER_TOOL) save $(LOCAL_IMAGE):$(VERSION) | sudo k3s ctr images import -
 

@@ -51,7 +51,7 @@ def sanitize_video_url(url: str) -> str:
 
 
 # yt-dlp's EJS challenge solver (see https://github.com/yt-dlp/yt-dlp/wiki/EJS)
-# needs a JS runtime (deno, installed in Dockerfile.base) *and* this explicit
+# needs a JS runtime (deno, installed in the shared media base) *and* this explicit
 # opt-in to fetch its solver script from GitHub -- without it, YouTube
 # extraction silently degrades to a blocked format set even with deno
 # present. Harmless on non-YouTube extractors, so it's applied to every
@@ -124,8 +124,8 @@ def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
         return False, str(e)
 
 
-# Ordered (most specific/actionable first) substrings to look for across every
-# failed engine's stderr, mapped to a message a Telegram user can actually act
+# Ordered (most specific/actionable first) substrings from failed yt-dlp
+# attempts, mapped to a message a Telegram user can actually act
 # on. Falls through to a generic message when nothing recognizable is found,
 # so an unclassified failure still fails loud rather than lying about the cause.
 _FAILURE_PATTERNS: list[tuple[str, str]] = [
@@ -164,13 +164,13 @@ def _classify_failure(engine_errors: list[str]) -> str:
     for needle, message in _FAILURE_PATTERNS:
         if needle in combined:
             return message
-    return "All download engines failed for this link."
+    return "yt-dlp could not download this link."
 
 
 # A download is treated as complete when its probed duration covers at least
 # this fraction of the expected (metadata) duration. Bilibili anti-bot / segment
-# limits can silently return a truncated file, so we verify and fall through to
-# the next engine instead of accepting a partial video.
+# limits can silently return a truncated file, so we verify and retry with
+# yt-dlp instead of accepting a partial video immediately.
 DURATION_COMPLETE_RATIO = 0.95
 
 
@@ -193,7 +193,7 @@ def _is_complete(actual: Optional[int], expected_duration: Optional[float]) -> b
         return True
     logger.warning(
         f"Downloaded video is truncated: {actual}s of expected "
-        f"{int(expected_duration)}s. Trying next engine."
+        f"{int(expected_duration)}s. Retrying yt-dlp."
     )
     return False
 
@@ -218,7 +218,6 @@ def download_video(
 
     def cmd_pass1() -> list[str]:
         return [
-            "uvx",
             "yt-dlp",
             "-f",
             yt_dlp_format,
@@ -234,7 +233,6 @@ def download_video(
 
     def cmd_pass2() -> list[str]:
         cmd = [
-            "uvx",
             "yt-dlp",
             "-f",
             yt_dlp_format,
@@ -252,23 +250,18 @@ def download_video(
         cmd.extend(["--", url])
         return cmd
 
-    engines = [
-        cmd_pass1,
-        cmd_pass2,
-        lambda: ["uvx", "you-get", "--output-dir", out_dir, url],
-        lambda: ["lux", "-o", out_dir, "--silent", url],
-    ]
+    attempts = [cmd_pass1, cmd_pass2]
 
-    # Track the longest result across engines so that, if none is verifiably
+    # Track the longest result across attempts so that, if none is verifiably
     # complete, we still return the best partial rather than failing outright.
     best_path: Optional[str] = None
     best_duration = -1.0
-    engine_errors: list[str] = []
+    attempt_errors: list[str] = []
 
-    for build_cmd in engines:
+    for build_cmd in attempts:
         _, stderr = _run_cmd(build_cmd())
         if stderr:
-            engine_errors.append(stderr)
+            attempt_errors.append(stderr)
         largest = scan_largest_media_file(out_dir)
         if not largest:
             continue
@@ -282,19 +275,18 @@ def download_video(
 
     if best_path:
         logger.warning(
-            "No engine produced a complete video; returning longest partial "
+            "No yt-dlp attempt produced a complete video; returning longest partial "
             f"({int(best_duration)}s) from {best_path}."
         )
         return best_path
 
-    raise RuntimeError(_classify_failure(engine_errors))
+    raise RuntimeError(_classify_failure(attempt_errors))
 
 
 def download_audio(url: str, out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
 
     cmd = [
-        "uvx",
         "yt-dlp",
         "-f",
         "bestaudio/best",
@@ -371,7 +363,6 @@ def probe_video_dimensions(
 
 def fetch_video_metadata(url: str) -> dict:
     base = [
-        "uvx",
         "yt-dlp",
         "--dump-json",
         "--no-playlist",
@@ -422,7 +413,6 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
     one JSON object per line, one per slide.
     """
     cmd = [
-        "uvx",
         "yt-dlp",
         "--dump-json",
         "--ignore-no-formats-error",

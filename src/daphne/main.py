@@ -164,7 +164,7 @@ def main() -> None:
         try:
             logger.info("Starting Daphne bot polling...")
             asyncio.run(run_bot())
-        except (KeyboardInterrupt, SystemExit):
+        except KeyboardInterrupt, SystemExit:
             logger.info("Daphne bot received exit signal. Shutting down gracefully...")
         except Exception as e:
             logger.critical(

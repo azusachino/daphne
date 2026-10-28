@@ -31,7 +31,7 @@ def download_gallery(url: str, out_dir: str) -> list[str]:
     into ``out_dir`` so no per-site subdirectories are created.
     """
     os.makedirs(out_dir, exist_ok=True)
-    cmd = ["uvx", "gallery-dl", "-D", out_dir, "--", url]
+    cmd = ["gallery-dl", "-D", out_dir, "--", url]
     logger.info("Running command: %s", " ".join(cmd))
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180.0)

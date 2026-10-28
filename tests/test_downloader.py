@@ -307,35 +307,15 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(res, "/tmp/pass2.mp4")
         self.assertEqual(mock_run.call_count, 2)
 
-        # Reset mocks
+        # Both attempts failing must not invoke another downloader.
         mock_run.reset_mock()
         mock_scan.reset_mock()
-
-        # Case 3: Pass 1 & 2 fail, you-get succeeds
-        mock_scan.side_effect = [None, None, "/tmp/youget.mp4"]
-        res = download_video("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/youget.mp4")
-        self.assertEqual(mock_run.call_count, 3)
-
-        # Reset mocks
-        mock_run.reset_mock()
-        mock_scan.reset_mock()
-
-        # Case 4: Pass 1 & 2 & you-get fail, lux succeeds
-        mock_scan.side_effect = [None, None, None, "/tmp/lux.mp4"]
-        res = download_video("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/lux.mp4")
-        self.assertEqual(mock_run.call_count, 4)
-        self.assertEqual(mock_run.call_args_list[-1][0][0][0], "lux")
-
-        # Reset mocks
-        mock_run.reset_mock()
-        mock_scan.reset_mock()
-
-        # Case 5: All fail -> raise RuntimeError
-        mock_scan.side_effect = [None, None, None, None]
-        with self.assertRaises(RuntimeError):
+        mock_scan.side_effect = [None, None]
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp"):
             download_video("http://x.com", self.test_dir)
+        self.assertEqual(mock_run.call_count, 2)
+        for call in mock_run.call_args_list:
+            self.assertEqual(call.args[0][0], "yt-dlp")
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
     @patch("subprocess.run")
@@ -376,18 +356,12 @@ class TestDownloader(unittest.TestCase):
     def test_download_video_returns_longest_partial(
         self, mock_run, mock_scan, mock_dur
     ):
-        # Every engine truncates; the longest partial is returned as a last resort.
-        mock_scan.side_effect = [
-            "/tmp/a.mp4",
-            "/tmp/b.mp4",
-            "/tmp/c.mp4",
-            "/tmp/d.mp4",
-        ]
-        # probed once per engine to record candidate length (100, 200, 150, 120)
-        mock_dur.side_effect = [100, 200, 150, 120]
+        # Both yt-dlp attempts truncate; preserve the longest partial.
+        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4"]
+        mock_dur.side_effect = [100, 200]
         res = download_video("http://x.com", self.test_dir, expected_duration=270)
         self.assertEqual(res, "/tmp/b.mp4")
-        self.assertEqual(mock_run.call_count, 4)
+        self.assertEqual(mock_run.call_count, 2)
 
     @patch("daphne.downloader.scan_largest_audio_file")
     @patch("subprocess.run")
