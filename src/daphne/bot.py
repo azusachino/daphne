@@ -556,12 +556,12 @@ async def media_message_handler(
         try:
             loop = asyncio.get_running_loop()
             metadata = await loop.run_in_executor(None, fetch_video_metadata, video_url)
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to fetch video metadata")
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video metadata fetch failed: {exc}")
+                .text("Video metadata fetch failed.")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -702,13 +702,11 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
                 audio_path = await loop.run_in_executor(
                     None, download_audio, url, out_dir
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to download audio")
             await set_reaction(message, REACTION_FAILED)
             await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text(f"Audio download failed: {exc}")
-                .render(),
+                HtmlMessage(sender=sender).text("Audio download failed.").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
             return
@@ -841,13 +839,11 @@ async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> N
                 images = await loop.run_in_executor(
                     None, download_gallery, url, out_dir
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to download gallery")
             await set_reaction(message, REACTION_FAILED)
             await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text(f"Gallery download failed: {exc}")
-                .render(),
+                HtmlMessage(sender=sender).text("Gallery download failed.").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
             return
@@ -1181,12 +1177,12 @@ async def download_button_callback(
     loop = asyncio.get_running_loop()
     try:
         metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to fetch video metadata")
         try:
             await query.edit_message_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video metadata fetch failed: {exc}")
+                .text("Video metadata fetch failed.")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
