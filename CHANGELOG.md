@@ -5,20 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
-
-### Fixed
-
-- A failed video metadata lookup no longer produces a card with a Download button; the original link is kept.
-
 ## [0.5.0] - 2026-10-28
 
 ### Changed
 
+- Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
 - **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
 - **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
@@ -33,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A failed video metadata lookup no longer produces a card with a Download button; the original link is kept.
 - **Failed video downloads from a card**: The error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
 
 ## [0.4.3] - 2026-10-05
