@@ -196,6 +196,12 @@ async def handle_bluesky_links(
     else:
         # No media to send: say so and keep the original message, without a link fallback.
         logger.warning("Bluesky post %s has no media; original link kept", post_id)
+        from daphne.bot import (
+            REACTION_FAILED,
+            set_reaction,
+        )  # circular import, see twitter.py
+
+        await set_reaction(message, REACTION_FAILED)
         try:
             await context.bot.send_message(
                 chat_id=chat_id,

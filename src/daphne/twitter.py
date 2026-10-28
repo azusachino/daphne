@@ -731,13 +731,20 @@ async def handle_twitter_links(
     if not success:
         # No link fallback: say what failed and keep the original message.
         logger.warning("X post %s could not be converted; original link kept", tweet_id)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=HtmlMessage(sender=sender_attribution(update.effective_user))
-            .text(X_RESOLVE_FAILED_TEXT)
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
+        # Imported here: bot.py imports this module, so a top-level import would be circular.
+        from daphne.bot import REACTION_FAILED, set_reaction
+
+        await set_reaction(message, REACTION_FAILED)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=HtmlMessage(sender=sender_attribution(update.effective_user))
+                .text(X_RESOLVE_FAILED_TEXT)
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception as exc:
+            logger.warning("X failure reply could not be sent: %s", failure_reason(exc))
 
     if success:
         await try_delete_message(update)

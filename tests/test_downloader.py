@@ -1,4 +1,5 @@
 import os
+import signal
 import unittest
 import tempfile
 import shutil
@@ -6,7 +7,9 @@ import json
 import subprocess
 from unittest.mock import patch, MagicMock
 
+from daphne import downloader
 from daphne.downloader import (
+    yutto_fetch,
     scan_largest_media_file,
     download_video,
     probe_video_dimensions,
@@ -412,16 +415,6 @@ class TestBilibiliYuttoFallback(unittest.TestCase):
 
     @patch("daphne.downloader._run_yutto")
     @patch("daphne.downloader._run_cmd", return_value=(False, ""))
-    def test_yutto_exit_code_is_not_trusted_without_a_file(
-        self, mock_ytdlp, mock_yutto
-    ):
-        # yutto exits 0 on failure, so an empty output directory is the real signal.
-        mock_yutto.return_value = "ERROR something failed"
-        with self.assertRaises(RuntimeError):
-            download_video(self.BILI, self.test_dir)
-
-    @patch("daphne.downloader._run_yutto")
-    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
     def test_other_sites_never_reach_yutto(self, mock_ytdlp, mock_yutto):
         with self.assertRaises(RuntimeError):
             download_video("https://www.youtube.com/watch?v=abc", self.test_dir)
@@ -434,3 +427,77 @@ class TestBilibiliYuttoFallback(unittest.TestCase):
         path = download_audio(self.BILI, self.test_dir)
         self.assertEqual(os.path.basename(path), "song.m4a")
         self.assertIn("--audio-only", mock_yutto.call_args[0][0])
+
+
+class TestYuttoHardening(unittest.TestCase):
+    BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.test_dir, True)
+
+    def test_longer_yutto_output_beats_a_shorter_yt_dlp_partial(self):
+        with open(os.path.join(self.test_dir, "partial.mp4"), "wb") as f:
+            f.write(b"partial")
+
+        def yutto_writes(args):
+            target = args[args.index("-d") + 1]
+            with open(os.path.join(target, "clip.mp4"), "wb") as f:
+                f.write(b"full-ish")
+            return ""
+
+        durations = lambda path: 50 if "partial" in path else 120  # noqa: E731
+        with (
+            patch("daphne.downloader._run_cmd", return_value=(False, "")),
+            patch("daphne.downloader._run_yutto", side_effect=yutto_writes),
+            patch("daphne.downloader.probe_video_duration", side_effect=durations),
+        ):
+            result = download_video(self.BILI, self.test_dir, expected_duration=300)
+        self.assertEqual(os.path.basename(os.path.dirname(result)), "yutto")
+        self.assertTrue(result.endswith("clip.mp4"))
+
+    def test_exit_code_zero_without_a_file_is_a_failure(self):
+        proc = MagicMock(pid=1)
+        proc.communicate.return_value = ("", "")
+        with patch("daphne.downloader.subprocess.Popen", return_value=proc):
+            with self.assertRaisesRegex(RuntimeError, "produced no file"):
+                yutto_fetch(self.BILI, self.test_dir)
+
+    def test_timeout_kills_the_whole_process_group(self):
+        proc = MagicMock(pid=77)
+        proc.communicate.side_effect = [
+            subprocess.TimeoutExpired("yutto", 1),
+            ("", ""),
+        ]
+        with (
+            patch("daphne.downloader.subprocess.Popen", return_value=proc),
+            patch("daphne.downloader.os.killpg") as killpg,
+        ):
+            output = downloader._run_yutto(["--x"])
+        killpg.assert_called_once_with(77, signal.SIGKILL)
+        self.assertIn("timeout", output)
+
+    def test_tools_do_not_inherit_the_bot_token(self):
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_BOT_TOKEN": "123:SECRET", "PATH": "/usr/bin"},
+            clear=True,
+        ):
+            with patch("daphne.downloader.subprocess.run") as run:
+                run.return_value = MagicMock(stdout="", returncode=0)
+                downloader._run_cmd(["uvx", "yt-dlp"])
+        env = run.call_args.kwargs["env"]
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_logs_name_the_host_not_the_full_link(self):
+        with (
+            patch("daphne.downloader._run_cmd", return_value=(False, "")),
+            patch("daphne.downloader._run_yutto", return_value="ERROR nope"),
+            patch("daphne.downloader.logger.warning") as warn,
+        ):
+            with self.assertRaises(RuntimeError):
+                download_video(self.BILI, self.test_dir)
+        logged = str(warn.call_args_list)
+        self.assertIn("www.bilibili.com", logged)
+        self.assertNotIn("BV1aMEj62EdA", logged)

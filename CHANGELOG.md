@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
 - Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
 - **Bilibili fallback**: Bilibili links try yt-dlp first, then yutto, and fail with a message naming both when both fail. yutto runs only for Bilibili; its exit code is ignored, so a missing output file counts as failure.
+- **Bilibili hardening**: yutto runs in its own process group, and yt-dlp and yutto get a scrubbed environment without the bot token. When neither download is complete, the longer file wins. Logs name the host, not the link. Failed X and Bluesky replies set the failure reaction.
 - **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
 - **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
 - **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.

@@ -870,3 +870,31 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTwitterFailureReply(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_failure_reply_does_not_crash_and_sets_the_reaction(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.chat_id = 123456
+        update.message.reply_to_message = None
+        update.message.is_topic_message = False
+        update.message.text = "https://x.com/nasa/status/999"
+        update.message.delete = AsyncMock()
+        update.effective_user = MagicMock(username="u", full_name="U")
+        context = MagicMock()
+        context.bot.send_message = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 404
+        with (
+            patch(
+                "daphne.twitter.httpx.AsyncClient.get", AsyncMock(return_value=response)
+            ),
+            patch("daphne.bot.set_reaction", new=AsyncMock()) as react,
+        ):
+            await handle_twitter_links(update, context)
+
+        react.assert_awaited_once()
+        self.assertEqual(react.await_args.args[1], "😢")
+        update.message.delete.assert_not_called()

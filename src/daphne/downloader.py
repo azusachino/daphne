@@ -1,5 +1,7 @@
+import contextlib
 import os
 import re
+import signal
 import subprocess
 import random
 import logging
@@ -108,10 +110,15 @@ def scan_largest_media_file(out_dir: str) -> Optional[str]:
 
 
 def _run_cmd(cmd: list[str]) -> tuple[bool, str]:
-    logger.info(f"Running command: {' '.join(cmd)}")
+    logger.info("Running command: %s", _redacted(cmd))
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, check=True, timeout=300.0
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=300.0,
+            env=tool_env(),
         )
         logger.info(f"Command succeeded. stdout: {res.stdout[:500]}")
         return True, ""
@@ -180,7 +187,11 @@ def probe_video_duration(file_path: str) -> Optional[int]:
     return duration
 
 
-def _is_complete(actual: Optional[int], expected_duration: Optional[float]) -> bool:
+def _is_complete(
+    actual: Optional[int],
+    expected_duration: Optional[float],
+    next_step: str = "Retrying yt-dlp",
+) -> bool:
     """
     Whether a downloaded file is complete enough to accept, given its already
     probed duration. When no expected duration is known, or the file could not
@@ -194,7 +205,7 @@ def _is_complete(actual: Optional[int], expected_duration: Optional[float]) -> b
         return True
     logger.warning(
         f"Downloaded video is truncated: {actual}s of expected "
-        f"{int(expected_duration)}s. Retrying yt-dlp."
+        f"{int(expected_duration)}s. {next_step}."
     )
     return False
 
@@ -218,28 +229,77 @@ YUTTO_TIMEOUT_SECONDS = 600.0
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
 
+# Only these variables reach yt-dlp and yutto, so the Telegram token is never inherited.
+TOOL_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "UV_CACHE_DIR",
+    "UV_TOOL_DIR",
+    "UV_PYTHON_DOWNLOADS",
+)
+
+
+def tool_env() -> dict[str, str]:
+    return {key: os.environ[key] for key in TOOL_ENV_KEYS if key in os.environ}
+
+
+def _host(url: str) -> str:
+    """Logs name the host only: the path and query can carry signed or personal data."""
+    return urlsplit(url).hostname or "unknown"
+
+
+def _redacted(cmd: list[str]) -> str:
+    return " ".join(
+        f"https://{_host(part)}/..."
+        if part.startswith(("http://", "https://"))
+        else part
+        for part in cmd
+    )
+
+
 def _run_yutto(args: list[str]) -> str:
-    """Run ``yutto download``. Its exit code is not trusted, so return its output."""
+    """Run ``yutto download`` in its own process group. Its exit code is not trusted, so
+    the output is returned instead."""
     try:
-        res = subprocess.run(
+        proc = subprocess.Popen(
             [*YUTTO_CMD, "download", *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=YUTTO_TIMEOUT_SECONDS,
+            env=tool_env(),
+            start_new_session=True,
         )
-        output = (res.stdout or "") + (res.stderr or "")
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        output = f"ERROR yutto did not finish ({type(exc).__name__})"
-    return ANSI_ESCAPE.sub("", output)
+    except OSError as exc:
+        return f"ERROR yutto did not start ({type(exc).__name__})"
+    try:
+        stdout, stderr = proc.communicate(timeout=YUTTO_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # uvx starts yutto as a child and yutto runs ffmpeg, so kill the whole group.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return "ERROR yutto did not finish (timeout)"
+    return ANSI_ESCAPE.sub("", (stdout or "") + (stderr or ""))
 
 
-def download_bilibili_with_yutto(
-    url: str,
-    out_dir: str,
-    expected_duration: Optional[float] = None,
-    audio_only: bool = False,
-) -> str:
-    """Fetch a Bilibili link with yutto into its own subdir. Success is judged by the file."""
+def yutto_fetch(
+    url: str, out_dir: str, audio_only: bool = False
+) -> tuple[str, Optional[int]]:
+    """Fetch a Bilibili link with yutto into its own subdir.
+
+    Returns the file and its probed duration. Success is judged by the file, because yutto
+    exits 0 when it fails.
+    """
     target = os.path.join(out_dir, "yutto")
     os.makedirs(target, exist_ok=True)
     args = [*YUTTO_OPTIONS, "-d", target]
@@ -254,11 +314,8 @@ def download_bilibili_with_yutto(
     if not largest or os.path.getsize(largest) == 0:
         errors = [line.strip() for line in output.splitlines() if "ERROR" in line]
         raise RuntimeError(errors[-1] if errors else "yutto produced no file")
-    if not audio_only:
-        actual = probe_video_duration(largest) if expected_duration else None
-        if not _is_complete(actual, expected_duration):
-            raise RuntimeError("yutto returned a truncated video")
-    return largest
+    duration = None if audio_only else probe_video_duration(largest)
+    return largest, duration
 
 
 def download_video(
@@ -338,18 +395,27 @@ def download_video(
 
     if is_bilibili_url(url):
         # yt-dlp's Bilibili extractor is unreliable, so yutto gets the link next.
+        yutto_path: Optional[str] = None
+        yutto_duration: Optional[int] = None
         try:
-            return download_bilibili_with_yutto(url, out_dir, expected_duration)
+            yutto_path, yutto_duration = yutto_fetch(url, out_dir)
         except RuntimeError as exc:
-            logger.warning("yutto could not fetch %s: %s", url, exc)
-            if best_path:
-                logger.warning(
-                    "Returning longest yt-dlp partial (%ss) from %s.",
-                    int(best_duration),
-                    best_path,
-                )
-                return best_path
-            raise RuntimeError(BILIBILI_BOTH_FAILED) from exc
+            logger.warning("yutto could not fetch from %s: %s", _host(url), exc)
+        if yutto_path and _is_complete(
+            yutto_duration, expected_duration, "Keeping the longest output."
+        ):
+            return yutto_path
+        # Neither source is complete, so keep whichever file runs longest.
+        if yutto_path and (yutto_duration or 0) > best_duration:
+            best_path, best_duration = yutto_path, yutto_duration or 0
+        if best_path:
+            logger.warning(
+                "Returning longest partial (%ss) from %s.",
+                int(best_duration),
+                best_path,
+            )
+            return best_path
+        raise RuntimeError(BILIBILI_BOTH_FAILED)
 
     if best_path:
         logger.warning(
@@ -392,9 +458,10 @@ def download_audio(url: str, out_dir: str) -> str:
 
     if is_bilibili_url(url):
         try:
-            return download_bilibili_with_yutto(url, out_dir, audio_only=True)
+            audio_path, _ = yutto_fetch(url, out_dir, audio_only=True)
+            return audio_path
         except RuntimeError as exc:
-            logger.warning("yutto could not fetch audio for %s: %s", url, exc)
+            logger.warning("yutto could not fetch audio from %s: %s", _host(url), exc)
             raise RuntimeError(BILIBILI_BOTH_FAILED) from exc
 
     raise RuntimeError(_classify_failure([stderr] if stderr else []))
@@ -462,7 +529,12 @@ def fetch_video_metadata(url: str) -> dict:
     for cmd in commands:
         try:
             res = subprocess.run(
-                cmd, capture_output=True, text=True, check=True, timeout=30.0
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30.0,
+                env=tool_env(),
             )
             data = json.loads(res.stdout)
             return {
@@ -509,7 +581,12 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
     ]
     try:
         res = subprocess.run(
-            cmd, capture_output=True, text=True, check=True, timeout=30.0
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30.0,
+            env=tool_env(),
         )
     except Exception as e:
         logger.warning(f"Instagram yt-dlp fallback failed: {e}")
