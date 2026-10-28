@@ -6,12 +6,6 @@ import json
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Tuple, Optional
 
-from daphne.bilibili import (
-    describe_error,
-    download_bilibili,
-    download_bilibili_audio,
-    fetch_bilibili_metadata,
-)
 from daphne.messages import HtmlMessage, author_tag
 
 logger = logging.getLogger(__name__)
@@ -263,21 +257,6 @@ def download_video(
     best_path: Optional[str] = None
     best_duration = -1.0
     attempt_errors: list[str] = []
-    native_error: Optional[str] = None
-
-    if is_bilibili_url(url):
-        # Native path first: yt-dlp's Bilibili extractor is broken upstream right now.
-        try:
-            native_path = download_bilibili(url, out_dir)
-            actual = probe_video_duration(native_path) if expected_duration else None
-            if _is_complete(actual, expected_duration):
-                return native_path
-            native_error = "Bilibili returned a truncated video"
-        except Exception as exc:
-            native_error = describe_error(exc)
-            logger.warning(
-                "Native Bilibili download failed, trying yt-dlp: %s", native_error
-            )
 
     for build_cmd in attempts:
         _, stderr = _run_cmd(build_cmd())
@@ -301,19 +280,11 @@ def download_video(
         )
         return best_path
 
-    # The native Bilibili message is more specific than the generic yt-dlp one.
-    raise RuntimeError(native_error or _classify_failure(attempt_errors))
+    raise RuntimeError(_classify_failure(attempt_errors))
 
 
 def download_audio(url: str, out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
-    if is_bilibili_url(url):
-        try:
-            return download_bilibili_audio(url, out_dir)
-        except Exception as exc:
-            logger.warning(
-                "Native Bilibili audio failed, trying yt-dlp: %s", describe_error(exc)
-            )
 
     cmd = [
         "yt-dlp",
@@ -391,14 +362,6 @@ def probe_video_dimensions(
 
 
 def fetch_video_metadata(url: str) -> dict:
-    if is_bilibili_url(url):
-        try:
-            return fetch_bilibili_metadata(url)
-        except Exception as exc:
-            logger.warning(
-                "Native Bilibili metadata failed, trying yt-dlp: %s",
-                describe_error(exc),
-            )
     base = [
         "yt-dlp",
         "--dump-json",

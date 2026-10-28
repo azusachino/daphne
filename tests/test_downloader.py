@@ -6,7 +6,6 @@ import json
 import subprocess
 from unittest.mock import patch, MagicMock
 
-from daphne.bilibili import BilibiliError
 from daphne.downloader import (
     scan_largest_media_file,
     download_video,
@@ -170,14 +169,8 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(meta["uploader"], "My Uploader")
         self.assertEqual(meta["duration"], 300)
 
-    @patch(
-        "daphne.downloader.fetch_bilibili_metadata",
-        side_effect=BilibiliError("offline"),
-    )
     @patch("subprocess.run")
-    def test_fetch_video_metadata_trims_bilibili_webpage_url(
-        self, mock_run, mock_native
-    ):
+    def test_fetch_video_metadata_trims_bilibili_webpage_url(self, mock_run):
         # yt-dlp returns a Bilibili webpage_url with tracking query params;
         # the caption link must be trimmed to the canonical video URL.
         mock_run.return_value = MagicMock(
@@ -195,14 +188,10 @@ class TestDownloader(unittest.TestCase):
             meta["webpage_url"], "https://www.bilibili.com/video/BV1aMEj62EdA"
         )
 
-    @patch(
-        "daphne.downloader.fetch_bilibili_metadata",
-        side_effect=BilibiliError("offline"),
-    )
     @patch("daphne.downloader.logger.warning")
     @patch("subprocess.run")
     def test_fetch_video_metadata_bilibili_retries_with_headers(
-        self, mock_run, mock_log_warn, mock_native
+        self, mock_run, mock_log_warn
     ):
         mock_run.side_effect = [
             Exception("HTTP 412"),
