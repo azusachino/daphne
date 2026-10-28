@@ -567,6 +567,20 @@ async def media_message_handler(
             )
             return
 
+        # yt-dlp failures come back as an empty dict. Without metadata there is
+        # no real card, so send no download button and keep the original link.
+        if not metadata:
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(
+                    "Could not read this video's metadata; your original link was kept."
+                )
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+
         preview_access = rbac_service.check_access(
             user_id, chat_id, "preview_video", dry_run=True
         )
