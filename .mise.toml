@@ -4,5 +4,5 @@ uv = "0.13.6"
 deno = "latest"
 
 [env]
-# Match the committed lock's 7-day window; uv's default would rewrite it.
-UV_EXCLUDE_NEWER = "P7D"
+# Match the committed lock's 3-day window; uv's default would rewrite it.
+UV_EXCLUDE_NEWER = "P3D"
