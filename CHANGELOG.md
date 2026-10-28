@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
 - **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
 - **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
+- **Bilibili without yt-dlp**: Metadata and DASH streams come from Bilibili's player API and are merged with ffmpeg. Anonymous requests are capped at 480p. yt-dlp stays as the fallback.
+- **Bilibili rate limits**: HTTP 412 risk-control responses are retried with backoff, then reported in the chat with the original link kept.
 - **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
 - **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
