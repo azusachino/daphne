@@ -2,12 +2,16 @@ import re
 import logging
 import httpx
 from typing import Optional, Tuple, List
-from daphne.tg import TelegramContext, TelegramUpdate
+from daphne.tg import TelegramContext, TelegramUpdate, failure_reason
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import extract_hashtags, send_photos, try_delete_message
 
 logger = logging.getLogger(__name__)
+
+BLUESKY_NO_MEDIA_TEXT = (
+    "This post has no downloadable media; your original link was kept."
+)
 
 BSKY_REGEX = re.compile(
     r"https?://(?:www\.)?bsky\.app/profile/([^/]+)/post/([^/]+)",
@@ -127,8 +131,8 @@ async def handle_bluesky_links(
     # 1. Trigger photo upload indicator
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Bluesky upload action failed: %s", failure_reason(exc))
 
     # 2. Resolve handle to DID
     did = await resolve_handle(handle)
@@ -190,15 +194,16 @@ async def handle_bluesky_links(
         )
         success = True
     else:
-        # Post has no media. Send a fallback message
-        fallback_msg = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
+        # No media to send: say so and keep the original message, without a link fallback.
+        logger.warning("Bluesky post %s has no media; original link kept", post_id)
         try:
             await context.bot.send_message(
-                chat_id=chat_id, text=fallback_msg, parse_mode=None
+                chat_id=chat_id,
+                text=HtmlMessage(sender=sender).text(BLUESKY_NO_MEDIA_TEXT).render(),
+                parse_mode=PARSE_MODE_HTML,
             )
-            success = True
-        except Exception as e:
-            logger.error("Failed to send Bluesky fallback message: %s", e)
+        except Exception as exc:
+            logger.warning("Bluesky no-media reply failed: %s", failure_reason(exc))
 
     if success:
         await try_delete_message(update)

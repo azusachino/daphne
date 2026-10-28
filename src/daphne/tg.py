@@ -12,11 +12,13 @@ import io
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+import httpx
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -32,6 +34,17 @@ from aiogram.types import (
 from daphne.config import telegram_api_url
 
 LOCAL_BOT_API_TIMEOUT_SECONDS = 7200
+
+
+def failure_reason(exc: BaseException) -> str:
+    """Name a failure for the logs without the request URL, which can carry a bot token."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, TelegramAPIError):
+        return f"Telegram {exc.message}"
+    if isinstance(exc, ValueError | KeyError | TypeError):
+        return f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__
 
 
 def _input_file(value: Any) -> Any:

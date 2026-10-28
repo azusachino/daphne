@@ -3,7 +3,7 @@ import os
 import httpx
 import tempfile
 import logging
-from daphne.tg import TelegramContext, TelegramUpdate
+from daphne.tg import TelegramContext, TelegramUpdate, failure_reason
 
 from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
@@ -54,8 +54,8 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
     # 1. Trigger visual feedback action
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_video")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("TikTok upload action failed: %s", failure_reason(exc))
 
     # 2. Query TikWM API
     api_url = "https://tikwm.com/api/"

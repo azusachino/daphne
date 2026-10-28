@@ -86,11 +86,7 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#pixiv", caption)
         self.assertNotIn("#pixiv #pixiv", caption)
 
-    async def test_metadata_falls_back_to_pixiv_ajax(self):
-        phixiv_response = MagicMock(status_code=200)
-        phixiv_response.json.return_value = {
-            "message": "The phixiv API is no longer available"
-        }
+    async def test_metadata_comes_from_pixiv_ajax(self):
         pixiv_response = MagicMock(status_code=200)
         pixiv_response.json.return_value = {
             "body": {
@@ -104,7 +100,7 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
             }
         }
         client = MagicMock()
-        client.get = AsyncMock(side_effect=[phixiv_response, pixiv_response])
+        client.get = AsyncMock(side_effect=[pixiv_response])
 
         with patch("daphne.pixiv.httpx.AsyncClient", return_value=client):
             client.__aenter__ = AsyncMock(return_value=client)
@@ -179,10 +175,6 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(url.endswith("123_p1_master1200.jpg"))
 
     async def test_metadata_expands_restricted_preview_to_all_pages(self):
-        phixiv_response = MagicMock(status_code=200)
-        phixiv_response.json.return_value = {
-            "message": "The phixiv API is no longer available"
-        }
         pixiv_response = MagicMock(status_code=200)
         pixiv_response.json.return_value = {
             "body": {
@@ -203,7 +195,7 @@ class TestPixiv(unittest.IsolatedAsyncioTestCase):
             }
         }
         client = MagicMock()
-        client.get = AsyncMock(side_effect=[phixiv_response, pixiv_response])
+        client.get = AsyncMock(side_effect=[pixiv_response])
 
         with patch("daphne.pixiv.httpx.AsyncClient", return_value=client):
             client.__aenter__ = AsyncMock(return_value=client)

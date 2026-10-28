@@ -60,6 +60,7 @@ from daphne.tg import (
     adapt_message,
     adapt_update,
     as_input_file,
+    failure_reason,
     context_for,
     new_dispatcher,
     new_router,
@@ -106,8 +107,8 @@ async def download_slot(
     if on_wait is not None and (user_sem.locked() or global_sem.locked()):
         try:
             await on_wait()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
     async with user_sem:
         async with global_sem:
             yield
@@ -350,8 +351,8 @@ async def send_video_card(
 async def delete_original_message(update: TelegramUpdate) -> None:
     try:
         await update.message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
 
 async def handle_video_link(
@@ -371,8 +372,8 @@ async def handle_video_link(
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="upload_video"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     if custom_metadata:
         metadata = custom_metadata
@@ -445,8 +446,8 @@ async def handle_video_link(
             await context.bot.send_chat_action(
                 chat_id=update.effective_chat.id, action="upload_video"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
         )
@@ -670,8 +671,8 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
         await context.bot.send_chat_action(
             chat_id=message.chat_id, action="upload_audio"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
@@ -697,8 +698,10 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
                     await context.bot.send_chat_action(
                         chat_id=message.chat_id, action="upload_audio"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
                 audio_path = await loop.run_in_executor(
                     None, download_audio, url, out_dir
                 )
@@ -732,8 +735,8 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
             await context.bot.send_chat_action(
                 chat_id=message.chat_id, action="upload_audio"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         title = (
             metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
@@ -834,8 +837,10 @@ async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> N
                     await context.bot.send_chat_action(
                         chat_id=message.chat_id, action="upload_photo"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
                 images = await loop.run_in_executor(
                     None, download_gallery, url, out_dir
                 )
@@ -1171,8 +1176,8 @@ async def download_button_callback(
             parse_mode=PARSE_MODE_HTML,
             reply_markup=None,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     loop = asyncio.get_running_loop()
     try:
@@ -1186,8 +1191,8 @@ async def download_button_callback(
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         return
 
     TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
@@ -1202,8 +1207,8 @@ async def download_button_callback(
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         return
 
     try:
@@ -1211,8 +1216,8 @@ async def download_button_callback(
             HtmlMessage(sender=sender).text("Downloading video...").render(),
             parse_mode=PARSE_MODE_HTML,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     with tempfile.TemporaryDirectory() as out_dir:
         try:
@@ -1225,8 +1230,10 @@ async def download_button_callback(
                         .render(),
                         parse_mode=PARSE_MODE_HTML,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
 
             async with download_slot(user_id, on_wait=_notify_queued):
                 video_path = await loop.run_in_executor(
@@ -1258,8 +1265,10 @@ async def download_button_callback(
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort Telegram call failed: %s", failure_reason(exc)
+                )
             return
 
         try:
@@ -1267,13 +1276,13 @@ async def download_button_callback(
                 HtmlMessage(sender=sender).text("Uploading video...").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="upload_video")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
@@ -1307,22 +1316,24 @@ async def download_button_callback(
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort Telegram call failed: %s", failure_reason(exc)
+                )
             return
 
     # Delete the status card message on success
     try:
         await query.message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     # Attempt to delete the original message containing the link if it was replied to
     try:
         if query.message and query.message.reply_to_message:
             await query.message.reply_to_message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
 
 async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:

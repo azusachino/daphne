@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import io
 from daphne.twitter import (
+    X_RESOLVE_FAILED_TEXT,
     article_media_lists,
     article_preview_text,
     contains_twitter_link,
@@ -782,7 +783,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.twitter.logger.warning")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_404_sends_fallback_url(self, mock_get, mock_log_warn):
+    async def test_handle_api_404_keeps_original_without_link(
+        self, mock_get, mock_log_warn
+    ):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API returns 404
@@ -792,17 +795,16 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         await handle_twitter_links(self.update, self.context)
 
-        # Sends fallback URL
-        self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456,
-            text="https://fxtwitter.com/nasa/status/999",
-            parse_mode=None,
-        )
-        self.update.message.delete.assert_called_once()
+        # Says it failed and keeps the original message; no FxTwitter link
+        self.context.bot.send_message.assert_called_once()
+        sent = self.context.bot.send_message.await_args.kwargs["text"]
+        self.assertIn(X_RESOLVE_FAILED_TEXT, sent)
+        self.assertNotIn("fxtwitter", sent)
+        self.update.message.delete.assert_not_called()
 
     @patch("daphne.twitter.logger.exception")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_exception_sends_fallback_url(
+    async def test_handle_api_exception_keeps_original_without_link(
         self, mock_get, mock_log_exc
     ):
         self.update.message.text = "https://x.com/nasa/status/999"
@@ -812,13 +814,12 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         await handle_twitter_links(self.update, self.context)
 
-        # Sends fallback URL
-        self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456,
-            text="https://fxtwitter.com/nasa/status/999",
-            parse_mode=None,
-        )
-        self.update.message.delete.assert_called_once()
+        # Says it failed and keeps the original message; no FxTwitter link
+        self.context.bot.send_message.assert_called_once()
+        sent = self.context.bot.send_message.await_args.kwargs["text"]
+        self.assertIn(X_RESOLVE_FAILED_TEXT, sent)
+        self.assertNotIn("fxtwitter", sent)
+        self.update.message.delete.assert_not_called()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_reply_prevents_message_deletion(self, mock_get):

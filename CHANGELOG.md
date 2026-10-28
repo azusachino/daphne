@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
 - Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
+- **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
+- **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
+- **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
 - **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
 - **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
@@ -19,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The Phixiv metadata lookup, which no longer answers; Pixiv metadata comes from Pixiv's own API.
 - lux and you-get fallbacks; yt-dlp is the only general video and audio downloader.
 - Runtime `uvx` calls. gallery-dl and yt-dlp run from the image's virtual environment.
 - Nix flake (`flake.nix`) and `Dockerfile.base`.
