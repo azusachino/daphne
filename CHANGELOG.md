@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-28
+
+### Changed
+
+- **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
+- **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv runs only in the builder stage.
+- **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
+- **yt-dlp is unlocked.** Each image build installs the latest release.
+- **CI** runs the lockfile check, lint, format and unit tests. The image job is removed.
+
+### Removed
+
+- lux and you-get fallbacks; yt-dlp is the only general video and audio downloader.
+- Runtime `uvx` calls. gallery-dl and yt-dlp run from the image's virtual environment.
+- Nix flake (`flake.nix`) and `Dockerfile.base`.
+
 ## [0.4.3] - 2026-10-05
 
 ### Fixed
