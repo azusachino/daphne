@@ -1,3 +1,4 @@
 [tools]
-python = "3.15.2"
+python = "3.14.10"
 uv = "0.13.6"
+deno = "latest"

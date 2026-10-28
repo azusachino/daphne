@@ -7,11 +7,8 @@ IMAGE ?= docker.io/azusachino/daphne
 # imported straight into containerd, never pulled from a registry).
 LOCAL_IMAGE ?= azusachino.com/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
-# Shared media base, built once from harus-workstation (`make media-base-build`)
-# and never pushed. Local-only like LOCAL_IMAGE above.
-BASE_IMAGE ?= azusachino.com/media-base
-BASE_TAG ?= py3.15.2-v3
-BASE_REF := $(BASE_IMAGE):$(BASE_TAG)
+# Changes every invocation so the image always installs the latest yt-dlp
+YTDLP_REFRESH ?= $(shell date +%s)
 
 dev:
 	uv run daphne
@@ -37,14 +34,14 @@ lint:
 ready: fmt lint test
 
 image-build:
-	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t daphne:latest .
+	$(CONTAINER_TOOL) build --build-arg YTDLP_REFRESH=$(YTDLP_REFRESH) -t daphne:latest .
 
 image-push: image-build
 	$(CONTAINER_TOOL) tag daphne:latest $(IMAGE):$(VERSION)
 	$(CONTAINER_TOOL) push $(IMAGE):$(VERSION)
 
 image-local: ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
-	$(CONTAINER_TOOL) build --build-arg BASE_IMAGE=$(BASE_REF) -t $(LOCAL_IMAGE):$(VERSION) .
+	$(CONTAINER_TOOL) build --build-arg YTDLP_REFRESH=$(YTDLP_REFRESH) -t $(LOCAL_IMAGE):$(VERSION) .
 	$(CONTAINER_TOOL) save $(LOCAL_IMAGE):$(VERSION) | sudo k3s ctr images import -
 
 verify: image-build

@@ -6,7 +6,7 @@
 
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
-[![Python](https://img.shields.io/badge/python-3.15-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/version-0.4.3-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
@@ -156,7 +156,7 @@ make ready    # fmt + lint + test
 
 ## Architecture
 
-- **Python 3.15**, `aiogram`, polling-based.
+- **Python 3.14**, `aiogram`, polling-based.
 - **Stateless**: no database; secrets in env, everything else in `config.toml`.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 

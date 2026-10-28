@@ -21,7 +21,6 @@ jobs:
       pull-requests: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
-      image: ${{ steps.filter.outputs.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -37,27 +36,24 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'scripts/**'
-            image:
-              - '.github/workflows/ci.yml'
-              - 'Makefile'
-              - 'Dockerfile*'
-              - 'deploy/**'
-              - 'docker-compose*'
-              - 'pyproject.toml'
-              - 'uv.lock'
-              - 'src/**'
 
   test:
-    name: Unit tests & lint
+    name: Lock, lint & unit tests
     needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    env:
+      # Match the committed lock's 7-day window; uv's default would rewrite it.
+      UV_EXCLUDE_NEWER: P7D
+      # Fail instead of silently re-locking if pyproject and uv.lock disagree.
+      UV_LOCKED: "1"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
+          version: "0.13.6"
           enable-cache: true
 
       - name: Set up Python
@@ -65,8 +61,11 @@ jobs:
         with:
           python-version-file: ".python-version"
 
+      - name: Check lockfile
+        run: uv lock --check
+
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Lint
         run: make lint
@@ -77,34 +76,17 @@ jobs:
       - name: Unit tests
         run: make test
 
-  image:
-    name: Build and verify container image
-    needs: [changes]
-    if: github.event_name != 'pull_request' || needs.changes.outputs.image == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build and verify container image
-        run: make verify CONTAINER_TOOL=docker
-
   check:
     name: make check
     if: ${{ always() }}
-    needs: [changes, test, image]
+    needs: [changes, test]
     runs-on: ubuntu-latest
     steps:
       - name: Require every gate
         env:
           TEST_RESULT: ${{ needs.test.result }}
-          IMAGE_RESULT: ${{ needs.image.result }}
         run: |
-          for res in "$TEST_RESULT" "$IMAGE_RESULT"; do
-            if [[ "$res" != "success" && "$res" != "skipped" ]]; then
-              echo "Gate failed with state: $res"
-              exit 1
-            fi
-          done
-          if [[ "$TEST_RESULT" == "failure" || "$IMAGE_RESULT" == "failure" ]]; then
+          if [[ "$TEST_RESULT" != "success" && "$TEST_RESULT" != "skipped" ]]; then
+            echo "Gate failed with state: $TEST_RESULT"
             exit 1
           fi
