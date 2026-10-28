@@ -60,6 +60,7 @@ from daphne.tg import (
     adapt_message,
     adapt_update,
     as_input_file,
+    failure_reason,
     context_for,
     new_dispatcher,
     new_router,
@@ -106,8 +107,8 @@ async def download_slot(
     if on_wait is not None and (user_sem.locked() or global_sem.locked()):
         try:
             await on_wait()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
     async with user_sem:
         async with global_sem:
             yield
@@ -246,7 +247,7 @@ def _metadata_size(metadata: dict) -> int | None:
             continue
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return None
 
@@ -257,7 +258,7 @@ def _expected_duration(metadata: dict) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -282,7 +283,7 @@ def _video_caption_from_metadata(
     if dur_secs is not None:
         try:
             dur_str = format_duration(int(float(dur_secs)))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             dur_str = "Unknown"
     else:
         dur_str = "Unknown"
@@ -312,7 +313,7 @@ async def send_video_card(
     if duration is not None:
         try:
             duration_text = format_duration(int(float(duration)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
     platform_name = detect_platform(url)
     text = (
@@ -350,8 +351,8 @@ async def send_video_card(
 async def delete_original_message(update: TelegramUpdate) -> None:
     try:
         await update.message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
 
 async def handle_video_link(
@@ -371,8 +372,8 @@ async def handle_video_link(
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="upload_video"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     if custom_metadata:
         metadata = custom_metadata
@@ -445,8 +446,8 @@ async def handle_video_link(
             await context.bot.send_chat_action(
                 chat_id=update.effective_chat.id, action="upload_video"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
         )
@@ -556,12 +557,26 @@ async def media_message_handler(
         try:
             loop = asyncio.get_running_loop()
             metadata = await loop.run_in_executor(None, fetch_video_metadata, video_url)
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to fetch video metadata")
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video metadata fetch failed: {exc}")
+                .text("Video metadata fetch failed.")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+
+        # yt-dlp failures come back as an empty dict. Without metadata there is
+        # no real card, so send no download button and keep the original link.
+        if not metadata:
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(
+                    "Could not read this video's metadata; your original link was kept."
+                )
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -604,7 +619,10 @@ async def media_message_handler(
                 sender,
                 reason,
             )
-            await delete_original_message(update)
+            # While the card offers a download, keep the original link so a failed
+            # download still leaves it in the chat. Delete it only for a final card.
+            if size is not None and size > TG_HARD_LIMIT_BYTES:
+                await delete_original_message(update)
 
 
 async def audio_command(update: TelegramUpdate, context: TelegramContext) -> None:
@@ -653,8 +671,8 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
         await context.bot.send_chat_action(
             chat_id=message.chat_id, action="upload_audio"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
@@ -680,18 +698,18 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
                     await context.bot.send_chat_action(
                         chat_id=message.chat_id, action="upload_audio"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
                 audio_path = await loop.run_in_executor(
                     None, download_audio, url, out_dir
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to download audio")
             await set_reaction(message, REACTION_FAILED)
             await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text(f"Audio download failed: {exc}")
-                .render(),
+                HtmlMessage(sender=sender).text("Audio download failed.").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
             return
@@ -717,8 +735,8 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
             await context.bot.send_chat_action(
                 chat_id=message.chat_id, action="upload_audio"
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         title = (
             metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
@@ -729,7 +747,7 @@ async def audio_command(update: TelegramUpdate, context: TelegramContext) -> Non
         if duration_secs is not None:
             try:
                 dur_val = int(float(duration_secs))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         # Construct simple caption
@@ -819,18 +837,18 @@ async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> N
                     await context.bot.send_chat_action(
                         chat_id=message.chat_id, action="upload_photo"
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
                 images = await loop.run_in_executor(
                     None, download_gallery, url, out_dir
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to download gallery")
             await set_reaction(message, REACTION_FAILED)
             await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text(f"Gallery download failed: {exc}")
-                .render(),
+                HtmlMessage(sender=sender).text("Gallery download failed.").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
             return
@@ -1158,23 +1176,23 @@ async def download_button_callback(
             parse_mode=PARSE_MODE_HTML,
             reply_markup=None,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     loop = asyncio.get_running_loop()
     try:
         metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to fetch video metadata")
         try:
             await query.edit_message_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video metadata fetch failed: {exc}")
+                .text("Video metadata fetch failed.")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         return
 
     TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
@@ -1189,8 +1207,8 @@ async def download_button_callback(
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
         return
 
     try:
@@ -1198,8 +1216,8 @@ async def download_button_callback(
             HtmlMessage(sender=sender).text("Downloading video...").render(),
             parse_mode=PARSE_MODE_HTML,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     with tempfile.TemporaryDirectory() as out_dir:
         try:
@@ -1212,8 +1230,10 @@ async def download_button_callback(
                         .render(),
                         parse_mode=PARSE_MODE_HTML,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "Best-effort Telegram call failed: %s", failure_reason(exc)
+                    )
 
             async with download_slot(user_id, on_wait=_notify_queued):
                 video_path = await loop.run_in_executor(
@@ -1221,15 +1241,17 @@ async def download_button_callback(
                 )
         except Exception as exc:
             logger.exception("Failed to download video")
+            failure = (
+                HtmlMessage(sender=sender)
+                .text(f"Video download failed: {exc}")
+                .render()
+            )
             try:
-                await query.edit_message_text(
-                    HtmlMessage(sender=sender)
-                    .text(f"Video download failed: {exc}")
-                    .render(),
-                    parse_mode=PARSE_MODE_HTML,
-                )
+                await query.edit_message_text(failure, parse_mode=PARSE_MODE_HTML)
             except Exception:
-                pass
+                logger.exception("Could not show the download failure on the card")
+                if query.message:
+                    await query.message.reply_text(failure, parse_mode=PARSE_MODE_HTML)
             return
 
         file_size = os.path.getsize(video_path)
@@ -1243,8 +1265,10 @@ async def download_button_callback(
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort Telegram call failed: %s", failure_reason(exc)
+                )
             return
 
         try:
@@ -1252,13 +1276,13 @@ async def download_button_callback(
                 HtmlMessage(sender=sender).text("Uploading video...").render(),
                 parse_mode=PARSE_MODE_HTML,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         try:
             await context.bot.send_chat_action(chat_id=chat_id, action="upload_video")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
@@ -1292,22 +1316,24 @@ async def download_button_callback(
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort Telegram call failed: %s", failure_reason(exc)
+                )
             return
 
     # Delete the status card message on success
     try:
         await query.message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     # Attempt to delete the original message containing the link if it was replied to
     try:
         if query.message and query.message.reply_to_message:
             await query.message.reply_to_message.delete()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
 
 async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:

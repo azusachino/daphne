@@ -2,12 +2,40 @@ import re
 import logging
 import httpx
 from typing import Optional, Tuple, List
-from daphne.tg import TelegramContext, TelegramUpdate
+from daphne.tg import TelegramContext, TelegramUpdate, failure_reason
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import extract_hashtags, send_photos, try_delete_message
 
 logger = logging.getLogger(__name__)
+
+BLUESKY_NO_MEDIA_TEXT = (
+    "This post has no downloadable media; your original link was kept."
+)
+BLUESKY_FAILED_TEXT = (
+    "Could not convert this Bluesky post right now; your original link was kept."
+)
+
+
+async def _report_failure(message, context, chat_id, sender, stage: str) -> None:
+    """Marks a Bluesky request as failed: failure reaction, then a footered reply."""
+    logger.warning("Bluesky conversion stopped at %s; original link kept", stage)
+    # Imported here: bot.py imports this module, so a top-level import would be circular.
+    from daphne.bot import REACTION_FAILED, set_reaction
+
+    await set_reaction(message, REACTION_FAILED)
+    text = BLUESKY_NO_MEDIA_TEXT if stage == "no-media" else BLUESKY_FAILED_TEXT
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=HtmlMessage(sender=sender).text(text).render(),
+            parse_mode=PARSE_MODE_HTML,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Bluesky failure reply could not be sent: %s", failure_reason(exc)
+        )
+
 
 BSKY_REGEX = re.compile(
     r"https?://(?:www\.)?bsky\.app/profile/([^/]+)/post/([^/]+)",
@@ -127,40 +155,43 @@ async def handle_bluesky_links(
     # 1. Trigger photo upload indicator
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Bluesky upload action failed: %s", failure_reason(exc))
+
+    sender = sender_attribution(update.effective_user)
 
     # 2. Resolve handle to DID
     did = await resolve_handle(handle)
     if not did:
-        logger.warning("Could not resolve Bluesky handle: %s", handle)
+        await _report_failure(message, context, chat_id, sender, "resolve")
         return
 
     # 3. Fetch thread content
     thread_data = await fetch_post_thread(did, post_id)
     if not thread_data or "thread" not in thread_data:
-        logger.warning(
-            "Could not fetch Bluesky thread data for %s/post/%s", handle, post_id
-        )
+        await _report_failure(message, context, chat_id, sender, "thread")
         return
 
     thread_post = thread_data["thread"].get("post")
     if not thread_post:
-        logger.warning(
-            "No post field inside thread response for %s/post/%s", handle, post_id
-        )
+        await _report_failure(message, context, chat_id, sender, "thread")
         return
 
-    author = thread_post.get("author", {})
-    author_name = author.get("displayName", author.get("handle", handle))
-    author_handle = author.get("handle", handle)
-    record = thread_post.get("record", {})
-    post_text = record.get("text", "")
-    embed = thread_post.get("embed", {})
-
-    original_url = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
-    photo_urls, video_url = extract_media_from_embed(embed)
-    sender = sender_attribution(update.effective_user)
+    try:
+        author = thread_post.get("author", {})
+        author_name = author.get("displayName", author.get("handle", handle))
+        author_handle = author.get("handle", handle)
+        record = thread_post.get("record", {})
+        post_text = record.get("text", "")
+        embed = thread_post.get("embed", {})
+        original_url = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
+        photo_urls, video_url = extract_media_from_embed(embed)
+    except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        logger.warning(
+            "Bluesky thread had an unexpected shape: %s", failure_reason(exc)
+        )
+        await _report_failure(message, context, chat_id, sender, "thread")
+        return
 
     success = False
 
@@ -168,13 +199,17 @@ async def handle_bluesky_links(
         caption = build_bluesky_caption(
             post_text, original_url, author_name, author_handle, sender
         )
-        success = await send_photos(
-            context.bot,
-            chat_id,
-            photo_urls,
-            caption,
-            parse_mode=PARSE_MODE_HTML,
-        )
+        try:
+            success = await send_photos(
+                context.bot,
+                chat_id,
+                photo_urls,
+                caption,
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception as exc:
+            logger.warning("Bluesky photo send failed: %s", failure_reason(exc))
+            await _report_failure(message, context, chat_id, sender, "send")
     elif video_url:
         # Import handle_video_link here to avoid circular imports
         from daphne.bot import handle_video_link
@@ -190,15 +225,8 @@ async def handle_bluesky_links(
         )
         success = True
     else:
-        # Post has no media. Send a fallback message
-        fallback_msg = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id, text=fallback_msg, parse_mode=None
-            )
-            success = True
-        except Exception as e:
-            logger.error("Failed to send Bluesky fallback message: %s", e)
+        # No media to send: say so and keep the original message, without a link fallback.
+        await _report_failure(message, context, chat_id, sender, "no-media")
 
     if success:
         await try_delete_message(update)

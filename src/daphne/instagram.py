@@ -142,7 +142,7 @@ async def handle_instagram_links(
         )
         # Do NOT fall back to handle_video_link here: yt-dlp's own Instagram
         # extractor hits the same public post/API endpoints parth-dl already
-        # tried (and we just tried it above), so the full yt-dlp/you-get/lux
+        # tried (and we just tried it above), so the full yt-dlp
         # chain would just retry into the same wall at real cost (multiple
         # engines, ~15s) for no benefit.
         from daphne.bot import REACTION_FAILED, set_reaction

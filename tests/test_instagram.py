@@ -9,7 +9,7 @@ from daphne.instagram import (
 
 # Real link that triggered the fail-fast bug in production: parth-dl's
 # extractor raised DownloadError, and the code used to fall back to
-# handle_video_link's yt-dlp/you-get/lux chain, which burned ~15s only to
+# handle_video_link's yt-dlp chain, which burned ~15s only to
 # report "There is no video in this post" (it's an image post).
 FAILING_INSTAGRAM_URL = "https://www.instagram.com/p/DRZSlC7D3OT/?igsh=MTJqbzAyN2QweDQ5"
 

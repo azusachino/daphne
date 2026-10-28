@@ -2,11 +2,28 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 from aiogram import Bot
 from aiogram.types import Chat, Message, Update, User
 
 from daphne import bot as bot_module
-from daphne.tg import TelegramMessage, build_bot
+from daphne.tg import TelegramMessage, build_bot, failure_reason
+
+
+class TestFailureReason(unittest.TestCase):
+    def test_names_status_and_hides_request_urls(self):
+        request = httpx.Request("GET", "https://example.invalid/token-in-path")
+        status = httpx.HTTPStatusError(
+            "bad gateway",
+            request=request,
+            response=httpx.Response(502, request=request),
+        )
+        self.assertEqual(failure_reason(status), "HTTP 502")
+        self.assertEqual(failure_reason(httpx.ConnectError("refused")), "ConnectError")
+        self.assertEqual(
+            failure_reason(ValueError("Pixiv returned an invalid image URL")),
+            "ValueError: Pixiv returned an invalid image URL",
+        )
 
 
 class TestTelegramBoundary(unittest.IsolatedAsyncioTestCase):

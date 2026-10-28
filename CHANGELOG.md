@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-28
+
+### Changed
+
+- Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
+- Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
+- **Bilibili fallback**: Bilibili links try yt-dlp first, then yutto, and fail with a message naming both when both fail. yutto runs only for Bilibili; its exit code is ignored, so a missing output file counts as failure.
+- **Log redaction**: Request URLs, with or without a scheme, are cut to their host, and Telegram bot tokens and secret query values (token, key, secret, sessdata, password, including compound names) are redacted from every log line and traceback.
+- **Bilibili hardening**: yutto runs in its own process group, and yt-dlp and yutto get a scrubbed environment without the bot token. Every yt-dlp and yutto call is bounded by a timeout that kills its whole process group, so no child keeps writing after a timeout. When neither download is complete, the longer file wins. Failed X and Bluesky requests set the failure reaction on every failure stage, including a malformed Bluesky thread, and the reply is footered. gallery-dl gets the same scrubbed environment.
+- **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
+- **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
+- **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.
+- **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
+- **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv syncs the locked environment in the builder stage, and the runtime image carries uv for uvx.
+- **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
+- **yt-dlp and yutto run through uvx**: The latest releases are fetched once at each bot start. Downloads run the cached release, kept in the pod's /tmp for the life of the pod, so a new pod refreshes at its start and needs PyPI then. The runtime image carries uv for this.
+- **CI** runs the lockfile check, lint, format and unit tests. The image job is removed.
+
+### Removed
+
+- The Phixiv metadata lookup, which no longer answers; Pixiv metadata comes from Pixiv's own API.
+- lux and you-get fallbacks; yt-dlp is the only general video and audio downloader.
+- Nix flake (`flake.nix`) and `Dockerfile.base`.
+
+### Fixed
+
+- A failed video metadata lookup no longer produces a card with a Download button; the original link is kept.
+- **Failed video downloads from a card**: The error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
+
 ## [0.4.3] - 2026-10-05
 
 ### Fixed

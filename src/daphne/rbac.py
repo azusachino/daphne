@@ -67,32 +67,32 @@ class RbacService:
 
         try:
             self.convert_link_limit = int(config_dict.get("convert_link_limit", 60))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.convert_link_limit = 60
 
         try:
             self.extract_audio_limit = int(config_dict.get("extract_audio_limit", 10))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.extract_audio_limit = 10
 
         try:
             self.preview_video_limit = int(config_dict.get("preview_video_limit", 10))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.preview_video_limit = 10
 
         try:
             self.download_video_limit = int(config_dict.get("download_video_limit", 5))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.download_video_limit = 5
 
         try:
             self.fetch_metadata_limit = int(config_dict.get("fetch_metadata_limit", 30))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.fetch_metadata_limit = 30
 
         try:
             self.help_limit = int(config_dict.get("help_limit", 10))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.help_limit = 10
 
         self.action_timestamps: Dict[Tuple[int, str], list[float]] = {}

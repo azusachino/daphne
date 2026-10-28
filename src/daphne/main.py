@@ -4,11 +4,15 @@ import sys
 import logging
 import argparse
 
+from daphne.redact import install_redaction
+from daphne.downloader import warm_up_tools
+
 # Setup basic logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger("daphne.main")
+install_redaction()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
@@ -52,6 +56,7 @@ async def run_bot() -> None:
     token = os.environ[ENV_BOT_TOKEN]
     bot = build_bot(token)
     dispatcher = build_dispatcher()
+    await asyncio.to_thread(warm_up_tools)
     try:
         await register_bot_commands(bot)
         await dispatcher.start_polling(bot.raw)
@@ -164,7 +169,7 @@ def main() -> None:
         try:
             logger.info("Starting Daphne bot polling...")
             asyncio.run(run_bot())
-        except (KeyboardInterrupt, SystemExit):
+        except KeyboardInterrupt, SystemExit:
             logger.info("Daphne bot received exit signal. Shutting down gracefully...")
         except Exception as e:
             logger.critical(

@@ -7,7 +7,13 @@ from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-from daphne.tg import InputMediaPhoto, TelegramContext, TelegramUpdate, as_input_file
+from daphne.tg import (
+    InputMediaPhoto,
+    TelegramContext,
+    TelegramUpdate,
+    as_input_file,
+    failure_reason,
+)
 
 from daphne.messages import (
     HtmlMessage,
@@ -19,7 +25,10 @@ from daphne.twitter import try_delete_message
 logger = logging.getLogger(__name__)
 
 PIXIV_CAT_BASE = "https://pixiv.cat"
-PHIXIV_API = "https://phixiv.net/api/info"
+PIXIV_RESTRICTED_TEXT = (
+    "This Pixiv work is age-restricted, so the bot can't convert it anonymously. "
+    "Open it in Pixiv while signed in. Your original link was kept."
+)
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
 
@@ -31,6 +40,7 @@ class PixivInfo:
     tags: list[str]
     image_urls: list[str] | None = None
     page_count: int = 1
+    restricted: bool = False
 
 
 def contains_pixiv_link(text: str) -> bool:
@@ -128,24 +138,6 @@ async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(
-                PHIXIV_API,
-                params={"id": artwork_id, "language": "en"},
-                headers=headers,
-                timeout=10.0,
-            )
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("title") or data.get("author_name"):
-                    return PixivInfo(
-                        title=str(data.get("title") or ""),
-                        author_name=str(data.get("author_name") or ""),
-                        tags=[str(tag) for tag in data.get("tags", [])],
-                    )
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
-            logger.info("Phixiv metadata unavailable for %s: %s", artwork_id, exc)
-
-        try:
-            response = await client.get(
                 f"https://www.pixiv.net/ajax/illust/{artwork_id}",
                 params={"lang": "en"},
                 headers={**headers, "Referer": "https://www.pixiv.net/"},
@@ -176,6 +168,7 @@ async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
                 tags=[str(tag.get("tag") or tag) for tag in tags],
                 image_urls=image_urls,
                 page_count=page_count,
+                restricted=bool(body.get("xRestrict")),
             )
         except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
             logger.warning("Failed to fetch Pixiv metadata for %s: %s", artwork_id, exc)
@@ -267,14 +260,29 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
         await context.bot.send_chat_action(
             chat_id=message.chat_id, action="upload_photo"
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Pixiv upload action failed: %s", failure_reason(exc))
 
     original_url = (
         extract_pixiv_url(message.text) or f"{PIXIV_CAT_BASE}/{artwork_id}.jpg"
     )
     info = await fetch_artwork_info(artwork_id)
     sender = sender_attribution(update.effective_user)
+
+    if info and info.restricted:
+        # Anonymous access cannot read age-restricted works; say so instead of failing silently.
+        from daphne.bot import REACTION_FAILED, set_reaction
+
+        await set_reaction(message, REACTION_FAILED)
+        logger.warning(
+            "Pixiv artwork %s is age-restricted; anonymous access cannot read it",
+            artwork_id,
+        )
+        await message.reply_text(
+            HtmlMessage(sender=sender).text(PIXIV_RESTRICTED_TEXT).render(),
+            parse_mode=PARSE_MODE_HTML,
+        )
+        return
 
     try:
         remaining_images = 0

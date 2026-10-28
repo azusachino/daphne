@@ -41,7 +41,7 @@ class TestGallery(unittest.TestCase):
         result = download_gallery("http://example.com/gallery", self.test_dir)
         self.assertEqual(len(result), 2)
         cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd[:2], ["uvx", "gallery-dl"])
+        self.assertEqual(cmd[0], "gallery-dl")
         self.assertIn("-D", cmd)
 
     @patch("daphne.gallery.subprocess.run", side_effect=Exception("boom"))

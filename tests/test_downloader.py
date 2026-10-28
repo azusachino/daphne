@@ -1,4 +1,5 @@
 import os
+import signal
 import unittest
 import tempfile
 import shutil
@@ -6,7 +7,9 @@ import json
 import subprocess
 from unittest.mock import patch, MagicMock
 
+from daphne import downloader
 from daphne.downloader import (
+    yutto_fetch,
     scan_largest_media_file,
     download_video,
     probe_video_dimensions,
@@ -19,8 +22,29 @@ from daphne.downloader import (
 )
 
 
+def _text(value) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _via_subprocess_run(cmd, timeout):
+    """Route run_tool through subprocess.run, so tests keep their subprocess.run fakes."""
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=True, timeout=timeout
+        )
+    except subprocess.CalledProcessError as e:
+        return e.returncode, _text(e.stdout), _text(e.stderr)
+    code = res.returncode if isinstance(res.returncode, int) else 0
+    return code, _text(res.stdout), _text(res.stderr)
+
+
 class TestDownloader(unittest.TestCase):
     def setUp(self):
+        tool_patch = patch(
+            "daphne.downloader.run_tool", side_effect=_via_subprocess_run
+        )
+        tool_patch.start()
+        self.addCleanup(tool_patch.stop)
         self.test_dir = tempfile.mkdtemp()
 
     def tearDown(self):
@@ -307,35 +331,16 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(res, "/tmp/pass2.mp4")
         self.assertEqual(mock_run.call_count, 2)
 
-        # Reset mocks
+        # Both attempts failing must not invoke another downloader.
         mock_run.reset_mock()
         mock_scan.reset_mock()
-
-        # Case 3: Pass 1 & 2 fail, you-get succeeds
-        mock_scan.side_effect = [None, None, "/tmp/youget.mp4"]
-        res = download_video("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/youget.mp4")
-        self.assertEqual(mock_run.call_count, 3)
-
-        # Reset mocks
-        mock_run.reset_mock()
-        mock_scan.reset_mock()
-
-        # Case 4: Pass 1 & 2 & you-get fail, lux succeeds
-        mock_scan.side_effect = [None, None, None, "/tmp/lux.mp4"]
-        res = download_video("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/lux.mp4")
-        self.assertEqual(mock_run.call_count, 4)
-        self.assertEqual(mock_run.call_args_list[-1][0][0][0], "lux")
-
-        # Reset mocks
-        mock_run.reset_mock()
-        mock_scan.reset_mock()
-
-        # Case 5: All fail -> raise RuntimeError
-        mock_scan.side_effect = [None, None, None, None]
-        with self.assertRaises(RuntimeError):
+        mock_scan.side_effect = [None, None]
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp"):
             download_video("http://x.com", self.test_dir)
+        self.assertEqual(mock_run.call_count, 2)
+        for call in mock_run.call_args_list:
+            self.assertEqual(call.args[0][:2], ["uvx", "--from"])
+            self.assertIn("yt-dlp", call.args[0])
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
     @patch("subprocess.run")
@@ -376,18 +381,12 @@ class TestDownloader(unittest.TestCase):
     def test_download_video_returns_longest_partial(
         self, mock_run, mock_scan, mock_dur
     ):
-        # Every engine truncates; the longest partial is returned as a last resort.
-        mock_scan.side_effect = [
-            "/tmp/a.mp4",
-            "/tmp/b.mp4",
-            "/tmp/c.mp4",
-            "/tmp/d.mp4",
-        ]
-        # probed once per engine to record candidate length (100, 200, 150, 120)
-        mock_dur.side_effect = [100, 200, 150, 120]
+        # Both yt-dlp attempts truncate; preserve the longest partial.
+        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4"]
+        mock_dur.side_effect = [100, 200]
         res = download_video("http://x.com", self.test_dir, expected_duration=270)
         self.assertEqual(res, "/tmp/b.mp4")
-        self.assertEqual(mock_run.call_count, 4)
+        self.assertEqual(mock_run.call_count, 2)
 
     @patch("daphne.downloader.scan_largest_audio_file")
     @patch("subprocess.run")
@@ -398,3 +397,140 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 1)
         cmd = mock_run.call_args[0][0]
         self.assertIn("--extract-audio", cmd)
+
+
+class TestBilibiliYuttoFallback(unittest.TestCase):
+    BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.test_dir, True)
+
+    @staticmethod
+    def _yutto_writes(name):
+        def run(args):
+            target = args[args.index("-d") + 1]
+            with open(os.path.join(target, name), "wb") as f:
+                f.write(b"media")
+            return ""
+
+        return run
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_yutto_runs_after_yt_dlp_fails_and_its_file_is_returned(
+        self, mock_ytdlp, mock_yutto
+    ):
+        mock_yutto.side_effect = self._yutto_writes("clip.mp4")
+        path = download_video(self.BILI, self.test_dir)
+        self.assertEqual(os.path.basename(path), "clip.mp4")
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "yutto")
+        mock_yutto.assert_called_once()
+        self.assertNotIn("--audio-only", mock_yutto.call_args[0][0])
+
+    @patch("daphne.downloader._run_yutto", return_value="ERROR 无法获取该视频")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_both_engines_failing_reports_both(self, mock_ytdlp, mock_yutto):
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp and yutto could not fetch"):
+            download_video(self.BILI, self.test_dir)
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_other_sites_never_reach_yutto(self, mock_ytdlp, mock_yutto):
+        with self.assertRaises(RuntimeError):
+            download_video("https://www.youtube.com/watch?v=abc", self.test_dir)
+        mock_yutto.assert_not_called()
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_audio_falls_back_to_yutto_audio_only(self, mock_ytdlp, mock_yutto):
+        mock_yutto.side_effect = self._yutto_writes("song.m4a")
+        path = download_audio(self.BILI, self.test_dir)
+        self.assertEqual(os.path.basename(path), "song.m4a")
+        self.assertIn("--audio-only", mock_yutto.call_args[0][0])
+
+
+class TestYuttoHardening(unittest.TestCase):
+    BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.test_dir, True)
+
+    def test_longer_yutto_output_beats_a_shorter_yt_dlp_partial(self):
+        with open(os.path.join(self.test_dir, "partial.mp4"), "wb") as f:
+            f.write(b"partial")
+
+        def yutto_writes(args):
+            target = args[args.index("-d") + 1]
+            with open(os.path.join(target, "clip.mp4"), "wb") as f:
+                f.write(b"full-ish")
+            return ""
+
+        durations = lambda path: 50 if "partial" in path else 120  # noqa: E731
+        with (
+            patch("daphne.downloader._run_cmd", return_value=(False, "")),
+            patch("daphne.downloader._run_yutto", side_effect=yutto_writes),
+            patch("daphne.downloader.probe_video_duration", side_effect=durations),
+        ):
+            result = download_video(self.BILI, self.test_dir, expected_duration=300)
+        self.assertEqual(os.path.basename(os.path.dirname(result)), "yutto")
+        self.assertTrue(result.endswith("clip.mp4"))
+
+    def test_exit_code_zero_without_a_file_is_a_failure(self):
+        proc = MagicMock(pid=1)
+        proc.communicate.return_value = ("", "")
+        with patch("daphne.downloader.subprocess.Popen", return_value=proc):
+            with self.assertRaisesRegex(RuntimeError, "produced no file"):
+                yutto_fetch(self.BILI, self.test_dir)
+
+    def test_timeout_kills_the_whole_process_group(self):
+        proc = MagicMock(pid=77)
+        proc.communicate.side_effect = [
+            subprocess.TimeoutExpired("yutto", 1),
+            ("", ""),
+        ]
+        with (
+            patch("daphne.downloader.subprocess.Popen", return_value=proc),
+            patch("daphne.downloader.os.killpg") as killpg,
+        ):
+            output = downloader._run_yutto(["--x"])
+        killpg.assert_called_once_with(77, signal.SIGKILL)
+        self.assertIn("timeout", output)
+
+    def test_tools_do_not_inherit_the_bot_token(self):
+        with patch.dict(
+            os.environ,
+            {"DAPHNE_BOT_TOKEN": "123:SECRET", "PATH": "/usr/bin"},
+            clear=True,
+        ):
+            with patch("daphne.downloader.subprocess.Popen") as popen:
+                popen.return_value.communicate.return_value = ("", "")
+                popen.return_value.returncode = 0
+                downloader._run_cmd(["uvx", "yt-dlp"])
+        env = popen.call_args.kwargs["env"]
+        self.assertNotIn("DAPHNE_BOT_TOKEN", env)
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_logs_name_the_host_not_the_full_link(self):
+        with (
+            patch("daphne.downloader._run_cmd", return_value=(False, "")),
+            patch("daphne.downloader._run_yutto", return_value="ERROR nope"),
+            patch("daphne.downloader.logger.warning") as warn,
+        ):
+            with self.assertRaises(RuntimeError):
+                download_video(self.BILI, self.test_dir)
+        logged = str(warn.call_args_list)
+        self.assertIn("www.bilibili.com", logged)
+        self.assertNotIn("BV1aMEj62EdA", logged)
+
+
+class TestToolWarmUp(unittest.TestCase):
+    def test_refresh_never_raises_and_downloads_still_run(self):
+        with patch(
+            "daphne.downloader.run_tool",
+            side_effect=subprocess.TimeoutExpired("uvx", 1),
+        ):
+            downloader.warm_up_tools()
+        with patch("daphne.downloader.run_tool", side_effect=OSError("uvx missing")):
+            downloader.warm_up_tools()

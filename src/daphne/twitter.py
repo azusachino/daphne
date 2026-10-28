@@ -7,6 +7,7 @@ from daphne.tg import (
     TelegramContext,
     TelegramUpdate,
     as_input_file,
+    failure_reason,
 )
 
 from daphne.messages import (
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ARTICLE_PREVIEW_LIMIT = 650
 ARTICLE_MEDIA_LIMIT = 3
+X_RESOLVE_FAILED_TEXT = (
+    "Could not fetch media from this post right now; your original link was kept."
+)
 
 TWITTER_REGEX = re.compile(
     r"https?://(?:www\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/([a-zA-Z0-9_]+)/status/(\d+)",
@@ -53,7 +57,7 @@ def extract_twitter_link(text: str):
 def _positive_int(value) -> int | None:
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return number if number > 0 else None
 
@@ -78,7 +82,7 @@ def select_twitter_video(video: dict) -> dict:
         try:
             width = int(format_info.get("width", 0))
             height = int(format_info.get("height", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             width = height = 0
 
         if not width or not height:
@@ -90,14 +94,14 @@ def select_twitter_video(video: dict) -> dict:
         if width and height and max(width, height) <= TWITTER_MAX_VIDEO_DIMENSION:
             try:
                 bitrate = int(format_info.get("bitrate", 0) or 0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 bitrate = 0
             candidates.append((bitrate, format_info["url"], width, height))
 
     duration = None
     try:
         duration = _positive_int(round(float(video.get("duration"))))
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         duration = None
 
     if candidates:
@@ -322,16 +326,6 @@ async def send_photos(
     return True
 
 
-async def send_fallback(bot, chat_id: int, username: str, tweet_id: str) -> bool:
-    fallback_url = f"https://fxtwitter.com/{username}/status/{tweet_id}"
-    try:
-        await bot.send_message(chat_id=chat_id, text=fallback_url, parse_mode=None)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send fallback URL {fallback_url}: {e}")
-        return False
-
-
 def extract_hashtags(text: str) -> list[str]:
     tags = []
     seen = set()
@@ -421,7 +415,7 @@ def _article_video_url(media_info: dict) -> str | None:
     def bitrate(variant: dict) -> int:
         try:
             return int(variant.get("bitrate", variant.get("bit_rate", 0)) or 0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return 0
 
     selected = max(
@@ -503,8 +497,8 @@ async def handle_twitter_links(
 
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("X upload action failed: %s", failure_reason(exc))
 
     # Try fetching from API
     api_url = f"https://api.fxtwitter.com/{username}/status/{tweet_id}"
@@ -678,8 +672,10 @@ async def handle_twitter_links(
                             await context.bot.send_chat_action(
                                 chat_id=chat_id, action="upload_video"
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "X upload action failed: %s", failure_reason(exc)
+                            )
                         await send_video_helper(
                             context.bot,
                             chat_id,
@@ -695,8 +691,10 @@ async def handle_twitter_links(
                             await context.bot.send_chat_action(
                                 chat_id=chat_id, action="upload_video"
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "X upload action failed: %s", failure_reason(exc)
+                            )
                         await send_animation_helper(
                             context.bot,
                             chat_id,
@@ -728,11 +726,27 @@ async def handle_twitter_links(
         else:
             logger.warning(f"FxTwitter API returned HTTP status {resp.status_code}")
     except Exception as e:
-        logger.exception(f"Error processing Twitter link {api_url}: {e}")
+        logger.warning(
+            "Error processing Twitter post %s: %s", tweet_id, failure_reason(e)
+        )
 
     if not success:
-        # Fallback case on error
-        success = await send_fallback(context.bot, chat_id, username, tweet_id)
+        # No link fallback: say what failed and keep the original message.
+        logger.warning("X post %s could not be converted; original link kept", tweet_id)
+        # Imported here: bot.py imports this module, so a top-level import would be circular.
+        from daphne.bot import REACTION_FAILED, set_reaction
+
+        await set_reaction(message, REACTION_FAILED)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=HtmlMessage(sender=sender_attribution(update.effective_user))
+                .text(X_RESOLVE_FAILED_TEXT)
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+        except Exception as exc:
+            logger.warning("X failure reply could not be sent: %s", failure_reason(exc))
 
     if success:
         await try_delete_message(update)

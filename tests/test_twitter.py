@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import io
 from daphne.twitter import (
+    X_RESOLVE_FAILED_TEXT,
     article_media_lists,
     article_preview_text,
     contains_twitter_link,
@@ -782,7 +783,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.twitter.logger.warning")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_404_sends_fallback_url(self, mock_get, mock_log_warn):
+    async def test_handle_api_404_keeps_original_without_link(
+        self, mock_get, mock_log_warn
+    ):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API returns 404
@@ -792,19 +795,15 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         await handle_twitter_links(self.update, self.context)
 
-        # Sends fallback URL
-        self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456,
-            text="https://fxtwitter.com/nasa/status/999",
-            parse_mode=None,
-        )
-        self.update.message.delete.assert_called_once()
+        # Says it failed and keeps the original message; no FxTwitter link
+        self.context.bot.send_message.assert_called_once()
+        sent = self.context.bot.send_message.await_args.kwargs["text"]
+        self.assertIn(X_RESOLVE_FAILED_TEXT, sent)
+        self.assertNotIn("fxtwitter", sent)
+        self.update.message.delete.assert_not_called()
 
-    @patch("daphne.twitter.logger.exception")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_exception_sends_fallback_url(
-        self, mock_get, mock_log_exc
-    ):
+    async def test_handle_api_exception_keeps_original_without_link(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API raises connection error
@@ -812,13 +811,12 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         await handle_twitter_links(self.update, self.context)
 
-        # Sends fallback URL
-        self.context.bot.send_message.assert_called_once_with(
-            chat_id=123456,
-            text="https://fxtwitter.com/nasa/status/999",
-            parse_mode=None,
-        )
-        self.update.message.delete.assert_called_once()
+        # Says it failed and keeps the original message; no FxTwitter link
+        self.context.bot.send_message.assert_called_once()
+        sent = self.context.bot.send_message.await_args.kwargs["text"]
+        self.assertIn(X_RESOLVE_FAILED_TEXT, sent)
+        self.assertNotIn("fxtwitter", sent)
+        self.update.message.delete.assert_not_called()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_reply_prevents_message_deletion(self, mock_get):
@@ -869,3 +867,31 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTwitterFailureReply(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_failure_reply_does_not_crash_and_sets_the_reaction(self):
+        update = MagicMock()
+        update.message = MagicMock()
+        update.message.chat_id = 123456
+        update.message.reply_to_message = None
+        update.message.is_topic_message = False
+        update.message.text = "https://x.com/nasa/status/999"
+        update.message.delete = AsyncMock()
+        update.effective_user = MagicMock(username="u", full_name="U")
+        context = MagicMock()
+        context.bot.send_message = AsyncMock(side_effect=RuntimeError("telegram down"))
+
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 404
+        with (
+            patch(
+                "daphne.twitter.httpx.AsyncClient.get", AsyncMock(return_value=response)
+            ),
+            patch("daphne.bot.set_reaction", new=AsyncMock()) as react,
+        ):
+            await handle_twitter_links(update, context)
+
+        react.assert_awaited_once()
+        self.assertEqual(react.await_args.args[1], "😢")
+        update.message.delete.assert_not_called()
