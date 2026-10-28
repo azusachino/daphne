@@ -2,3 +2,7 @@
 python = "3.14.10"
 uv = "0.13.6"
 deno = "latest"
+
+[env]
+# Match the committed lock's 7-day window; uv's default would rewrite it.
+UV_EXCLUDE_NEWER = "P7D"
