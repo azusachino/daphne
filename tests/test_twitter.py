@@ -802,11 +802,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fxtwitter", sent)
         self.update.message.delete.assert_not_called()
 
-    @patch("daphne.twitter.logger.exception")
     @patch("daphne.twitter.httpx.AsyncClient.get")
-    async def test_handle_api_exception_keeps_original_without_link(
-        self, mock_get, mock_log_exc
-    ):
+    async def test_handle_api_exception_keeps_original_without_link(self, mock_get):
         self.update.message.text = "https://x.com/nasa/status/999"
 
         # API raises connection error

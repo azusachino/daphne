@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+from daphne.downloader import tool_env
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,14 @@ def download_gallery(url: str, out_dir: str) -> list[str]:
     cmd = ["gallery-dl", "-D", out_dir, "--", url]
     logger.info("Running command: %s", " ".join(cmd))
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=180.0)
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=180.0,
+            env=tool_env(),
+        )
     except subprocess.CalledProcessError as e:
         logger.warning(
             "gallery-dl failed with exit code %s. stderr: %s", e.returncode, e.stderr

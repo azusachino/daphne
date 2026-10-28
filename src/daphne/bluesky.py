@@ -177,15 +177,21 @@ async def handle_bluesky_links(
         await _report_failure(message, context, chat_id, sender, "thread")
         return
 
-    author = thread_post.get("author", {})
-    author_name = author.get("displayName", author.get("handle", handle))
-    author_handle = author.get("handle", handle)
-    record = thread_post.get("record", {})
-    post_text = record.get("text", "")
-    embed = thread_post.get("embed", {})
-
-    original_url = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
-    photo_urls, video_url = extract_media_from_embed(embed)
+    try:
+        author = thread_post.get("author", {})
+        author_name = author.get("displayName", author.get("handle", handle))
+        author_handle = author.get("handle", handle)
+        record = thread_post.get("record", {})
+        post_text = record.get("text", "")
+        embed = thread_post.get("embed", {})
+        original_url = f"https://bsky.app/profile/{author_handle}/post/{post_id}"
+        photo_urls, video_url = extract_media_from_embed(embed)
+    except (AttributeError, TypeError, KeyError, ValueError) as exc:
+        logger.warning(
+            "Bluesky thread had an unexpected shape: %s", failure_reason(exc)
+        )
+        await _report_failure(message, context, chat_id, sender, "thread")
+        return
 
     success = False
 

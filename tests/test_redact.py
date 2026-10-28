@@ -88,5 +88,20 @@ class TestRedaction(unittest.TestCase):
         self.assertNotIn("/p", out)
 
 
+class TestSchemelessLinks(unittest.TestCase):
+    def test_schemeless_and_protocol_relative_links_are_cut_to_the_host(self):
+        from daphne.redact import redact as r
+
+        self.assertNotIn(
+            "BV1aMEj62EdA", r("see www.bilibili.com/video/BV1aMEj62EdA?p=1")
+        )
+        self.assertNotIn("secret", r("//api.example.invalid/x/secret"))
+
+    def test_file_paths_are_left_alone(self):
+        from daphne.redact import redact as r
+
+        self.assertIn("/tmp/yutto/clip.mp4", r("saved /tmp/yutto/clip.mp4"))
+
+
 if __name__ == "__main__":
     unittest.main()
