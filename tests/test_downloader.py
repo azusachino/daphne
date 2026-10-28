@@ -315,7 +315,8 @@ class TestDownloader(unittest.TestCase):
             download_video("http://x.com", self.test_dir)
         self.assertEqual(mock_run.call_count, 2)
         for call in mock_run.call_args_list:
-            self.assertEqual(call.args[0][0], "yt-dlp")
+            self.assertEqual(call.args[0][:2], ["uvx", "--refresh-package"])
+            self.assertIn("yt-dlp", call.args[0])
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
     @patch("subprocess.run")
@@ -372,3 +373,64 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 1)
         cmd = mock_run.call_args[0][0]
         self.assertIn("--extract-audio", cmd)
+
+
+class TestBilibiliYuttoFallback(unittest.TestCase):
+    BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
+
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.test_dir, True)
+
+    @staticmethod
+    def _yutto_writes(name):
+        def run(args):
+            target = args[args.index("-d") + 1]
+            with open(os.path.join(target, name), "wb") as f:
+                f.write(b"media")
+            return ""
+
+        return run
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_yutto_runs_after_yt_dlp_fails_and_its_file_is_returned(
+        self, mock_ytdlp, mock_yutto
+    ):
+        mock_yutto.side_effect = self._yutto_writes("clip.mp4")
+        path = download_video(self.BILI, self.test_dir)
+        self.assertEqual(os.path.basename(path), "clip.mp4")
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "yutto")
+        mock_yutto.assert_called_once()
+        self.assertNotIn("--audio-only", mock_yutto.call_args[0][0])
+
+    @patch("daphne.downloader._run_yutto", return_value="ERROR 无法获取该视频")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_both_engines_failing_reports_both(self, mock_ytdlp, mock_yutto):
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp and yutto could not fetch"):
+            download_video(self.BILI, self.test_dir)
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_yutto_exit_code_is_not_trusted_without_a_file(
+        self, mock_ytdlp, mock_yutto
+    ):
+        # yutto exits 0 on failure, so an empty output directory is the real signal.
+        mock_yutto.return_value = "ERROR something failed"
+        with self.assertRaises(RuntimeError):
+            download_video(self.BILI, self.test_dir)
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_other_sites_never_reach_yutto(self, mock_ytdlp, mock_yutto):
+        with self.assertRaises(RuntimeError):
+            download_video("https://www.youtube.com/watch?v=abc", self.test_dir)
+        mock_yutto.assert_not_called()
+
+    @patch("daphne.downloader._run_yutto")
+    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
+    def test_audio_falls_back_to_yutto_audio_only(self, mock_ytdlp, mock_yutto):
+        mock_yutto.side_effect = self._yutto_writes("song.m4a")
+        path = download_audio(self.BILI, self.test_dir)
+        self.assertEqual(os.path.basename(path), "song.m4a")
+        self.assertIn("--audio-only", mock_yutto.call_args[0][0])

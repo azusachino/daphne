@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import random
 import logging
@@ -198,6 +199,68 @@ def _is_complete(actual: Optional[int], expected_duration: Optional[float]) -> b
     return False
 
 
+BILIBILI_BOTH_FAILED = (
+    "Bilibili download failed: yt-dlp and yutto could not fetch this video."
+)
+# yt-dlp and yutto run through uvx. The refresh flag re-checks PyPI on every call, so
+# the newest release is used without rebuilding the image.
+YT_DLP_CMD = [
+    "uvx",
+    "--refresh-package",
+    "yt-dlp",
+    "--from",
+    "yt-dlp[default]",
+    "yt-dlp",
+]
+YUTTO_CMD = ["uvx", "--refresh-package", "yutto", "yutto"]
+YUTTO_OPTIONS = ["--no-danmaku", "--no-subtitle", "--no-cover", "--no-progress"]
+YUTTO_TIMEOUT_SECONDS = 600.0
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _run_yutto(args: list[str]) -> str:
+    """Run ``yutto download``. Its exit code is not trusted, so return its output."""
+    try:
+        res = subprocess.run(
+            [*YUTTO_CMD, "download", *args],
+            capture_output=True,
+            text=True,
+            timeout=YUTTO_TIMEOUT_SECONDS,
+        )
+        output = (res.stdout or "") + (res.stderr or "")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        output = f"ERROR yutto did not finish ({type(exc).__name__})"
+    return ANSI_ESCAPE.sub("", output)
+
+
+def download_bilibili_with_yutto(
+    url: str,
+    out_dir: str,
+    expected_duration: Optional[float] = None,
+    audio_only: bool = False,
+) -> str:
+    """Fetch a Bilibili link with yutto into its own subdir. Success is judged by the file."""
+    target = os.path.join(out_dir, "yutto")
+    os.makedirs(target, exist_ok=True)
+    args = [*YUTTO_OPTIONS, "-d", target]
+    if audio_only:
+        args.append("--audio-only")
+    output = _run_yutto([*args, url])
+
+    if audio_only:
+        largest = scan_largest_audio_file(target)
+    else:
+        largest = scan_largest_media_file(target)
+    if not largest or os.path.getsize(largest) == 0:
+        errors = [line.strip() for line in output.splitlines() if "ERROR" in line]
+        raise RuntimeError(errors[-1] if errors else "yutto produced no file")
+    if not audio_only:
+        actual = probe_video_duration(largest) if expected_duration else None
+        if not _is_complete(actual, expected_duration):
+            raise RuntimeError("yutto returned a truncated video")
+    return largest
+
+
 def download_video(
     url: str, out_dir: str, expected_duration: Optional[float] = None
 ) -> str:
@@ -218,7 +281,7 @@ def download_video(
 
     def cmd_pass1() -> list[str]:
         return [
-            "yt-dlp",
+            *YT_DLP_CMD,
             "-f",
             yt_dlp_format,
             "--output",
@@ -233,7 +296,7 @@ def download_video(
 
     def cmd_pass2() -> list[str]:
         cmd = [
-            "yt-dlp",
+            *YT_DLP_CMD,
             "-f",
             yt_dlp_format,
             "--output",
@@ -273,6 +336,21 @@ def download_video(
             best_duration = actual or 0
             best_path = largest
 
+    if is_bilibili_url(url):
+        # yt-dlp's Bilibili extractor is unreliable, so yutto gets the link next.
+        try:
+            return download_bilibili_with_yutto(url, out_dir, expected_duration)
+        except RuntimeError as exc:
+            logger.warning("yutto could not fetch %s: %s", url, exc)
+            if best_path:
+                logger.warning(
+                    "Returning longest yt-dlp partial (%ss) from %s.",
+                    int(best_duration),
+                    best_path,
+                )
+                return best_path
+            raise RuntimeError(BILIBILI_BOTH_FAILED) from exc
+
     if best_path:
         logger.warning(
             "No yt-dlp attempt produced a complete video; returning longest partial "
@@ -287,7 +365,7 @@ def download_audio(url: str, out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
 
     cmd = [
-        "yt-dlp",
+        *YT_DLP_CMD,
         "-f",
         "bestaudio/best",
         "--extract-audio",
@@ -311,6 +389,13 @@ def download_audio(url: str, out_dir: str) -> str:
     largest_media = scan_largest_media_file(out_dir)
     if largest_media:
         return largest_media
+
+    if is_bilibili_url(url):
+        try:
+            return download_bilibili_with_yutto(url, out_dir, audio_only=True)
+        except RuntimeError as exc:
+            logger.warning("yutto could not fetch audio for %s: %s", url, exc)
+            raise RuntimeError(BILIBILI_BOTH_FAILED) from exc
 
     raise RuntimeError(_classify_failure([stderr] if stderr else []))
 
@@ -363,7 +448,7 @@ def probe_video_dimensions(
 
 def fetch_video_metadata(url: str) -> dict:
     base = [
-        "yt-dlp",
+        *YT_DLP_CMD,
         "--dump-json",
         "--no-playlist",
         *YT_DLP_REMOTE_COMPONENTS,
@@ -413,7 +498,7 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
     one JSON object per line, one per slide.
     """
     cmd = [
-        "yt-dlp",
+        *YT_DLP_CMD,
         "--dump-json",
         "--ignore-no-formats-error",
         *YT_DLP_REMOTE_COMPONENTS,

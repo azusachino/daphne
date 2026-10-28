@@ -7,8 +7,6 @@ IMAGE ?= docker.io/azusachino/daphne
 # imported straight into containerd, never pulled from a registry).
 LOCAL_IMAGE ?= azusachino.com/daphne
 VERSION ?= $(shell rg -m1 -o '^version = "([^"]+)"' -r '$$1' pyproject.toml)
-# Changes every invocation so the image always installs the latest yt-dlp
-YTDLP_REFRESH ?= $(shell date +%s)
 
 dev:
 	uv run daphne
@@ -34,14 +32,14 @@ lint:
 ready: fmt lint test
 
 image-build:
-	$(CONTAINER_TOOL) build --build-arg YTDLP_REFRESH=$(YTDLP_REFRESH) -t daphne:latest .
+	$(CONTAINER_TOOL) build -t daphne:latest .
 
 image-push: image-build
 	$(CONTAINER_TOOL) tag daphne:latest $(IMAGE):$(VERSION)
 	$(CONTAINER_TOOL) push $(IMAGE):$(VERSION)
 
 image-local: ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
-	$(CONTAINER_TOOL) build --build-arg YTDLP_REFRESH=$(YTDLP_REFRESH) -t $(LOCAL_IMAGE):$(VERSION) .
+	$(CONTAINER_TOOL) build -t $(LOCAL_IMAGE):$(VERSION) .
 	$(CONTAINER_TOOL) save $(LOCAL_IMAGE):$(VERSION) | sudo k3s ctr images import -
 
 verify: image-build
