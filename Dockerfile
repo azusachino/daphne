@@ -40,5 +40,11 @@ COPY --from=builder /app/src ./src
 # Place the virtual environment's bin directory on the PATH (yt-dlp, gallery-dl, daphne)
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Run as an unprivileged user. /app stays root-owned, so the bot can read but not modify it.
+RUN addgroup -S -g 10001 daphne && \
+    adduser -S -D -u 10001 -G daphne -h /home/daphne daphne && \
+    mkdir -p /home/daphne && chown daphne:daphne /home/daphne
+USER daphne
+
 # Set entrypoint to use tini for graceful signal propagation
 ENTRYPOINT ["/sbin/tini", "--", "daphne"]

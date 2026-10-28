@@ -92,6 +92,25 @@ make down
 
 For inline mode, enable it once with `@BotFather` → `/setinline`.
 
+### Container image
+
+The image builds from public registries only. It needs Docker or Podman and no local toolchain:
+
+```bash
+docker build -t daphne:latest .        # or: podman build -t daphne:latest .
+```
+
+Each build installs the latest yt-dlp. The image runs as an unprivileged user (UID 10001) and reads its configuration from `/app/config.toml`. Provide `config/config.toml` and a `.env` with your bot credentials, as `docker-compose.yml` expects, then run:
+
+```bash
+docker run -d --name daphne --restart unless-stopped \
+  --env-file ./.env \
+  -v "$PWD/config/config.toml:/app/config.toml:ro" \
+  daphne:latest
+```
+
+For 2 GB uploads, run the local Telegram Bot API sidecar from `docker-compose.yml` alongside it.
+
 ### Secrets (environment)
 
 | Variable                                | Purpose                                             |
