@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
-import io
 from daphne.twitter import (
     X_RESOLVE_FAILED_TEXT,
     article_media_lists,
@@ -13,6 +12,7 @@ from daphne.twitter import (
     handle_twitter_links,
     send_media_group_helper,
     send_video_helper,
+    send_videos,
     select_twitter_video,
     select_twitter_video_url,
     without_tagged_hashtags,
@@ -416,17 +416,75 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         await handle_twitter_links(self.update, self.context)
 
         self.context.bot.send_media_group.assert_called_once()
-        self.context.bot.send_video.assert_called_once()
+        self.context.bot.send_video.assert_awaited_once()
         media_group = self.context.bot.send_media_group.call_args[1]["media"]
+        self.assertEqual(
+            [item.media for item in media_group],
+            ["https://pbs.twimg.com/media/1.jpg", "https://pbs.twimg.com/media/2.jpg"],
+        )
         self.assertIn("Mixed media", media_group[0].caption)
         self.assertNotIn("Mixed media #NASA", media_group[0].caption)
         self.assertIn("#twitter #nasa", media_group[0].caption)
-        self.assertEqual(
-            self.context.bot.send_video.call_args[1]["video"],
-            "https://video.twimg.com/test.mp4",
-        )
-        self.assertEqual(self.context.bot.send_video.call_args[1]["caption"], "")
         self.update.message.delete.assert_called_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_mp4_gifs_form_own_video_album(self, mock_get):
+        self.update.message.text = "https://x.com/nasa/status/999"
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "text": "Animation and video",
+                "media": {
+                    "all": [
+                        {"url": "https://video.twimg.com/one.mp4", "type": "gif"},
+                        {"url": "https://video.twimg.com/two.mp4", "type": "gif"},
+                    ]
+                },
+            },
+        }
+        mock_get.return_value = response
+        await handle_twitter_links(self.update, self.context)
+        media = self.context.bot.send_media_group.await_args.kwargs["media"]
+        self.assertEqual([item.type for item in media], ["video", "video"])
+        self.context.bot.send_animation.assert_not_called()
+        self.update.message.delete.assert_awaited_once()
+
+    @patch("daphne.twitter.httpx.AsyncClient.get")
+    async def test_partial_failure_keeps_original(self, mock_get):
+        self.update.message.text = "https://x.com/nasa/status/999"
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = 200
+        response.json.return_value = {
+            "code": 200,
+            "tweet": {
+                "text": "Mixed",
+                "media": {
+                    "all": [
+                        {"url": "https://pbs.twimg.com/a.jpg", "type": "photo"},
+                        {"url": "https://video.twimg.com/a.gif", "type": "gif"},
+                    ]
+                },
+            },
+        }
+        mock_get.return_value = response
+        self.context.bot.send_animation.side_effect = Exception("refused")
+        with patch("daphne.twitter.download_bytes", side_effect=Exception("offline")):
+            await handle_twitter_links(self.update, self.context)
+        self.context.bot.send_photo.assert_awaited_once()
+        self.update.message.delete.assert_not_awaited()
+
+    @patch("daphne.twitter.download_bytes", return_value=b"video")
+    async def test_video_album_retries_as_upload(self, mock_download):
+        self.context.bot.send_media_group.side_effect = [Exception("URL refused"), None]
+        await send_videos(self.context.bot, 123, ["one", "two"], "caption", "HTML", {})
+        group = self.context.bot.send_media_group.await_args.kwargs["media"]
+        self.assertEqual([item.type for item in group], ["video", "video"])
+        self.assertEqual(group[0].media.data, b"video")
+        self.assertEqual(group[0].caption, "caption")
+        self.assertEqual(mock_download.await_count, 2)
+        self.context.bot.send_video.assert_not_awaited()
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_gif_success(self, mock_get):
@@ -499,11 +557,10 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
             self.context.bot.send_photo.call_args_list[0][1]["photo"],
             "https://pbs.twimg.com/media/test.jpg",
         )
-        # Second call tried with downloaded BytesIO
+        # Second call uploads the downloaded bytes.
         photo_arg = self.context.bot.send_photo.call_args_list[1][1]["photo"]
-        self.assertTrue(isinstance(photo_arg, io.BytesIO))
-        self.assertEqual(photo_arg.getvalue(), b"image_data")
-        self.assertEqual(photo_arg.name, "photo.jpg")
+        self.assertEqual(photo_arg.data, b"image_data")
+        self.assertEqual(photo_arg.filename, "photo.jpg")
 
         mock_download.assert_called_once_with("https://pbs.twimg.com/media/test.jpg")
         self.update.message.delete.assert_called_once()
@@ -516,15 +573,37 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         await send_media_group_helper(
             bot,
             123456,
-            ["https://pbs.twimg.com/media/1.jpg"],
+            ["https://pbs.twimg.com/media/1.jpg", "https://pbs.twimg.com/media/2.jpg"],
             "caption",
             "HTML",
         )
 
         media = bot.send_media_group.call_args_list[1].kwargs["media"]
-        self.assertEqual(len(media), 1)
+        self.assertEqual(len(media), 2)
         self.assertEqual(media[0].media.filename, "photo_0.jpg")
-        mock_download.assert_called_once_with("https://pbs.twimg.com/media/1.jpg")
+        self.assertEqual(mock_download.await_count, 2)
+
+    @patch("daphne.twitter.download_bytes")
+    async def test_oversized_images_form_separate_document_album(self, mock_download):
+        mock_download.side_effect = [
+            b"small",
+            b"x" * 10_000_001,
+            b"small",
+            b"x" * 10_000_001,
+        ]
+        bot = MagicMock()
+        bot.send_media_group = AsyncMock(
+            side_effect=[Exception("URL rejected"), None, None]
+        )
+        await send_media_group_helper(bot, 123, ["a", "b", "c", "d"], "caption", "HTML")
+        photo_album = bot.send_media_group.await_args_list[1].kwargs["media"]
+        document_album = bot.send_media_group.await_args_list[2].kwargs["media"]
+        self.assertEqual([item.type for item in photo_album], ["photo", "photo"])
+        self.assertEqual(
+            [item.type for item in document_album], ["document", "document"]
+        )
+        self.assertEqual(photo_album[0].caption, "caption")
+        self.assertIsNone(document_album[0].caption)
 
     @patch("daphne.twitter.httpx.AsyncClient.get")
     async def test_handle_single_photo_uses_api_author_not_url_username(self, mock_get):
