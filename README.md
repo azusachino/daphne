@@ -37,8 +37,8 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 ## Features
 
 - **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
-- **🎬 Video downloads** — YouTube and other sites use `yt-dlp` (two passes). A file whose duration falls short of the metadata is retried. Bilibili has its own chain, described below.
-- **📺 Bilibili chain** — disk cache → native player API (480p anonymous) → yutto → yt-dlp, with a duration check on every engine. Audio follows the same order. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
+- **🎬 Video downloads** — YouTube and other sites use `yt-dlp` (two passes), then `you-get` and `lux`. A file whose duration falls short of the metadata is retried. Bilibili has its own chain, described below.
+- **📺 Bilibili chain** — disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last), with a duration check on every engine. Audio ends in yutto too. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
@@ -55,8 +55,8 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 | ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
 | **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (preview + up to 3 media) |   ✅   |
 | **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
-| **YouTube**                    | `yt-dlp` (two passes)           | Video downloads                                  |   ✅   |
-| **Bilibili · b23**             | Native player API → yutto → yt-dlp | Video and audio (480p anonymous)              |   ✅   |
+| **YouTube**                    | `yt-dlp` (two passes), then `you-get`, `lux` | Video downloads                        |   ✅   |
+| **Bilibili · b23**             | Native API → yt-dlp → you-get → lux → yutto | Video and audio (480p anonymous)  |   ✅   |
 | **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |
 | **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
 | **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
