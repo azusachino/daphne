@@ -7,6 +7,7 @@ accepted: a tag or search page would make gallery-dl download a whole result set
 
 import asyncio
 import logging
+import os
 import re
 import tempfile
 from typing import Optional
@@ -14,7 +15,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 
-from daphne.gallery import download_gallery
+from daphne.gallery import MEDIA_GROUP_LIMIT, download_gallery
 from daphne.messages import HtmlMessage, sender_attribution
 from daphne.tg import (
     TelegramContext,
@@ -83,12 +84,17 @@ def _direct_moebooru_images(
             file_url = "https:" + file_url
         if not file_url.startswith(f"https://{site}/"):
             raise ValueError("Moebooru returned an image from another host")
-        image = client.get(file_url, headers={"Referer": f"https://{site}/"})
-        image.raise_for_status()
-        if len(image.content) > DIRECT_IMAGE_LIMIT_BYTES:
-            raise ValueError("Moebooru image is larger than the download limit")
+        with client.stream(
+            "GET", file_url, headers={"Referer": f"https://{site}/"}
+        ) as image:
+            image.raise_for_status()
+            buf = bytearray()
+            for chunk in image.iter_bytes():
+                if len(buf) + len(chunk) > DIRECT_IMAGE_LIMIT_BYTES:
+                    raise ValueError("Moebooru image is larger than the download limit")
+                buf.extend(chunk)
         name = unquote(urlsplit(file_url).path.rsplit("/", 1)[-1])
-        return [(image.content, name)]
+        return [(bytes(buf), name)]
     finally:
         if owned:
             client.close()
@@ -103,7 +109,13 @@ def _download_images(url: str) -> list[tuple[bytes, str]]:
         raise ValueError("only single booru post links are downloaded")
     with tempfile.TemporaryDirectory(prefix="daphne-booru-") as work:
         images = []
-        for path in download_gallery(url, work):
+        for path in download_gallery(
+            url,
+            work,
+            ["--range", f"1-{MEDIA_GROUP_LIMIT}", "--filesize-max", "50M"],
+        ):
+            if os.path.getsize(path) > DIRECT_IMAGE_LIMIT_BYTES:
+                continue
             with open(path, "rb") as handle:
                 images.append((handle.read(), path.rsplit("/", 1)[-1]))
     return images

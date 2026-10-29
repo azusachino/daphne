@@ -76,6 +76,8 @@ logger = logging.getLogger(__name__)
 # so one big transfer cannot starve the executor for everyone else.
 _global_download_semaphore: Optional[asyncio.Semaphore] = None
 _user_download_semaphores: dict[int, asyncio.Semaphore] = {}
+_active_card_downloads: set[str] = set()
+MAX_USER_SEMAPHORES = 1024
 
 
 def _get_global_download_semaphore() -> asyncio.Semaphore:
@@ -88,6 +90,11 @@ def _get_global_download_semaphore() -> asyncio.Semaphore:
 def _get_user_download_semaphore(user_id: int) -> asyncio.Semaphore:
     sem = _user_download_semaphores.get(user_id)
     if sem is None:
+        if len(_user_download_semaphores) >= MAX_USER_SEMAPHORES:
+            for uid in [
+                k for k, v in _user_download_semaphores.items() if not v.locked()
+            ]:
+                _user_download_semaphores.pop(uid, None)
         sem = asyncio.Semaphore(max_user_concurrent_downloads())
         _user_download_semaphores[user_id] = sem
     return sem
@@ -495,10 +502,10 @@ async def media_message_handler(
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
     logger.info(
-        "Received message from user_id=%s in chat_id=%s: %r",
+        "Received message from user_id=%s in chat_id=%s (%d chars)",
         user_id,
         chat_id,
-        message.text,
+        len(message.text),
     )
 
     text = preprocess_text_links(message.text)
@@ -652,6 +659,9 @@ async def download_button_callback(
         return
 
     short_id = data[3:]
+    if short_id in _active_card_downloads:
+        await query.answer("Download is already in progress.", show_alert=True)
+        return
     entry = CALLBACK_URL_CACHE.get(short_id)
     if not entry:
         await query.answer("Error: Video link has expired.", show_alert=True)
@@ -669,6 +679,25 @@ async def download_button_callback(
         await query.answer(access.reason or "Permission denied", show_alert=True)
         return
 
+    _active_card_downloads.add(short_id)
+    try:
+        await _run_card_download(
+            query, context, short_id, url, metadata, user_id, chat_id, sender
+        )
+    finally:
+        _active_card_downloads.discard(short_id)
+
+
+async def _run_card_download(
+    query,
+    context: TelegramContext,
+    short_id: str,
+    url: str,
+    metadata: dict,
+    user_id: int,
+    chat_id: int,
+    sender: Optional[str],
+) -> None:
     # Acknowledge the callback query immediately to avoid loading animation on button
     await query.answer()
 
@@ -831,7 +860,12 @@ async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:
     user_id = update.effective_user.id if update.effective_user else None
     chat_id = update.effective_chat.id if update.effective_chat else None
     if update.message is not None:
-        kind = f"message: {update.message.text!r}"
+        text = update.message.text or ""
+        kind = (
+            f"message: {text!r}"
+            if text.startswith("/")
+            else f"message: <{len(text)} chars>"
+        )
     elif update.callback_query is not None:
         kind = f"callback_query: {update.callback_query.data!r}"
     else:

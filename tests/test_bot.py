@@ -117,6 +117,22 @@ class TestLogUpdate(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_does_not_log_plain_text_prose(self):
+        update = MagicMock()
+        update.update_id = 44
+        update.effective_user.id = 111
+        update.effective_chat.id = -100
+        update.message.text = "private chat message secret text"
+        update.callback_query = None
+        update.inline_query = None
+
+        with self.assertLogs("daphne.bot", level="INFO") as cm:
+            await log_update(update, MagicMock())
+
+        self.assertTrue(
+            all("private chat message secret text" not in line for line in cm.output)
+        )
+
     async def test_logs_callback_query_updates(self):
         update = MagicMock()
         update.update_id = 43

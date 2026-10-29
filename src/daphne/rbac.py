@@ -91,6 +91,7 @@ class RbacService:
             self.help_limit = 10
 
         self.action_timestamps: Dict[Tuple[int, str], list[float]] = {}
+        self.max_tracked_keys = 2048
 
     @classmethod
     def load(cls, path: str | None = None) -> "RbacService":
@@ -192,6 +193,14 @@ class RbacService:
                 return AccessResult(AccessStatus.ALLOWED)
             else:
                 if not dry_run:
+                    if len(self.rate_limiter) >= self.max_tracked_keys:
+                        stale = [
+                            k
+                            for k, (_, st) in self.rate_limiter.items()
+                            if now - st >= 60.0
+                        ]
+                        for k in stale or [next(iter(self.rate_limiter))]:
+                            self.rate_limiter.pop(k, None)
                     self.rate_limiter[limit_key] = (1, now)
                 logger.info(
                     f"RBAC: [ALLOWED] public command (first request) for user={user_id} cmd={command}"
@@ -276,6 +285,17 @@ class RbacService:
             )
 
         if not dry_run:
+            if (
+                key not in self.action_timestamps
+                and len(self.action_timestamps) >= self.max_tracked_keys
+            ):
+                stale = [
+                    k
+                    for k, ts in self.action_timestamps.items()
+                    if not ts or ts[-1] <= one_hour_ago
+                ]
+                for k in stale or [next(iter(self.action_timestamps))]:
+                    self.action_timestamps.pop(k, None)
             active_timestamps.append(now)
             self.action_timestamps[key] = active_timestamps
         return AccessResult(AccessStatus.ALLOWED)

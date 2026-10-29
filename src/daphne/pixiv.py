@@ -183,18 +183,32 @@ async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
             return None
 
 
+PIXIV_IMAGE_HOSTS = ("pixiv.cat", "i.pximg.net", "s.pximg.net")
+PIXIV_MAX_IMAGE_BYTES = 50 * 1024 * 1024
+
+
 async def _fetch_pixiv_candidates(
     artwork_id: str, candidates: list[str]
 ) -> tuple[bytes, str]:
     headers = {"User-Agent": USER_AGENT, "Referer": "https://www.pixiv.net/"}
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for url in candidates:
+            parsed = urlparse(url)
+            if (
+                parsed.scheme != "https"
+                or (parsed.hostname or "").lower() not in PIXIV_IMAGE_HOSTS
+            ):
+                continue
             try:
                 response = await client.get(url, headers=headers, timeout=30.0)
                 if response.status_code == 200:
+                    if len(response.content) > PIXIV_MAX_IMAGE_BYTES:
+                        raise ValueError("Pixiv image exceeds size limit")
                     return response.content, url
             except httpx.HTTPError as exc:
-                logger.info("Pixiv image candidate failed (%s): %s", url, exc)
+                logger.info(
+                    "Pixiv image candidate failed (%s): %s", parsed.hostname, exc
+                )
     raise ValueError(f"No Pixiv image found for artwork {artwork_id}")
 
 

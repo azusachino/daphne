@@ -51,6 +51,7 @@ def download_gallery(
             check=True,
             timeout=180.0,
             env=tool_env(),
+            start_new_session=True,
         )
     except subprocess.CalledProcessError as e:
         logger.warning(
