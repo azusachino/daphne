@@ -39,9 +39,9 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 - **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
 - **🎬 Video downloads** — YouTube and other sites use `yt-dlp` (two passes), then `you-get` and `lux`. A file whose duration falls short of the metadata is retried. Bilibili has its own chain, described below.
 - **📺 Bilibili chain** — disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last), with a duration check on every engine. Audio ends in yutto too. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
-- **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
+- **🎧 Audio extraction** — `/audio <link>` pulls the audio track: MP3 from most sites, M4A from Bilibili.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
-- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
+- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube links from _any_ chat (Bilibili is paste-only: it has no direct stream URL for inline results) (user-allowlisted).
 - **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured statically in `config.toml`. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a _Queued…_ notice.
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
@@ -70,7 +70,7 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 | ----------------- | ------------------------------------------------------------------- |
 | Paste a link      | Auto-detect the platform and convert it in the chat                 |
 | `/start`          | Welcome message; answers even before RBAC has whitelisted you       |
-| `/audio <link>`   | Extract the audio track as MP3                                      |
+| `/audio <link>`   | Extract the audio track (MP3 or M4A)                                |
 | `/gallery <link>` | Download an image gallery and send it as media group(s)             |
 | `/help`           | Show usage                                                          |
 | `@daphne <link>`  | **Inline mode** — convert from any chat (requires `inline_convert`) |

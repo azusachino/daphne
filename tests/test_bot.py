@@ -731,8 +731,10 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         }
         mock_download.return_value = "/tmp/video.mp4"
 
+        # The card stored the link and its metadata, so the button does not look them up again.
         bot_module.CALLBACK_URL_CACHE["testshort"] = (
-            "https://www.bilibili.com/video/BV1abc"
+            "https://www.bilibili.com/video/BV1abc",
+            mock_fetch_metadata.return_value,
         )
 
         query = AsyncMock()
@@ -985,6 +987,17 @@ class TestDownloadSlot(unittest.IsolatedAsyncioTestCase):
             async with bot_module.download_slot(7, on_wait=waited):
                 pass
             waited.assert_not_awaited()
+
+
+class TestCallbackCacheBound(unittest.TestCase):
+    def test_callback_cache_drops_the_oldest_entry_past_its_limit(self):
+        with (
+            patch.object(bot_module, "CALLBACK_URL_CACHE", {}),
+            patch.object(bot_module, "CALLBACK_CACHE_LIMIT", 2),
+        ):
+            for index in range(3):
+                bot_module._remember_callback(f"s{index}", f"url{index}", {})
+            self.assertEqual(list(bot_module.CALLBACK_URL_CACHE), ["s1", "s2"])
 
 
 if __name__ == "__main__":

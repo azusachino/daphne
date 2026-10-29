@@ -66,7 +66,18 @@ from daphne.tg import (
     new_router,
 )
 
-CALLBACK_URL_CACHE: dict[str, str] = {}
+TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+# A download button keeps its card's link and metadata here. The cache is bounded, so a
+# busy bot cannot grow it without limit; an evicted button reports that the link expired.
+CALLBACK_CACHE_LIMIT = 500
+CALLBACK_URL_CACHE: dict[str, tuple[str, dict]] = {}
+
+
+def _remember_callback(short_id: str, webpage_url: str, metadata: dict) -> None:
+    CALLBACK_URL_CACHE[short_id] = (webpage_url, metadata)
+    while len(CALLBACK_URL_CACHE) > CALLBACK_CACHE_LIMIT:
+        CALLBACK_URL_CACHE.pop(next(iter(CALLBACK_URL_CACHE)))
+
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +201,7 @@ def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
     body = (
         "Send a Twitter/X, Pixiv, Bluesky, Instagram, TikTok, Bilibili, or "
         "YouTube link and I will convert it into Telegram-friendly media.\n\n"
-        "/audio <link> — extract audio as MP3\n"
+        "/audio <link> — extract the audio track\n"
         "/gallery <link> — download an image gallery"
     )
     return (
@@ -330,9 +341,8 @@ async def send_video_card(
     )
     buttons = []
     short_id = str(uuid.uuid4())[:8]
-    CALLBACK_URL_CACHE[short_id] = webpage_url
+    _remember_callback(short_id, webpage_url, metadata)
 
-    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
     size = _metadata_size(metadata)
     if size is None or size <= TG_HARD_LIMIT_BYTES:
         buttons.append(
@@ -362,8 +372,11 @@ async def handle_video_link(
     custom_metadata: dict | None = None,
 ) -> None:
     sender = sender_attribution(update.effective_user)
+    status_text = (
+        "Preparing download..." if custom_metadata else "Fetching video metadata..."
+    )
     status_msg = await update.message.reply_text(
-        HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+        HtmlMessage(sender=sender).text(status_text).render(),
         parse_mode=PARSE_MODE_HTML,
     )
 
@@ -468,8 +481,19 @@ async def handle_video_link(
         if duration is not None:
             kwargs["duration"] = int(float(duration))
 
-        with open(video_path, "rb") as video_file:
-            await context.bot.send_video(video=video_file, **kwargs)
+        try:
+            with open(video_path, "rb") as video_file:
+                await context.bot.send_video(video=video_file, **kwargs)
+        except Exception as exc:
+            logger.exception("Failed to send video")
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"Failed to upload video: {exc}")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
 
     await status_msg.delete()
     await delete_original_message(update)
@@ -602,7 +626,6 @@ async def media_message_handler(
         else:
             # Fallback to sending the video card
             await status_msg.delete()
-            TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
             if size is not None and size > TG_HARD_LIMIT_BYTES:
                 reason = "Video is over Telegram's 2GiB limit"
             elif size is not None and size > max_upload_bytes:
@@ -1150,10 +1173,11 @@ async def download_button_callback(
         return
 
     short_id = data[3:]
-    url = CALLBACK_URL_CACHE.get(short_id)
-    if not url:
+    entry = CALLBACK_URL_CACHE.get(short_id)
+    if not entry:
         await query.answer("Error: Video link has expired.", show_alert=True)
         return
+    url, metadata = entry
 
     user_id = query.from_user.id if query.from_user else 0
     chat_id = query.message.chat.id if query.message else 0
@@ -1169,10 +1193,11 @@ async def download_button_callback(
     # Acknowledge the callback query immediately to avoid loading animation on button
     await query.answer()
 
-    # Edit the card message to indicate progress and remove the buttons
+    # Edit the card message to indicate progress and remove the buttons. The metadata
+    # came with the card, so the link is not looked up again.
     try:
         await query.edit_message_text(
-            HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+            HtmlMessage(sender=sender).text("Preparing download...").render(),
             parse_mode=PARSE_MODE_HTML,
             reply_markup=None,
         )
@@ -1180,22 +1205,6 @@ async def download_button_callback(
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     loop = asyncio.get_running_loop()
-    try:
-        metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-    except Exception:
-        logger.exception("Failed to fetch video metadata")
-        try:
-            await query.edit_message_text(
-                HtmlMessage(sender=sender)
-                .text("Video metadata fetch failed.")
-                .render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-        except Exception as exc:
-            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
-        return
-
-    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
     size = _metadata_size(metadata)
     if size is not None and size > TG_HARD_LIMIT_BYTES:
         try:
@@ -1505,7 +1514,7 @@ def build_dispatcher():
 BOT_COMMANDS = [
     BotCommand(command="start", description="Welcome & quick overview"),
     BotCommand(command="help", description="Show what daphne can do"),
-    BotCommand(command="audio", description="Extract audio as MP3 from a link"),
+    BotCommand(command="audio", description="Extract the audio track from a link"),
     BotCommand(command="gallery", description="Download an image gallery from a link"),
 ]
 
