@@ -337,6 +337,24 @@ def extract_hashtags(text: str) -> list[str]:
     return tags
 
 
+URL_OR_HASHTAG = re.compile(r"(https?://\S+)|#(\w+)")
+
+
+def without_tagged_hashtags(text: str, tags: list[str]) -> str:
+    """Drops the hashtags the tag line already shows, so each appears once. Links stay whole."""
+    shown = {tag.casefold() for tag in tags}
+
+    def drop(match: re.Match[str]) -> str:
+        if match.group(1):
+            return match.group(0)
+        return "" if match.group(2).casefold() in shown else match.group(0)
+
+    kept = URL_OR_HASHTAG.sub(drop, text)
+    return "\n".join(
+        re.sub(r"[ \t]{2,}", " ", line).strip() for line in kept.splitlines()
+    )
+
+
 def build_caption(
     tweet_text: str, tweet_url: str, sender: str | None, username: str | None = None
 ) -> str:
@@ -349,6 +367,7 @@ def build_caption(
     if slug and slug not in tags:
         tags.append(slug)
 
+    tweet_text = without_tagged_hashtags(tweet_text, tags)
     if len(tweet_text) > 900:
         tweet_text = tweet_text[:900] + "..."
 
