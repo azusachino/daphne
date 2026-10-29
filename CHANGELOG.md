@@ -24,12 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metadata failures** show a short message in the chat; the underlying error goes to the logs.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
 - **Public, self-contained image.** The Dockerfile builds from public registries only. uv syncs the locked environment in the builder stage, and the runtime image carries uv for uvx.
-- **Non-root runtime.** The image runs as `daphne` (UID 10001) and `/app` is read-only to it. The Kubernetes manifest runs the container as the same UID and caps the `/tmp` volume at 4 GiB.
+- **Non-root runtime.** The image runs as `daphne` (UID 10001) and `/app` is read-only to it.
 - **CI** runs the lockfile check, lint, format and unit tests. The image job is removed.
 
 ### Removed
 
-- `/audio` and `/gallery` commands, and inline mode, to keep the bot to paste-and-convert. The `extract_audio`, `download_gallery` and `inline_convert` permissions go with them, and so does gallery-dl.
+- `/audio` and `/gallery` commands, and inline mode, to keep the bot to paste-and-convert. The `extract_audio`, `download_gallery` and `inline_convert` permissions go with them. gallery-dl stays as a reserved dependency, with no command wired to it yet.
+- The Kubernetes manifests in `deploy/k3s`. The running copy lives in the cluster repository, so this repository no longer keeps a second one.
 - The Phixiv metadata lookup, which no longer answers; Pixiv metadata comes from Pixiv's own API.
 - Nix flake (`flake.nix`) and `Dockerfile.base`.
 
