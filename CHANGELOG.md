@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
 - Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
-- **Bilibili fallback**: Bilibili links try yt-dlp first, then yutto, and fail with a message naming both when both fail. yutto runs only for Bilibili; its exit code is ignored, so a missing output file counts as failure.
+- **Bilibili download chain**: Bilibili has its own chain, separate from YouTube: disk cache (6 hours), then the native player API (480p for anonymous requests), then yutto, then yt-dlp. Every engine's file must pass the duration check, and only complete files are cached. Audio follows the same order. See `docs/bilibili-download-chain.md`.
 - **Log redaction**: Request URLs, with or without a scheme, are cut to their host, and Telegram bot tokens and secret query values (token, key, secret, sessdata, password, including compound names) are redacted from every log line and traceback.
 - **Bilibili hardening**: yutto runs in its own process group, and yt-dlp and yutto get a scrubbed environment without the bot token. Every yt-dlp and yutto call is bounded by a timeout that kills its whole process group, so no child keeps writing after a timeout. When neither download is complete, the longer file wins. Failed X and Bluesky requests set the failure reaction on every failure stage, including a malformed Bluesky thread, and the reply is footered. gallery-dl gets the same scrubbed environment.
 - **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A failed video metadata lookup no longer produces a card with a Download button; the original link is kept.
 - **Failed video downloads from a card**: The error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
+- **X caption tag dedupe**: A hashtag shown on the tag line is removed from the post text above it, so each appears once. Links stay whole, so a `#fragment` inside a URL is kept.
 
 ## [0.4.3] - 2026-10-05
 

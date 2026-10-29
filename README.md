@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-134%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -32,12 +32,13 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Daphne uses **purpose-built handlers per platform** for clean native rendering, and `yt-dlp` for general video and audio downloads. It keeps **zero persistent state** — no database, no cache, secrets in the environment, everything else in a single `config.toml` (see [RBAC.md](RBAC.md)).
+Daphne uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` for general video and audio downloads, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
 
 ## Features
 
 - **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
-- **🎬 Video downloads** — `yt-dlp` with automatic dimension/duration probing and truncation detection; an incomplete result is retried with yt-dlp.
+- **🎬 Video downloads** — YouTube and other sites use `yt-dlp` (two passes). A file whose duration falls short of the metadata is retried. Bilibili has its own chain, described below.
+- **📺 Bilibili chain** — disk cache → native player API (480p anonymous) → yutto → yt-dlp, with a duration check on every engine. Audio follows the same order. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
 - **🎧 Audio extraction** — `/audio <link>` pulls the audio track and encodes it to MP3 with performer/title metadata.
 - **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
 - **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube/Bilibili links from _any_ chat (user-allowlisted).
@@ -46,6 +47,7 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform tag plus an author hashtag, and requester attribution.
 - **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
+- **🏷️ Clean X/Twitter captions** — a hashtag shown on the tag line is removed from the post text above it, so each appears once.
 
 ## Supported Platforms
 
@@ -53,7 +55,8 @@ Daphne uses **purpose-built handlers per platform** for clean native rendering, 
 | ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
 | **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (preview + up to 3 media) |   ✅   |
 | **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
-| **YouTube · Bilibili · b23** | `yt-dlp`                        | Video downloads                                  |   ✅   |
+| **YouTube**                    | `yt-dlp` (two passes)           | Video downloads                                  |   ✅   |
+| **Bilibili · b23**             | Native player API → yutto → yt-dlp | Video and audio (480p anonymous)              |   ✅   |
 | **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |
 | **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
 | **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
@@ -100,7 +103,7 @@ The image builds from public registries only. It needs Docker or Podman and no l
 docker build -t daphne:latest .        # or: podman build -t daphne:latest .
 ```
 
-Each build installs the latest yt-dlp. The image runs as an unprivileged user (UID 10001) and reads its configuration from `/app/config.toml`. Provide `config/config.toml` and a `.env` with your bot credentials, as `docker-compose.yml` expects, then run:
+The image runs as an unprivileged user (UID 10001) and reads its configuration from `/app/config.toml`. Provide `config/config.toml` and a `.env` with your bot credentials, as `docker-compose.yml` expects, then run:
 
 ```bash
 docker run -d --name daphne --restart unless-stopped \
@@ -170,13 +173,13 @@ make test     # Run unit tests
 make ready    # fmt + lint + test
 ```
 
-- **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries no uv.
+- **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries uv only so `uvx` can start yt-dlp and yutto.
 - Every `subprocess` call to an external downloader (`yt-dlp`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
 
 ## Architecture
 
 - **Python 3.14**, `aiogram`, polling-based.
-- **Stateless**: no database; secrets in env, everything else in `config.toml`.
+- **Stateless**: no database; secrets in env, everything else in `config.toml`. The Bilibili cache lives in the temp directory.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 
 ## License
