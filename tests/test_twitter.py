@@ -7,6 +7,7 @@ from daphne.twitter import (
     article_media_lists,
     article_preview_text,
     build_caption,
+    extract_hashtags,
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
@@ -884,6 +885,21 @@ class TestCaptionHashtagDedupe(unittest.TestCase):
         self.assertEqual(
             without_tagged_hashtags(text, ["space"]),
             "Read https://example.com/page#section and",
+        )
+
+    def test_a_hashtag_joined_to_a_word_leaves_no_stray_space(self):
+        self.assertEqual(without_tagged_hashtags("word #tag.", ["tag"]), "word.")
+
+    def test_a_line_of_only_shown_hashtags_is_removed_and_blank_lines_stay(self):
+        self.assertEqual(
+            without_tagged_hashtags("para one #x\n\npara two", ["x"]),
+            "para one\n\npara two",
+        )
+        self.assertEqual(without_tagged_hashtags("#a\n#b", ["a", "b"]), "")
+
+    def test_a_fragment_inside_a_link_is_not_a_tag(self):
+        self.assertEqual(
+            extract_hashtags("see https://x.com/a#frag and #real"), ["real"]
         )
 
     def test_hashtags_not_on_the_tag_line_stay_in_the_text(self):

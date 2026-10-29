@@ -326,10 +326,14 @@ async def send_photos(
     return True
 
 
+URL_RE = re.compile(r"https?://\S+")
+
+
 def extract_hashtags(text: str) -> list[str]:
     tags = []
     seen = set()
-    for raw_tag in re.findall(r"#(\w+)", text):
+    # A #fragment inside a link is part of the link, not a hashtag.
+    for raw_tag in re.findall(r"#(\w+)", URL_RE.sub(" ", text)):
         tag = raw_tag.lower()
         if tag not in seen:
             seen.add(tag)
@@ -337,11 +341,14 @@ def extract_hashtags(text: str) -> list[str]:
     return tags
 
 
-URL_OR_HASHTAG = re.compile(r"(https?://\S+)|#(\w+)")
+URL_OR_HASHTAG = re.compile(r"(https?://\S+)|[ \t]*#(\w+)")
 
 
 def without_tagged_hashtags(text: str, tags: list[str]) -> str:
-    """Drops the hashtags the tag line already shows, so each appears once. Links stay whole."""
+    """Drops the hashtags the tag line already shows, so each appears once. Links stay whole.
+
+    A line that held only such hashtags is removed; blank lines the author wrote stay.
+    """
     shown = {tag.casefold() for tag in tags}
 
     def drop(match: re.Match[str]) -> str:
@@ -349,10 +356,12 @@ def without_tagged_hashtags(text: str, tags: list[str]) -> str:
             return match.group(0)
         return "" if match.group(2).casefold() in shown else match.group(0)
 
-    kept = URL_OR_HASHTAG.sub(drop, text)
-    return "\n".join(
-        re.sub(r"[ \t]{2,}", " ", line).strip() for line in kept.splitlines()
-    )
+    lines = []
+    for line in text.splitlines():
+        kept = re.sub(r"[ \t]{2,}", " ", URL_OR_HASHTAG.sub(drop, line)).strip()
+        if kept or not line.strip():
+            lines.append(kept)
+    return "\n".join(lines).strip()
 
 
 def build_caption(
