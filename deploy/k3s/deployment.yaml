@@ -25,8 +25,8 @@ spec:
           image: docker.io/azusachino/daphne:0.3.4
           imagePullPolicy: IfNotPresent
           securityContext:
-            runAsUser: 1000
-            runAsGroup: 1000
+            runAsUser: 10001
+            runAsGroup: 10001
           envFrom:
             - secretRef:
                 name: daphne-secret
@@ -98,4 +98,5 @@ spec:
             name: daphne-tg-api-entrypoint
             defaultMode: 0755
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 4Gi  # the 2 GiB Bilibili cache, uv tool environments, and downloads

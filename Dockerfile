@@ -11,7 +11,8 @@ FROM ${PYTHON_IMAGE} AS base
 
 RUN apk add --no-cache ca-certificates curl deno ffmpeg tar tini tzdata
 
-# lux is a Go binary with no apk package. Each build takes the latest GitHub release.
+# lux is a Go binary with no apk package. Each build takes the latest GitHub release and
+# checks the tarball against the release's own checksums file before it is installed.
 ARG TARGETARCH
 RUN LUX_VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/iawia002/lux/releases/latest | sed 's#.*/v##')" \
     && case "${TARGETARCH}" in \
@@ -19,10 +20,15 @@ RUN LUX_VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github
       arm64) LUX_ARCH=arm64 ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && curl -fsSL "https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}/lux_${LUX_VERSION}_Linux_${LUX_ARCH}.tar.gz" \
-        | tar -xz -C /tmp \
+    && LUX_TAR="lux_${LUX_VERSION}_Linux_${LUX_ARCH}.tar.gz" \
+    && BASE="https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}" \
+    && cd /tmp \
+    && curl -fsSLO "${BASE}/${LUX_TAR}" \
+    && curl -fsSLO "${BASE}/lux_${LUX_VERSION}_checksums.txt" \
+    && grep " ${LUX_TAR}\$" "lux_${LUX_VERSION}_checksums.txt" | sha256sum -c - \
+    && tar -xzf "${LUX_TAR}" lux \
     && install -m 0755 /tmp/lux /usr/local/bin/lux \
-    && rm -f /tmp/lux
+    && rm -f /tmp/lux "/tmp/${LUX_TAR}" "/tmp/lux_${LUX_VERSION}_checksums.txt"
 
 FROM base AS builder
 
@@ -45,9 +51,11 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
 
-# uvx starts yt-dlp and yutto on demand, from PyPI, at the latest release. uv keeps
+# uvx starts yt-dlp, you-get and yutto on demand, from PyPI, at the latest release that is at
+# least three days old (UV_EXCLUDE_NEWER, the same window as uv.lock). uv keeps
 # its cache and tool environments in /tmp, since /app stays read-only.
-ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/tmp/uv-cache UV_TOOL_DIR=/tmp/uv-tools
+ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/tmp/uv-cache UV_TOOL_DIR=/tmp/uv-tools \
+    UV_EXCLUDE_NEWER=P3D
 
 # Place the virtual environment's bin directory on the PATH (daphne, gallery-dl)
 ENV PATH="/app/.venv/bin:$PATH"

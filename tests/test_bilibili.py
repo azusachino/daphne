@@ -406,6 +406,15 @@ class TestCanonicalUrl(unittest.TestCase):
 
 
 class TestLimitsAndCacheRules(BilibiliTestCase):
+    def test_a_store_leaves_no_temp_file_behind(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = os.path.join(out_dir, "BV1aMEj62EdA.mp4")
+        Path(path).write_bytes(b"video")
+        store_video(URL, path)
+        store_video(URL, path)
+        self.assertEqual(os.listdir(self.cache_dir), ["BV1aMEj62EdA-p1.mp4"])
+
     def test_oversize_video_is_not_cached(self):
         out_dir = tempfile.mkdtemp(prefix="bili-out-")
         self.addCleanup(shutil.rmtree, out_dir, True)

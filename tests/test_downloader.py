@@ -437,7 +437,7 @@ def _media(folder: str, name: str) -> str:
 
 
 class TestBilibiliChain(unittest.TestCase):
-    """Cache, then native player API, then yutto, then yt-dlp. Only complete files are cached."""
+    """Cache, then native, yt-dlp, you-get, lux, and yutto last. Only complete files are cached."""
 
     BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
 

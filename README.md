@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-192%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -173,7 +173,7 @@ make test     # Run unit tests
 make ready    # fmt + lint + test
 ```
 
-- **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries uv only so `uvx` can start yt-dlp and yutto.
+- **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries uv only so `uvx` can start yt-dlp, you-get and yutto.
 - Every `subprocess` call to an external downloader (`yt-dlp`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
 
 ## Architecture

@@ -37,7 +37,7 @@ flowchart TD
 | 4 | lux (image binary) | Writes its own file into the engine folder. | Varies by extractor. |
 | 5 | yutto (`uvx yutto`), **last** | Bilibili-specific downloader with its own API client. Its exit code is ignored; the output file decides. | Anonymous requests get the same risk control. |
 
-Metadata comes from pagelist: duration, size, and link. Title and uploader are empty, because the view endpoint is refused. yt-dlp `--dump-json` runs only if the native call fails.
+Metadata comes from pagelist: the part's name as the title, the duration, and the link. The uploader is empty and no size is known, because the view endpoint is refused. So a Bilibili paste always shows a card. yt-dlp `--dump-json` runs only if the native call fails.
 
 Audio order: native audio track → yt-dlp audio extract → lux `--audio-only` → yutto
 `--audio-only` (last). you-get has no audio-only mode, so it is skipped for audio.
@@ -97,6 +97,7 @@ sequenceDiagram
   a guarantee.
 - **Bangumi and paid content:** not handled natively. The native engine refuses them, and
   the chain falls through.
+- **Stream limits:** each native stream must finish within 300 seconds and stay under 2 GiB, and a stream that breaks either limit is treated as a failed host.
 - **Versions:** yt-dlp, you-get, and yutto run at the latest PyPI release, refreshed at
   bot start. lux is the latest GitHub release, resolved at each image build.
 - **Cache:** lives in `$TMPDIR/daphne-bilibili`. This is the only state Daphne keeps.
