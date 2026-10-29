@@ -369,7 +369,6 @@ def _fetch_tracks(
     ref: dict[str, str],
     page: int,
     work: str,
-    want_video: bool,
 ) -> tuple[str, str, str]:
     """Download the chosen streams into ``work``. Returns (ident, video path, audio path)."""
     _ensure_visitor_session(client)
@@ -381,8 +380,7 @@ def _fetch_tracks(
     audio = pick_audio_stream(dash)
     video_path = os.path.join(work, "video.m4s")
     audio_path = os.path.join(work, "audio.m4s")
-    if want_video:
-        _download_stream(client, pick_video_stream(dash), video_path)
+    _download_stream(client, pick_video_stream(dash), video_path)
     _download_stream(client, audio, audio_path)
     return _ident(ref), video_path, audio_path
 
@@ -513,9 +511,7 @@ def download_native_video(
         ref, page = video_ref(_expand_short_link(open_client, url))
         work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
         try:
-            ident, video_path, audio_path = _fetch_tracks(
-                open_client, ref, page, work, want_video=True
-            )
+            ident, video_path, audio_path = _fetch_tracks(open_client, ref, page, work)
             out_path = os.path.join(out_dir, f"{ident}.mp4")
             _ffmpeg(
                 [
@@ -534,25 +530,6 @@ def download_native_video(
                     out_path,
                 ]
             )
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    return out_path
-
-
-def download_native_audio(
-    url: str, out_dir: str, client: Optional[httpx.Client] = None
-) -> str:
-    """Download only the audio track of a Bilibili video as an m4a file."""
-    os.makedirs(out_dir, exist_ok=True)
-    with _open(client) as open_client:
-        ref, page = video_ref(_expand_short_link(open_client, url))
-        work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
-        try:
-            ident, _, audio_path = _fetch_tracks(
-                open_client, ref, page, work, want_video=False
-            )
-            out_path = os.path.join(out_dir, f"{ident}.m4a")
-            _ffmpeg(["-i", audio_path, "-vn", "-c:a", "copy", out_path])
         finally:
             shutil.rmtree(work, ignore_errors=True)
     return out_path

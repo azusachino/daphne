@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
-- Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
+- Metadata failures show a short message in the chat; the underlying error goes to the logs.
 - **Bilibili download chain**: Bilibili has its own chain, separate from YouTube: disk cache (6 hours), then the native player API (480p for anonymous requests), then yt-dlp, you-get, lux, and yutto last. Every engine's file must pass the duration check, and only complete files are cached. Audio follows the same order. See `docs/bilibili-download-chain.md`.
 - **Bilibili native path reads parts from pagelist**: the view endpoint refuses requests, so the cid and duration come from pagelist, and the title is the part's name. The uploader stays empty until view works again.
 - **lux and you-get are back** as fallbacks after yt-dlp for other sites. lux is the latest GitHub release, resolved at each image build, so nothing is pinned.
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `/audio` and `/gallery` commands, and inline mode, to keep the bot to paste-and-convert. Audio extraction and galleries are no longer offered. gallery-dl is gone with them.
 - The Phixiv metadata lookup, which no longer answers; Pixiv metadata comes from Pixiv's own API.
 - Nix flake (`flake.nix`) and `Dockerfile.base`.
 

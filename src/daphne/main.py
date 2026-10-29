@@ -87,7 +87,7 @@ def run_init(local: bool = False) -> None:
 [app]
 # telegram_api_url = "http://localhost:8081"
 video_upload_limit_mb = 256
-# Heavy-download concurrency guard (yt-dlp / gallery-dl):
+# Heavy-download concurrency guard (yt-dlp, you-get, lux, yutto):
 # max_concurrent_downloads = 3        # across the whole bot
 # max_user_concurrent_downloads = 1   # per user
 
@@ -98,14 +98,11 @@ public_commands = ["help"]
 permissions = ["*"]
 
 # Example non-admin roles, graduated from minimal to full. Available
-# permissions include: convert_link, fetch_metadata, preview_video,
-# download_video, extract_audio, download_gallery, inline_convert. NOTE:
-# inline_convert is user-level only — inline queries carry no chat_id, so it
-# must be granted via [rbac.users], not [rbac.chats].
+# permissions: convert_link, fetch_metadata, preview_video, download_video.
 # [rbac.roles.default]
 # permissions = ["convert_link"]
 # [rbac.roles.power_user]
-# permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
+# permissions = ["convert_link", "preview_video", "fetch_metadata", "download_video"]
 
 [rbac.users]
 # Add user IDs mapping to roles here. Example:

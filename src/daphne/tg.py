@@ -23,7 +23,6 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     FSInputFile,
-    InlineQuery,
     InputMediaPhoto,
     LinkPreviewOptions,
     Message,
@@ -204,25 +203,6 @@ class TelegramCallbackQuery:
         return await self._query.message.edit_text(text, **kwargs)
 
 
-class TelegramInlineQuery:
-    def __init__(self, query: InlineQuery):
-        self._query = query
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._query, name)
-
-    @property
-    def from_user(self) -> Any:
-        return self._query.from_user
-
-    @property
-    def query(self) -> str:
-        return self._query.query
-
-    async def answer(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._query.answer(*args, **kwargs)
-
-
 class TelegramUpdate:
     def __init__(self, update: Update):
         self._update = update
@@ -232,9 +212,6 @@ class TelegramUpdate:
             if update.callback_query
             else None
         )
-        self.inline_query = (
-            TelegramInlineQuery(update.inline_query) if update.inline_query else None
-        )
         self.update_id = update.update_id
 
     @property
@@ -243,8 +220,6 @@ class TelegramUpdate:
             return self.message.from_user
         if self.callback_query:
             return self.callback_query.from_user
-        if self.inline_query:
-            return self.inline_query.from_user
         return None
 
     @property
@@ -272,10 +247,6 @@ def adapt_message(message: Message) -> TelegramUpdate:
 
 def adapt_callback_query(query: CallbackQuery) -> TelegramUpdate:
     return TelegramUpdate(Update(update_id=0, callback_query=query))
-
-
-def adapt_inline_query(query: InlineQuery) -> TelegramUpdate:
-    return TelegramUpdate(Update(update_id=0, inline_query=query))
 
 
 def context_for(bot: TelegramBot, args: list[str] | None = None) -> TelegramContext:

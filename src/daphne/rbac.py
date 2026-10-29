@@ -71,11 +71,6 @@ class RbacService:
             self.convert_link_limit = 60
 
         try:
-            self.extract_audio_limit = int(config_dict.get("extract_audio_limit", 10))
-        except TypeError, ValueError:
-            self.extract_audio_limit = 10
-
-        try:
             self.preview_video_limit = int(config_dict.get("preview_video_limit", 10))
         except TypeError, ValueError:
             self.preview_video_limit = 10
@@ -252,7 +247,6 @@ class RbacService:
         # Define limits for actions
         limits = {
             "convert_link": self.convert_link_limit,
-            "extract_audio": self.extract_audio_limit,
             "download_video": self.download_video_limit,
             "preview_video": self.preview_video_limit,
             "fetch_metadata": self.fetch_metadata_limit,

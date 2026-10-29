@@ -39,8 +39,6 @@ flowchart TD
 
 Metadata comes from pagelist: the part's name as the title, the duration, and the link. The uploader is empty and no size is known, because the view endpoint is refused. So a Bilibili paste always shows a card. yt-dlp `--dump-json` runs only if the native call fails.
 
-Audio order: native audio track → yt-dlp audio extract → lux `--audio-only` → yutto
-`--audio-only` (last). you-get has no audio-only mode, so it is skipped for audio.
 
 ## Sequence
 
@@ -105,7 +103,7 @@ sequenceDiagram
 ## Where it lives
 
 - `src/daphne/bilibili.py`: native API client, visitor session, backoff, disk cache.
-- `src/daphne/downloader.py`: `_download_bilibili_video`, `_download_bilibili_audio`,
+- `src/daphne/downloader.py`: `_download_bilibili_video`,
   `_run_bilibili_chain`, the per-engine helpers, and the generic yt-dlp → you-get → lux path.
 - `Dockerfile`: installs lux from its latest release.
 - `tests/test_downloader.py` (`TestBilibiliChain`) and `tests/test_bilibili.py`.

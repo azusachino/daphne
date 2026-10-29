@@ -57,7 +57,7 @@ COPY --from=builder /app/src ./src
 ENV UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/tmp/uv-cache UV_TOOL_DIR=/tmp/uv-tools \
     UV_EXCLUDE_NEWER=P3D
 
-# Place the virtual environment's bin directory on the PATH (daphne, gallery-dl)
+# Place the virtual environment's bin directory on the PATH (daphne)
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Run as an unprivileged user. /app stays root-owned, so the bot can read but not modify it.

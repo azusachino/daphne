@@ -1,12 +1,12 @@
 # Role-Based Access Control (RBAC) in Daphne
 
-Daphne features a multi-tenant Role-Based Access Control (RBAC) mechanism to secure commands, link conversion, inline queries, and callback downloads. It restricts access based on both the requesting user and the chat (group/channel/direct message) context.
+Daphne features a multi-tenant Role-Based Access Control (RBAC) mechanism to secure commands, link conversion, and callback downloads. It restricts access based on both the requesting user and the chat (group/channel/direct message) context.
 
 ---
 
 ## 1. Access Evaluation Flow
 
-When a user triggers a command (e.g., `/gallery`, `/audio`), Daphne's [RbacService](src/daphne/rbac.py#L31) evaluates access in the following order:
+When a user triggers a command or pastes a link, Daphne's [RbacService](src/daphne/rbac.py#L31) evaluates access in the following order:
 
 ```mermaid
 graph TD
@@ -34,8 +34,7 @@ graph TD
 3. **Chat Whitelist Enforcement**: The chat/group must be whitelisted in the configuration. If the chat ID is not found, access is immediately denied.
 4. **Chat-Level Permission Fallback**: If the chat's role is granted permission for the command, **all users** in that chat are allowed to run it.
 5. **User-Level Permission**: If the chat's role does not grant permission, but the user is individually whitelisted and their user role has permission, access is granted.
-6. **Inline Queries**: Inline queries have no chat context, so Daphne checks `inline_convert` against the user role with `chat_id = 0`; chat roles cannot authorize inline mode.
-7. **Denial**: If none of the conditions above are met, the request is denied.
+6. **Denial**: If none of the conditions above are met, the request is denied.
 
 ---
 
@@ -52,7 +51,6 @@ public_commands = ["help"]
 
 # Resource quotas (rolling 1-hour window)
 convert_link_limit = 60
-extract_audio_limit = 10
 download_video_limit = 5
 preview_video_limit = 10
 fetch_metadata_limit = 30
@@ -66,13 +64,10 @@ permissions = ["*"] # Asterisk allows all commands
 permissions = ["convert_link"]
 
 [rbac.roles.standard]
-permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio"]
+permissions = ["convert_link", "preview_video", "fetch_metadata"]
 
 [rbac.roles.power_user]
-permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
-
-[rbac.roles.inline_user]
-permissions = ["inline_convert"]
+permissions = ["convert_link", "preview_video", "fetch_metadata", "download_video"]
 
 # Map specific Telegram user IDs to roles
 [rbac.users]
@@ -94,13 +89,10 @@ permissions = ["inline_convert"]
 | Command | Permission Name | Description |
 | :--- | :--- | :--- |
 | `help` | `help` | Outputs the bot help instructions and usage limits. |
-| (Link detection / `/fix`) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram) into native Telegram media. |
-| `/audio <link>` | `extract_audio` | Extracts audio tracks from video files and outputs an MP3. |
+| (Link detection) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram) into native Telegram media. |
 | (Video callback query) | `download_video` | Downloads and converts generic video links (YouTube, Bilibili) on-demand. |
 | (Video auto-preview) | `preview_video` | Automatically downloads and uploads video natively if under size limit. |
 | (Video link detection) | `fetch_metadata` | Fetches metadata for video links and generates a preview info card with a download button. |
-| `/gallery <link>` | `download_gallery` | Downloads an image gallery and sends it as chunked Telegram media groups. |
-| `@daphne <link>` | `inline_convert` | Resolves supported Twitter/X, Instagram, and YouTube/Bilibili links in inline mode. User-level permission only. |
 
 ---
 

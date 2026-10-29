@@ -19,10 +19,10 @@ data:
     permissions = ["convert_link"]
 
     [rbac.roles.standard]
-    permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio"]
+    permissions = ["convert_link", "preview_video", "fetch_metadata"]
 
     [rbac.roles.power_user]
-    permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
+    permissions = ["convert_link", "preview_video", "fetch_metadata", "download_video"]
 
     [rbac.users]
     # Add your Telegram numeric user ID. Example:

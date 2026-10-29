@@ -32,48 +32,40 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Daphne uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` for general video and audio downloads, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
+Daphne turns a pasted link into media in the chat. It uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` and its fallbacks for YouTube, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
 
 ## Features
 
-- **🎯 Per-platform extractors** — bespoke handlers render photos, GIFs, videos, and carousels natively instead of dumping a link.
-- **🎬 Video downloads** — YouTube and other sites use `yt-dlp` (two passes), then `you-get` and `lux`. A file whose duration falls short of the metadata is retried. Bilibili has its own chain, described below.
-- **📺 Bilibili chain** — disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last), with a duration check on every engine. Audio ends in yutto too. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
-- **🎧 Audio extraction** — `/audio <link>` pulls the audio track: MP3 from most sites, M4A from Bilibili.
-- **🖼️ Image galleries** — `/gallery <link>` fetches full galleries via `gallery-dl` and posts them as chunked media groups.
-- **⚡ Inline mode** — `@daphne <link>` converts Twitter/X, Instagram, and YouTube links from _any_ chat (Bilibili is paste-only: it has no direct stream URL for inline results) (user-allowlisted).
-- **🔐 Role-based access control** — multi-tenant RBAC by user and chat ID, configured statically in `config.toml`. See [RBAC.md](RBAC.md).
-- **🚦 Concurrency guard** — per-user and global download semaphores so one large transfer never starves the others; users see a _Queued…_ notice.
-- **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) plus `upload_video`/`upload_photo`/`upload_audio` chat actions.
-- **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform tag plus an author hashtag, and requester attribution.
-- **🛟 Safety-first** — the original message is deleted **only** after a successful conversion and upload, so links are never lost on error.
-- **🏷️ Clean X/Twitter captions** — a hashtag shown on the tag line is removed from the post text above it, so each appears once.
+- **🔗 Paste a link** — Twitter/X, Pixiv, Bluesky, Instagram, TikTok, YouTube, and Bilibili links convert in the chat. Nothing else is needed.
+- **🎯 Per-platform handlers** — photos, GIFs, videos, and carousels render natively instead of dumping a link.
+- **🎬 Video** — YouTube through `yt-dlp` (two passes), then `you-get` and `lux`. A file that is shorter than its metadata says is retried.
+- **📺 Bilibili** — its own chain: disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last). Every engine's file must pass the duration check. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
+- **🃏 Media card** — when the size is unknown or too large for a direct send, the bot posts a card with title, uploader, duration, and **Download video** and **Open source** buttons.
+- **🔐 Role-based access control** — per user and per chat, configured statically in `config.toml`, with quotas per permission. See [RBAC.md](RBAC.md).
+- **🚦 Concurrency guard** — global and per-user download limits, so one large transfer never starves the others. Users see a _Queued…_ notice.
+- **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) and upload chat actions.
+- **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform hashtag, an author hashtag, and requester attribution. X captions show each hashtag once.
+- **🛟 Safety-first** — the original message is deleted **only** after a successful upload, so a link is never lost on error.
 
 ## Supported Platforms
 
-| Platform                     | Method                          | Media                                            | Inline |
-| ---------------------------- | ------------------------------- | ------------------------------------------------ | :----: |
-| **Twitter / X**              | FxTwitter API                   | Photos, GIFs, videos, Articles (preview + up to 3 media) |   ✅   |
-| **Instagram**                | `parth-dl` (GraphQL)            | Images, carousels, reels                         |   ✅   |
-| **YouTube**                    | `yt-dlp` (two passes), then `you-get`, `lux` | Video downloads                        |   ✅   |
-| **Bilibili · b23**             | Native API → yt-dlp → you-get → lux → yutto | Video and audio (480p anonymous)  |   ✅   |
-| **Pixiv**                    | Pixiv API + CDN / pixiv.cat fallback | Photo / media groups                        |   —    |
-| **Bluesky**                  | XRPC identity + HLS parsing     | Image carousels, videos                          |   —    |
-| **TikTok / Douyin**          | TikWM API (+ `yt-dlp` fallback) | Direct video                                     |   —    |
-| **Image galleries**          | `gallery-dl` (`/gallery`)       | Batched photo groups                             |   —    |
+| Platform            | Method                                       | Media                                                    |
+| ------------------- | -------------------------------------------- | -------------------------------------------------------- |
+| **Twitter / X**     | FxTwitter API                                | Photos, GIFs, videos, Articles (preview + up to 3 media) |
+| **Instagram**       | `parth-dl` (GraphQL), `yt-dlp` fallback      | Images, carousels, reels                                 |
+| **YouTube**         | `yt-dlp` (two passes), then `you-get`, `lux` | Video                                                    |
+| **Bilibili · b23**  | Native API → yt-dlp → you-get → lux → yutto  | Video (480p anonymous)                                   |
+| **Pixiv**           | Pixiv API + CDN / pixiv.cat fallback         | Photos and media groups                                  |
+| **Bluesky**         | XRPC identity + HLS parsing                  | Image carousels, videos                                  |
+| **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback)              | Direct video                                             |
 
-> Pixiv is intentionally excluded from inline: its CDN rejects hotlinking (requires a `Referer` header), and inline results hand Telegram a bare URL to fetch — so it works **in-chat** only.
+## Commands
 
-## Commands & Modes
-
-| Command           | Description                                                         |
-| ----------------- | ------------------------------------------------------------------- |
-| Paste a link      | Auto-detect the platform and convert it in the chat                 |
-| `/start`          | Welcome message; answers even before RBAC has whitelisted you       |
-| `/audio <link>`   | Extract the audio track (MP3 or M4A)                                |
-| `/gallery <link>` | Download an image gallery and send it as media group(s)             |
-| `/help`           | Show usage                                                          |
-| `@daphne <link>`  | **Inline mode** — convert from any chat (requires `inline_convert`) |
+| Command      | Description                                                   |
+| ------------ | ------------------------------------------------------------- |
+| Paste a link | Detect the platform and convert it in the chat                |
+| `/start`     | Welcome message; answers even before RBAC has whitelisted you |
+| `/help`      | Show usage                                                    |
 
 ## Quick Start
 
@@ -93,7 +85,6 @@ make up
 make down
 ```
 
-For inline mode, enable it once with `@BotFather` → `/setinline`.
 
 ### Container image
 
@@ -130,7 +121,7 @@ Non-secret runtime settings live in `config.toml`:
 # telegram_api_url = "http://localhost:8081"
 video_upload_limit_mb = 256
 
-# Heavy-download concurrency guard (yt-dlp / gallery-dl):
+# Heavy-download concurrency guard (yt-dlp, you-get, lux, yutto):
 # max_concurrent_downloads = 3        # across the whole bot
 # max_user_concurrent_downloads = 1   # per user
 
@@ -141,12 +132,11 @@ public_commands = ["help"]
 permissions = ["*"]
 
 # Example non-admin roles, graduated from minimal to full. Available
-# permissions: convert_link, fetch_metadata, preview_video, download_video,
-# extract_audio, download_gallery, inline_convert.
+# permissions: convert_link, fetch_metadata, preview_video, download_video.
 # [rbac.roles.default]
 # permissions = ["convert_link"]
 # [rbac.roles.power_user]
-# permissions = ["convert_link", "preview_video", "fetch_metadata", "extract_audio", "download_video"]
+# permissions = ["convert_link", "preview_video", "fetch_metadata", "download_video"]
 
 [rbac.users]
 # 111111111 = "admin"  # Replace with your Telegram user ID
@@ -161,9 +151,6 @@ If a detected video exceeds `video_upload_limit_mb`, Daphne replies with a decor
 
 Daphne resolves access in order: **admin bypass → public commands → chat-level role → user-level role**. Full authorization flows and fallback mechanics are documented in [RBAC.md](RBAC.md).
 
-> [!IMPORTANT]
-> **Inline mode is user-level only.** Telegram provides no `chat_id` for inline queries, so the chat tier of RBAC can never apply. Grant `inline_convert` via `[rbac.users]` (or admin), **not** `[rbac.chats]`. This is intentional — inline runs from anywhere in Telegram, outside any group boundary.
-
 ## Development
 
 ```bash
@@ -174,7 +161,7 @@ make ready    # fmt + lint + test
 ```
 
 - **mise** pins Python and uv (`.mise.toml`); `uv` is the local workspace tool. The image runs the locked environment synced in its builder stage and carries uv only so `uvx` can start yt-dlp, you-get and yutto.
-- Every `subprocess` call to an external downloader (`yt-dlp`, `gallery-dl`, `ffprobe`) carries an explicit timeout to protect the executor pool.
+- Every `subprocess` call to an external downloader (`yt-dlp`, `you-get`, `lux`, `yutto`, `ffprobe`) carries an explicit timeout to protect the executor pool.
 
 ## Architecture
 

@@ -76,7 +76,6 @@ def bilibili_headers() -> list[str]:
     ]
 
 
-AUDIO_EXTS = (".mp3", ".m4a", ".ogg", ".wav", ".opus", ".flac")
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".flv", ".mov", ".m4v", ".ts")
 # yt-dlp writes each stream of a merge as <id>.f<format>.<ext> before ffmpeg joins them. A
 # leftover one is video-only or audio-only, so it must never be taken as the result.
@@ -100,10 +99,6 @@ def _largest_file(out_dir: str, exts: tuple[str, ...]) -> Optional[str]:
             if size > best_size:
                 best, best_size = path, size
     return best
-
-
-def scan_largest_audio_file(out_dir: str) -> Optional[str]:
-    return _largest_file(out_dir, AUDIO_EXTS)
 
 
 def scan_largest_media_file(out_dir: str) -> Optional[str]:
@@ -346,30 +341,19 @@ def _run_yutto(args: list[str]) -> str:
     return ANSI_ESCAPE.sub("", stdout + stderr)
 
 
-def yutto_fetch(
-    url: str, out_dir: str, audio_only: bool = False
-) -> tuple[str, Optional[int]]:
-    """Fetch a Bilibili link with yutto into its own subdir.
+def yutto_fetch(url: str, out_dir: str) -> tuple[str, Optional[int]]:
+    """Fetch a Bilibili link with yutto into ``out_dir``.
 
     Returns the file and its probed duration. Success is judged by the file, because yutto
     exits 0 when it fails.
     """
-    target = out_dir
-    os.makedirs(target, exist_ok=True)
-    args = [*YUTTO_OPTIONS, "-d", target]
-    if audio_only:
-        args.append("--audio-only")
-    output = _run_yutto([*args, url])
-
-    if audio_only:
-        largest = scan_largest_audio_file(target)
-    else:
-        largest = scan_largest_media_file(target)
+    os.makedirs(out_dir, exist_ok=True)
+    output = _run_yutto([*YUTTO_OPTIONS, "-d", out_dir, url])
+    largest = scan_largest_media_file(out_dir)
     if not largest or os.path.getsize(largest) == 0:
         errors = [line.strip() for line in output.splitlines() if "ERROR" in line]
         raise RuntimeError(errors[-1] if errors else "yutto produced no file")
-    duration = None if audio_only else probe_video_duration(largest)
-    return largest, duration
+    return largest, probe_video_duration(largest)
 
 
 YT_DLP_VIDEO_FORMAT = (
@@ -481,15 +465,6 @@ def _ytdlp_bilibili_video(url: str, out_dir: str) -> str:
     return largest
 
 
-def _ytdlp_bilibili_audio(url: str, out_dir: str) -> str:
-    """yt-dlp, the second Bilibili audio engine."""
-    _run_cmd(_ytdlp_audio_cmd(url, out_dir, bilibili_headers()))
-    largest = scan_largest_audio_file(out_dir) or scan_largest_media_file(out_dir)
-    if not largest:
-        raise RuntimeError("yt-dlp produced no audio file")
-    return largest
-
-
 def _youget_video(url: str, out_dir: str) -> str:
     """you-get as a Bilibili video engine. It names the file itself, so the largest one wins."""
     _run_cmd([*YOU_GET_CMD, "--output-dir", out_dir, url])
@@ -505,15 +480,6 @@ def _lux_video(url: str, out_dir: str) -> str:
     largest = scan_largest_media_file(out_dir)
     if not largest:
         raise RuntimeError("lux produced no video file")
-    return largest
-
-
-def _lux_audio(url: str, out_dir: str) -> str:
-    """lux's own audio-only mode, as a Bilibili audio engine."""
-    _run_cmd([*LUX_CMD, "-o", out_dir, "--silent", "--audio-only", url])
-    largest = scan_largest_audio_file(out_dir) or scan_largest_media_file(out_dir)
-    if not largest:
-        raise RuntimeError("lux produced no audio file")
     return largest
 
 
@@ -543,19 +509,6 @@ def _download_bilibili_video(
     path, complete = _run_bilibili_chain(engines, out_dir, expected_duration)
     if complete:
         bilibili.store_video(link, path)
-    return path
-
-
-def _download_bilibili_audio(url: str, out_dir: str) -> str:
-    """The Bilibili audio chain: native audio track, yt-dlp, lux audio-only, then yutto."""
-    link = _canonical_bilibili(url)
-    engines: list[tuple[str, Callable[[str], str]]] = [
-        ("native", lambda folder: bilibili.download_native_audio(link, folder)),
-        ("yt-dlp", lambda folder: _ytdlp_bilibili_audio(link, folder)),
-        ("lux", lambda folder: _lux_audio(link, folder)),
-        ("yutto", lambda folder: yutto_fetch(link, folder, audio_only=True)[0]),
-    ]
-    path, _ = _run_bilibili_chain(engines, out_dir)
     return path
 
 
@@ -610,46 +563,6 @@ def download_video(
         return best_path
 
     raise RuntimeError(_classify_failure(attempt_errors))
-
-
-def _ytdlp_audio_cmd(
-    url: str, out_dir: str, extra_args: list[str] | tuple[str, ...] = ()
-) -> list[str]:
-    return [
-        *YT_DLP_CMD,
-        "-f",
-        "bestaudio/best",
-        "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--embed-metadata",
-        "--embed-thumbnail",
-        "--output",
-        f"{out_dir}/%(id)s.%(ext)s",
-        "--no-playlist",
-        "--restrict-filenames",
-        *YT_DLP_REMOTE_COMPONENTS,
-        *extra_args,
-        "--",
-        url,
-    ]
-
-
-def download_audio(url: str, out_dir: str) -> str:
-    os.makedirs(out_dir, exist_ok=True)
-    if is_bilibili_url(url):
-        return _download_bilibili_audio(url, out_dir)
-
-    _, stderr = _run_cmd(_ytdlp_audio_cmd(url, out_dir))
-    largest = scan_largest_audio_file(out_dir)
-    if largest:
-        return largest
-
-    largest_media = scan_largest_media_file(out_dir)
-    if largest_media:
-        return largest_media
-
-    raise RuntimeError(_classify_failure([stderr] if stderr else []))
 
 
 def probe_video_dimensions(

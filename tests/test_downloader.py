@@ -18,7 +18,6 @@ from daphne.downloader import (
     fetch_instagram_fallback_media,
     format_duration,
     format_video_caption,
-    download_audio,
     sanitize_video_url,
 )
 
@@ -418,16 +417,6 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(res, "/tmp/b.mp4")
         self.assertEqual(mock_run.call_count, 4)
 
-    @patch("daphne.downloader.scan_largest_audio_file")
-    @patch("subprocess.run")
-    def test_download_audio(self, mock_run, mock_scan):
-        mock_scan.return_value = "/tmp/audio.mp3"
-        res = download_audio("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/audio.mp3")
-        self.assertEqual(mock_run.call_count, 1)
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--extract-audio", cmd)
-
 
 def _media(folder: str, name: str) -> str:
     path = os.path.join(folder, name)
@@ -450,10 +439,6 @@ class TestBilibiliChain(unittest.TestCase):
             "daphne.bilibili.download_native_video",
             side_effect=BilibiliError("native unavailable"),
         )
-        self.native_audio = self._patch(
-            "daphne.bilibili.download_native_audio",
-            side_effect=BilibiliError("native unavailable"),
-        )
         self.yutto = self._patch(
             "daphne.downloader.yutto_fetch",
             side_effect=RuntimeError("yutto unavailable"),
@@ -462,20 +447,12 @@ class TestBilibiliChain(unittest.TestCase):
             "daphne.downloader._ytdlp_bilibili_video",
             side_effect=RuntimeError("yt-dlp unavailable"),
         )
-        self.ytdlp_audio = self._patch(
-            "daphne.downloader._ytdlp_bilibili_audio",
-            side_effect=RuntimeError("yt-dlp unavailable"),
-        )
         self.youget = self._patch(
             "daphne.downloader._youget_video",
             side_effect=RuntimeError("you-get unavailable"),
         )
         self.lux = self._patch(
             "daphne.downloader._lux_video",
-            side_effect=RuntimeError("lux unavailable"),
-        )
-        self.lux_audio = self._patch(
-            "daphne.downloader._lux_audio",
             side_effect=RuntimeError("lux unavailable"),
         )
         self._patch("daphne.bilibili.CACHE_DIR", new=self.cache_dir)
@@ -501,7 +478,7 @@ class TestBilibiliChain(unittest.TestCase):
         )
 
     def test_yutto_runs_when_native_fails(self):
-        self.yutto.side_effect = lambda link, folder, audio_only=False: (
+        self.yutto.side_effect = lambda link, folder: (
             _media(folder, "clip.mp4"),
             None,
         )
@@ -525,7 +502,7 @@ class TestBilibiliChain(unittest.TestCase):
         self.youget.side_effect = failing("you-get")
         self.lux.side_effect = failing("lux")
 
-        def yutto(link, folder, audio_only=False):
+        def yutto(link, folder):
             order.append("yutto")
             return (_media(folder, "last.mp4"), None)
 
@@ -535,7 +512,7 @@ class TestBilibiliChain(unittest.TestCase):
 
     def test_truncated_native_file_is_not_cached_and_yutto_completes(self):
         self.native.side_effect = lambda link, folder: _media(folder, "partial.mp4")
-        self.yutto.side_effect = lambda link, folder, audio_only=False: (
+        self.yutto.side_effect = lambda link, folder: (
             _media(folder, "full.mp4"),
             290,
         )
@@ -551,7 +528,7 @@ class TestBilibiliChain(unittest.TestCase):
 
     def test_longest_partial_is_returned_and_not_cached_when_nothing_is_complete(self):
         self.native.side_effect = lambda link, folder: _media(folder, "short.mp4")
-        self.yutto.side_effect = lambda link, folder, audio_only=False: (
+        self.yutto.side_effect = lambda link, folder: (
             _media(folder, "longer.mp4"),
             120,
         )
@@ -591,16 +568,6 @@ class TestBilibiliChain(unittest.TestCase):
                 download_video(self.BILI, self.test_dir)
         logged = str(warn.call_args_list)
         self.assertNotIn("BV1aMEj62EdA", logged)
-
-    def test_audio_uses_native_then_yutto_audio_only(self):
-        self.yutto.side_effect = lambda link, folder, audio_only=False: (
-            _media(folder, "song.m4a"),
-            None,
-        )
-        path = download_audio(self.BILI, self.test_dir)
-        self.assertEqual(os.path.basename(path), "song.m4a")
-        self.native_audio.assert_called_once()
-        self.assertTrue(self.yutto.call_args.kwargs["audio_only"])
 
     def test_native_metadata_is_used_first(self):
         with (
