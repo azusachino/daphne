@@ -6,9 +6,11 @@ import subprocess
 import random
 import logging
 import json
+import time
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
-from typing import Tuple, Optional
+from typing import Callable, Tuple, Optional
 
+from daphne import bilibili
 from daphne.messages import HtmlMessage, author_tag
 
 logger = logging.getLogger(__name__)
@@ -260,8 +262,12 @@ def _is_complete(
     return False
 
 
-BILIBILI_BOTH_FAILED = (
-    "Bilibili download failed: yt-dlp and yutto could not fetch this video."
+# The Bilibili chain stops starting new engines once this much time has passed, so one
+# link cannot hold a download slot for the sum of every engine's own timeout.
+BILIBILI_CHAIN_BUDGET_SECONDS = 900.0
+BILIBILI_FAILED = "Bilibili download failed: no download engine could fetch this video."
+BILIBILI_RATE_LIMITED = (
+    "Bilibili is rate-limiting this server right now; try again in a few minutes."
 )
 # yt-dlp and yutto run through uvx. The latest releases are fetched once at startup
 # (warm_up_tools), so a download never waits on PyPI.
@@ -362,34 +368,172 @@ def yutto_fetch(
     return largest, duration
 
 
+YT_DLP_VIDEO_FORMAT = (
+    "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+    "best[vcodec^=avc1][ext=mp4]/best"
+)
+YT_DLP_EMBED_FLAGS = [
+    "--embed-metadata",
+    "--embed-thumbnail",
+    "--embed-subs",
+    "--sub-langs",
+    "en.*,ja.*",
+]
+
+
+def _canonical_bilibili(url: str) -> str:
+    """The canonical video link, so every engine in the chain gets the same address."""
+    try:
+        return bilibili.canonical_url(url)
+    except Exception as exc:
+        logger.warning(
+            "Bilibili link could not be resolved: %s", bilibili.describe_error(exc)
+        )
+        return url
+
+
+def _run_bilibili_chain(
+    engines: list[tuple[str, Callable[[str], str]]],
+    out_dir: str,
+    expected_duration: Optional[float] = None,
+) -> tuple[str, bool]:
+    """Run the Bilibili engines in order and return the first complete file.
+
+    Returns ``(path, True)`` for a complete file. When no engine is complete, the longest
+    partial file is returned as ``(path, False)``. Raises when every engine failed. Each
+    engine writes into its own folder. A failure is logged with its reason and the chain
+    moves on, and no new engine starts once BILIBILI_CHAIN_BUDGET_SECONDS has passed.
+    """
+    deadline = time.monotonic() + BILIBILI_CHAIN_BUDGET_SECONDS
+    best_path: Optional[str] = None
+    best_duration = -1
+    rate_limited = False
+    for name, run in engines:
+        if time.monotonic() > deadline:
+            logger.warning("Bilibili time budget spent; not trying %s.", name)
+            break
+        folder = os.path.join(out_dir, name)
+        os.makedirs(folder, exist_ok=True)
+        try:
+            path = run(folder)
+        except bilibili.RateLimitedError as exc:
+            rate_limited = True
+            logger.warning("Bilibili %s engine was rate-limited: %s", name, exc)
+            continue
+        except Exception as exc:
+            # Our own RuntimeErrors carry curated text; anything else gets a URL-free reason.
+            reason = (
+                str(exc)
+                if isinstance(exc, RuntimeError)
+                else bilibili.describe_error(exc)
+            )
+            logger.warning("Bilibili %s engine failed: %s", name, reason)
+            continue
+        actual = probe_video_duration(path) if expected_duration else None
+        if _is_complete(actual, expected_duration, "Trying the next Bilibili engine"):
+            return path, True
+        if (actual or 0) > best_duration:
+            best_path, best_duration = path, actual or 0
+    if best_path:
+        logger.warning(
+            "No Bilibili engine produced a complete file; returning the longest partial "
+            "(%ss).",
+            int(best_duration),
+        )
+        return best_path, False
+    raise RuntimeError(BILIBILI_RATE_LIMITED if rate_limited else BILIBILI_FAILED)
+
+
+def _ytdlp_bilibili_video(url: str, out_dir: str) -> str:
+    """yt-dlp as the last Bilibili video engine: one pass with the site's headers."""
+    cmd = [
+        *YT_DLP_CMD,
+        "-f",
+        YT_DLP_VIDEO_FORMAT,
+        "--output",
+        f"{out_dir}/%(id)s.%(ext)s",
+        "--no-playlist",
+        "--restrict-filenames",
+        *YT_DLP_EMBED_FLAGS,
+        *YT_DLP_REMOTE_COMPONENTS,
+        "--user-agent",
+        random.choice(USER_AGENTS),
+        *bilibili_headers(),
+        "--",
+        url,
+    ]
+    _run_cmd(cmd)
+    largest = scan_largest_media_file(out_dir)
+    if not largest:
+        raise RuntimeError("yt-dlp produced no video file")
+    return largest
+
+
+def _ytdlp_bilibili_audio(url: str, out_dir: str) -> str:
+    """yt-dlp as the last Bilibili audio engine."""
+    _run_cmd(_ytdlp_audio_cmd(url, out_dir, bilibili_headers()))
+    largest = scan_largest_audio_file(out_dir) or scan_largest_media_file(out_dir)
+    if not largest:
+        raise RuntimeError("yt-dlp produced no audio file")
+    return largest
+
+
+def _download_bilibili_video(
+    url: str, out_dir: str, expected_duration: Optional[float]
+) -> str:
+    """The Bilibili video chain: disk cache, native player API, yutto, then yt-dlp.
+
+    Only a file that passes the duration check is cached, so a truncated download is
+    never served again from the cache.
+    """
+    link = _canonical_bilibili(url)
+    try:
+        cached = bilibili.cached_video(link, out_dir)
+    except bilibili.BilibiliError:
+        cached = None
+    if cached:
+        return cached
+
+    engines: list[tuple[str, Callable[[str], str]]] = [
+        ("native", lambda folder: bilibili.download_native_video(link, folder)),
+        ("yutto", lambda folder: yutto_fetch(link, folder)[0]),
+        ("yt-dlp", lambda folder: _ytdlp_bilibili_video(link, folder)),
+    ]
+    path, complete = _run_bilibili_chain(engines, out_dir, expected_duration)
+    if complete:
+        bilibili.store_video(link, path)
+    return path
+
+
+def _download_bilibili_audio(url: str, out_dir: str) -> str:
+    """The Bilibili audio chain: native audio track, yutto audio-only, then yt-dlp."""
+    link = _canonical_bilibili(url)
+    engines: list[tuple[str, Callable[[str], str]]] = [
+        ("native", lambda folder: bilibili.download_native_audio(link, folder)),
+        ("yutto", lambda folder: yutto_fetch(link, folder, audio_only=True)[0]),
+        ("yt-dlp", lambda folder: _ytdlp_bilibili_audio(link, folder)),
+    ]
+    path, _ = _run_bilibili_chain(engines, out_dir)
+    return path
+
+
 def download_video(
     url: str, out_dir: str, expected_duration: Optional[float] = None
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
-
-    yt_dlp_format = (
-        "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-        "best[vcodec^=avc1][ext=mp4]/best"
-    )
-
-    embed_flags = [
-        "--embed-metadata",
-        "--embed-thumbnail",
-        "--embed-subs",
-        "--sub-langs",
-        "en.*,ja.*",
-    ]
+    if is_bilibili_url(url):
+        return _download_bilibili_video(url, out_dir, expected_duration)
 
     def cmd_pass1() -> list[str]:
         return [
             *YT_DLP_CMD,
             "-f",
-            yt_dlp_format,
+            YT_DLP_VIDEO_FORMAT,
             "--output",
             f"{out_dir}/%(id)s.%(ext)s",
             "--no-playlist",
             "--restrict-filenames",
-            *embed_flags,
+            *YT_DLP_EMBED_FLAGS,
             *YT_DLP_REMOTE_COMPONENTS,
             "--",
             url,
@@ -399,19 +543,18 @@ def download_video(
         cmd = [
             *YT_DLP_CMD,
             "-f",
-            yt_dlp_format,
+            YT_DLP_VIDEO_FORMAT,
             "--output",
             f"{out_dir}/%(id)s.%(ext)s",
             "--no-playlist",
             "--restrict-filenames",
-            *embed_flags,
+            *YT_DLP_EMBED_FLAGS,
             *YT_DLP_REMOTE_COMPONENTS,
             "--user-agent",
             random.choice(USER_AGENTS),
+            "--",
+            url,
         ]
-        if is_bilibili_url(url):
-            cmd.extend(bilibili_headers())
-        cmd.extend(["--", url])
         return cmd
 
     attempts = [cmd_pass1, cmd_pass2]
@@ -437,30 +580,6 @@ def download_video(
             best_duration = actual or 0
             best_path = largest
 
-    if is_bilibili_url(url):
-        # yt-dlp's Bilibili extractor is unreliable, so yutto gets the link next.
-        yutto_path: Optional[str] = None
-        yutto_duration: Optional[int] = None
-        try:
-            yutto_path, yutto_duration = yutto_fetch(url, out_dir)
-        except RuntimeError as exc:
-            logger.warning("yutto could not fetch from %s: %s", _host(url), exc)
-        if yutto_path and _is_complete(
-            yutto_duration, expected_duration, "Keeping the longest output"
-        ):
-            return yutto_path
-        # Neither source is complete, so keep whichever file runs longest.
-        if yutto_path and (yutto_duration or 0) > best_duration:
-            best_path, best_duration = yutto_path, yutto_duration or 0
-        if best_path:
-            logger.warning(
-                "Returning longest partial (%ss) from %s.",
-                int(best_duration),
-                best_path,
-            )
-            return best_path
-        raise RuntimeError(BILIBILI_BOTH_FAILED)
-
     if best_path:
         logger.warning(
             "No yt-dlp attempt produced a complete video; returning longest partial "
@@ -471,10 +590,10 @@ def download_video(
     raise RuntimeError(_classify_failure(attempt_errors))
 
 
-def download_audio(url: str, out_dir: str) -> str:
-    os.makedirs(out_dir, exist_ok=True)
-
-    cmd = [
+def _ytdlp_audio_cmd(
+    url: str, out_dir: str, extra_args: list[str] | tuple[str, ...] = ()
+) -> list[str]:
+    return [
         *YT_DLP_CMD,
         "-f",
         "bestaudio/best",
@@ -488,10 +607,18 @@ def download_audio(url: str, out_dir: str) -> str:
         "--no-playlist",
         "--restrict-filenames",
         *YT_DLP_REMOTE_COMPONENTS,
+        *extra_args,
         "--",
         url,
     ]
-    _, stderr = _run_cmd(cmd)
+
+
+def download_audio(url: str, out_dir: str) -> str:
+    os.makedirs(out_dir, exist_ok=True)
+    if is_bilibili_url(url):
+        return _download_bilibili_audio(url, out_dir)
+
+    _, stderr = _run_cmd(_ytdlp_audio_cmd(url, out_dir))
     largest = scan_largest_audio_file(out_dir)
     if largest:
         return largest
@@ -499,14 +626,6 @@ def download_audio(url: str, out_dir: str) -> str:
     largest_media = scan_largest_media_file(out_dir)
     if largest_media:
         return largest_media
-
-    if is_bilibili_url(url):
-        try:
-            audio_path, _ = yutto_fetch(url, out_dir, audio_only=True)
-            return audio_path
-        except RuntimeError as exc:
-            logger.warning("yutto could not fetch audio from %s: %s", _host(url), exc)
-            raise RuntimeError(BILIBILI_BOTH_FAILED) from exc
 
     raise RuntimeError(_classify_failure([stderr] if stderr else []))
 
@@ -558,6 +677,14 @@ def probe_video_dimensions(
 
 
 def fetch_video_metadata(url: str) -> dict:
+    if is_bilibili_url(url):
+        try:
+            return bilibili.fetch_bilibili_metadata(url)
+        except Exception as exc:
+            logger.warning(
+                "Native Bilibili metadata failed, trying yt-dlp: %s",
+                bilibili.describe_error(exc),
+            )
     base = [
         *YT_DLP_CMD,
         "--dump-json",
