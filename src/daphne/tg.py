@@ -24,7 +24,9 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     FSInputFile,
+    InputMediaDocument,
     InputMediaPhoto,
+    InputMediaVideo,
     LinkPreviewOptions,
     Message,
     ReactionTypeEmoji,
@@ -105,7 +107,7 @@ async def send_photo_or_document(
 
 
 def _media(value: Any) -> Any:
-    if isinstance(value, InputMediaPhoto):
+    if isinstance(value, InputMediaPhoto | InputMediaDocument | InputMediaVideo):
         return value
     media = getattr(value, "media", None)
     if media is None:

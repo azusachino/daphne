@@ -2,12 +2,17 @@ import re
 import httpx
 import logging
 import io
+from urllib.parse import urlsplit
+
 from daphne.tg import (
+    InputMediaDocument,
     InputMediaPhoto,
+    InputMediaVideo,
     TelegramContext,
     TelegramUpdate,
-    as_input_file,
     failure_reason,
+    image_input,
+    send_photo_or_document,
 )
 
 from daphne.messages import (
@@ -30,6 +35,7 @@ TWITTER_REGEX = re.compile(
     r"https?://(?:www\.)?(twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)/([a-zA-Z0-9_]+)/status/(\d+)",
     re.IGNORECASE,
 )
+PHOTO_UPLOAD_LIMIT = 10_000_000
 TWITTER_MAX_VIDEO_DIMENSION = 1280
 TWITTER_VIDEO_DIMENSIONS_REGEX = re.compile(r"/(?P<width>\d+)x(?P<height>\d+)(?:/|$)")
 
@@ -143,11 +149,17 @@ async def send_photo_helper(
             f"Failed to send photo by URL {url}: {e}. Retrying by downloading bytes..."
         )
         img_bytes = await download_bytes(url)
-        bio = io.BytesIO(img_bytes)
-        bio.name = "photo.jpg"
-        await bot.send_photo(
-            chat_id=chat_id, photo=bio, caption=caption, parse_mode=parse_mode
-        )
+        if len(img_bytes) > PHOTO_UPLOAD_LIMIT:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=image_input(img_bytes, "photo.jpg"),
+                caption=caption,
+                parse_mode=parse_mode,
+            )
+        else:
+            await send_photo_or_document(
+                bot, chat_id, img_bytes, "photo.jpg", caption, parse_mode
+            )
 
 
 async def send_video_helper(
@@ -226,34 +238,134 @@ async def send_media_group_helper(
         logger.warning(
             f"Failed to send media group by URL: {e}. Retrying by downloading bytes..."
         )
-        media = []
-        for i, url in enumerate(urls):
-            img_bytes = await download_bytes(url)
-            bio = io.BytesIO(img_bytes)
-            bio.name = f"photo_{i}.jpg"
-            if i == 0:
-                media.append(
-                    InputMediaPhoto(
-                        media=as_input_file(bio),
-                        caption=caption,
-                        parse_mode=parse_mode,
-                    )
+        images = [
+            (await download_bytes(url), f"photo_{i}.jpg") for i, url in enumerate(urls)
+        ]
+        photos = [
+            (data, name) for data, name in images if len(data) <= PHOTO_UPLOAD_LIMIT
+        ]
+        oversized = [
+            (data, name) for data, name in images if len(data) > PHOTO_UPLOAD_LIMIT
+        ]
+        caption_available = True
+        if len(photos) >= 2:
+            media = [
+                InputMediaPhoto(
+                    media=image_input(data, name),
+                    caption=caption if i == 0 else None,
+                    parse_mode=parse_mode if i == 0 else None,
                 )
-            else:
-                media.append(InputMediaPhoto(media=as_input_file(bio)))
-        await bot.send_media_group(chat_id=chat_id, media=media)
+                for i, (data, name) in enumerate(photos)
+            ]
+            try:
+                await bot.send_media_group(chat_id=chat_id, media=media)
+                caption_available = False
+                photos = []
+            except Exception as exc:
+                logger.warning("Uploaded photo group refused: %s", failure_reason(exc))
+        for data, name in photos:
+            await send_photo_or_document(
+                bot,
+                chat_id,
+                data,
+                name,
+                caption if caption_available else None,
+                parse_mode,
+            )
+            caption_available = False
+        if len(oversized) >= 2:
+            documents = [
+                InputMediaDocument(
+                    media=image_input(data, name),
+                    caption=caption if i == 0 and caption_available else None,
+                    parse_mode=parse_mode if i == 0 and caption_available else None,
+                )
+                for i, (data, name) in enumerate(oversized)
+            ]
+            try:
+                await bot.send_media_group(chat_id=chat_id, media=documents)
+                oversized = []
+            except Exception as exc:
+                logger.warning("Document group refused: %s", failure_reason(exc))
+        for data, name in oversized:
+            await bot.send_document(
+                chat_id=chat_id,
+                document=image_input(data, name),
+                caption=caption if caption_available else None,
+                parse_mode=parse_mode,
+            )
+            caption_available = False
 
 
 async def send_photos(
     bot, chat_id: int, urls: list[str], caption: str, parse_mode: str
 ) -> bool:
-    if not urls:
-        return False
-    if len(urls) == 1:
-        await send_photo_helper(bot, chat_id, urls[0], caption, parse_mode)
-    else:
-        await send_media_group_helper(bot, chat_id, urls, caption, parse_mode)
-    return True
+    for start in range(0, len(urls), 10):
+        batch = urls[start : start + 10]
+        batch_caption = caption if start == 0 else ""
+        if len(batch) == 1:
+            await send_photo_helper(bot, chat_id, batch[0], batch_caption, parse_mode)
+        else:
+            await send_media_group_helper(
+                bot, chat_id, batch, batch_caption, parse_mode
+            )
+    return bool(urls)
+
+
+async def send_videos(bot, chat_id, urls, caption, parse_mode, video_meta):
+    for start in range(0, len(urls), 10):
+        batch = urls[start : start + 10]
+        batch_caption = caption if start == 0 else ""
+        if len(batch) >= 2:
+
+            def album(sources):
+                return [
+                    InputMediaVideo(
+                        media=source,
+                        caption=batch_caption if i == 0 else None,
+                        parse_mode=parse_mode if i == 0 else None,
+                        supports_streaming=True,
+                        **video_meta.get(url, {}),
+                    )
+                    for i, (url, source) in enumerate(zip(batch, sources))
+                ]
+
+            try:
+                await bot.send_media_group(chat_id=chat_id, media=album(batch))
+                continue
+            except Exception as exc:
+                logger.warning("Video album by URL refused: %s", failure_reason(exc))
+            try:
+                files = [
+                    image_input(await download_bytes(url), f"video_{i}.mp4")
+                    for i, url in enumerate(batch)
+                ]
+                await bot.send_media_group(chat_id=chat_id, media=album(files))
+                continue
+            except Exception as exc:
+                logger.warning("Uploaded video album refused: %s", failure_reason(exc))
+        for i, url in enumerate(batch):
+            await send_video_helper(
+                bot,
+                chat_id,
+                url,
+                batch_caption if i == 0 else "",
+                parse_mode,
+                **video_meta.get(url, {}),
+            )
+    return bool(urls)
+
+
+async def send_gifs(bot, chat_id, urls, caption, parse_mode, video_meta):
+    mp4s = [url for url in urls if urlsplit(url).path.lower().endswith(".mp4")]
+    if len(mp4s) >= 2:
+        await send_videos(bot, chat_id, mp4s, caption, parse_mode, video_meta)
+        caption = ""
+        urls = [url for url in urls if url not in mp4s]
+    for url in urls:
+        await send_animation_helper(bot, chat_id, url, caption, parse_mode)
+        caption = ""
+    return bool(mp4s or urls)
 
 
 URL_RE = re.compile(r"https?://\S+")
@@ -577,27 +689,23 @@ async def handle_twitter_links(
                         )
                         sent_media = True
 
-                    caption_available = not sent_media
-                    for video_url in selected_videos:
-                        await send_video_helper(
-                            context.bot,
-                            chat_id,
-                            video_url,
-                            caption if caption_available else "",
-                            PARSE_MODE_HTML,
-                            **video_meta.get(video_url, {}),
-                        )
-                        caption_available = False
+                    if await send_videos(
+                        context.bot,
+                        chat_id,
+                        selected_videos,
+                        "" if sent_media else caption,
+                        PARSE_MODE_HTML,
+                        video_meta,
+                    ):
                         sent_media = True
-                    for gif_url in selected_gifs:
-                        await send_animation_helper(
-                            context.bot,
-                            chat_id,
-                            gif_url,
-                            caption if caption_available else "",
-                            PARSE_MODE_HTML,
-                        )
-                        caption_available = False
+                    if await send_gifs(
+                        context.bot,
+                        chat_id,
+                        selected_gifs,
+                        "" if sent_media else caption,
+                        PARSE_MODE_HTML,
+                        video_meta,
+                    ):
                         sent_media = True
 
                     if not sent_media:
@@ -625,42 +733,24 @@ async def handle_twitter_links(
                         )
                         caption_available = False
                         success = True
-                    for video_url in video_urls:
-                        try:
-                            await context.bot.send_chat_action(
-                                chat_id=chat_id, action="upload_video"
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "X upload action failed: %s", failure_reason(exc)
-                            )
-                        await send_video_helper(
-                            context.bot,
-                            chat_id,
-                            video_url,
-                            caption if caption_available else "",
-                            parse_mode=PARSE_MODE_HTML,
-                            **video_meta.get(video_url, {}),
-                        )
+                    if await send_videos(
+                        context.bot,
+                        chat_id,
+                        video_urls,
+                        caption if caption_available else "",
+                        PARSE_MODE_HTML,
+                        video_meta,
+                    ):
                         caption_available = False
                         success = True
-                    for gif_url in gif_urls:
-                        try:
-                            await context.bot.send_chat_action(
-                                chat_id=chat_id, action="upload_video"
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "X upload action failed: %s", failure_reason(exc)
-                            )
-                        await send_animation_helper(
-                            context.bot,
-                            chat_id,
-                            gif_url,
-                            caption if caption_available else "",
-                            parse_mode=PARSE_MODE_HTML,
-                        )
-                        caption_available = False
+                    if await send_gifs(
+                        context.bot,
+                        chat_id,
+                        gif_urls,
+                        caption if caption_available else "",
+                        PARSE_MODE_HTML,
+                        video_meta,
+                    ):
                         success = True
                 else:
                     # Successfully fetched, but no media -> send HTML text message
@@ -684,6 +774,7 @@ async def handle_twitter_links(
         else:
             logger.warning(f"FxTwitter API returned HTTP status {resp.status_code}")
     except Exception as e:
+        success = False
         logger.warning(
             "Error processing Twitter post %s: %s", tweet_id, failure_reason(e)
         )
