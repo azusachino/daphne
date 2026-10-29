@@ -11,11 +11,9 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 from daphne.tg import (
-    InputMediaPhoto,
     TelegramContext,
     TelegramUpdate,
-    image_input,
-    send_photo_or_document,
+    send_image_groups,
     failure_reason,
 )
 
@@ -41,8 +39,6 @@ PIXIV_UNAVAILABLE_TEXT = (
 PIXIV_REFRESH_TOKEN_ENV = "DAPHNE_PIXIV_REFRESH_TOKEN"
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
-# Telegram refuses photos over 10 MB; larger files go as documents.
-PHOTO_LIMIT_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -187,18 +183,32 @@ async def fetch_artwork_info(artwork_id: str) -> Optional[PixivInfo]:
             return None
 
 
+PIXIV_IMAGE_HOSTS = ("pixiv.cat", "i.pximg.net", "s.pximg.net")
+PIXIV_MAX_IMAGE_BYTES = 50 * 1024 * 1024
+
+
 async def _fetch_pixiv_candidates(
     artwork_id: str, candidates: list[str]
 ) -> tuple[bytes, str]:
     headers = {"User-Agent": USER_AGENT, "Referer": "https://www.pixiv.net/"}
     async with httpx.AsyncClient(follow_redirects=True) as client:
         for url in candidates:
+            parsed = urlparse(url)
+            if (
+                parsed.scheme != "https"
+                or (parsed.hostname or "").lower() not in PIXIV_IMAGE_HOSTS
+            ):
+                continue
             try:
                 response = await client.get(url, headers=headers, timeout=30.0)
                 if response.status_code == 200:
+                    if len(response.content) > PIXIV_MAX_IMAGE_BYTES:
+                        raise ValueError("Pixiv image exceeds size limit")
                     return response.content, url
             except httpx.HTTPError as exc:
-                logger.info("Pixiv image candidate failed (%s): %s", url, exc)
+                logger.info(
+                    "Pixiv image candidate failed (%s): %s", parsed.hostname, exc
+                )
     raise ValueError(f"No Pixiv image found for artwork {artwork_id}")
 
 
@@ -393,51 +403,7 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
     try:
         caption = build_caption(original_url, images[0][1], info, sender, remaining)
         chat_id = message.chat_id
-        if len(images) == 1:
-            data, name = images[0]
-            if len(data) > PHOTO_LIMIT_BYTES:
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=image_input(data, name),
-                    caption=caption,
-                    parse_mode=PARSE_MODE_HTML,
-                )
-            else:
-                await send_photo_or_document(
-                    context.bot, chat_id, data, name, caption, PARSE_MODE_HTML
-                )
-        elif any(len(data) > PHOTO_LIMIT_BYTES for data, _ in images):
-            for index, (data, name) in enumerate(images):
-                await context.bot.send_document(
-                    chat_id=chat_id,
-                    document=image_input(data, name),
-                    caption=caption if index == 0 else None,
-                    parse_mode=PARSE_MODE_HTML if index == 0 else None,
-                )
-        else:
-            media = [
-                InputMediaPhoto(
-                    media=image_input(data, name),
-                    caption=caption if index == 0 else None,
-                    parse_mode=PARSE_MODE_HTML if index == 0 else None,
-                )
-                for index, (data, name) in enumerate(images)
-            ]
-            try:
-                await context.bot.send_media_group(chat_id=chat_id, media=media)
-            except Exception as exc:
-                logger.info(
-                    "Media group refused, sending one by one: %s", failure_reason(exc)
-                )
-                for index, (data, name) in enumerate(images):
-                    await send_photo_or_document(
-                        context.bot,
-                        chat_id,
-                        data,
-                        name,
-                        caption if index == 0 else None,
-                        PARSE_MODE_HTML if index == 0 else None,
-                    )
+        await send_image_groups(context.bot, chat_id, images, caption, PARSE_MODE_HTML)
     except Exception as exc:
         logger.warning("Pixiv image upload failed for %s: %s", artwork_id, exc)
         await set_reaction(message, REACTION_FAILED)

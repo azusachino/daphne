@@ -7,7 +7,7 @@
 Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — pasted as a link, delivered as playable media.
 
 [![Python](https://img.shields.io/badge/python-3.14-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue)](https://github.com/azusachino/daphne/releases)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue)](https://github.com/azusachino/daphne/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
@@ -46,6 +46,7 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 - **👀 Live feedback** — message reactions (👀 working → 👍 done / 😢 failed) and upload chat actions.
 - **🎨 Rich HTML captions** — title, uploader, duration, source link, a platform hashtag, an author hashtag, and requester attribution. X captions show each hashtag once.
 - **🛟 Safety-first** — the original message is deleted **only** after a successful upload, so a link is never lost on error.
+- **Downloader DNS pre-check** — before an external downloader starts or a bounded media stream begins, Daphne checks its initial URL hostname using Cloudflare DNS over HTTPS and rejects non-public answers or failed lookups. Only the hostname is sent to Cloudflare. This is a best-effort check, not an egress boundary: clients resolve names again and downloaders can follow redirects, so DNS rebinding and private destinations reached later are not prevented. Other in-process requests are outside this pre-check.
 
 ## Supported Platforms
 

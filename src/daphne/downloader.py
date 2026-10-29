@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Callable, Tuple, Optional
 
 from daphne import bilibili
+from daphne.doh import check_public_url
 from daphne.messages import HtmlMessage, author_tag
 
 logger = logging.getLogger(__name__)
@@ -23,12 +24,28 @@ USER_AGENTS = [
 ]
 
 
+def _video_host(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return ""
+        return (parsed.hostname or "").lower()
+    except ValueError:
+        return ""
+
+
 def is_bilibili_url(url: str) -> bool:
-    return "bilibili.com" in url or "b23.tv" in url
+    host = _video_host(url)
+    return host in {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"}
 
 
 def is_youtube_url(url: str) -> bool:
-    return "youtube.com" in url or "youtu.be" in url
+    return _video_host(url) in {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+    }
 
 
 # YouTube query params worth keeping; everything else (si, pp, list, index,
@@ -112,6 +129,10 @@ def run_tool(cmd: list[str], timeout: float) -> tuple[int, str, str]:
     children it started (yt-dlp's ffmpeg, yutto's uvx child) cannot keep writing into a
     folder that is about to be removed. Raises subprocess.TimeoutExpired after the kill.
     """
+    # A best-effort preflight only: child redirects and DNS are not confined.
+    for arg in cmd:
+        if arg.startswith(("https://", "http://")):
+            check_public_url(arg)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -240,13 +261,13 @@ def _is_complete(
 ) -> bool:
     """
     Whether a downloaded file is complete enough to accept, given its already
-    probed duration. When no expected duration is known, or the file could not
-    be probed, we cannot verify and accept the file rather than looping.
+    probed duration. With no expected duration, accept the file; if an expected
+    duration exists but probing fails, the file is not verified complete.
     """
     if not expected_duration or expected_duration <= 0:
         return True
     if actual is None:
-        return True
+        return False
     if actual >= expected_duration * DURATION_COMPLETE_RATIO:
         return True
     logger.warning(
@@ -519,19 +540,13 @@ def download_video(
     if is_bilibili_url(url):
         return _download_bilibili_video(url, out_dir, expected_duration)
 
-    def cmd_pass1() -> list[str]:
-        return _ytdlp_video_cmd(url, out_dir)
-
-    def cmd_pass2() -> list[str]:
-        return _ytdlp_video_cmd(
-            url, out_dir, ["--user-agent", random.choice(USER_AGENTS)]
-        )
-
     attempts = [
-        cmd_pass1,
-        cmd_pass2,
-        lambda: [*YOU_GET_CMD, "--output-dir", out_dir, url],
-        lambda: [*LUX_CMD, "-o", out_dir, "--silent", url],
+        lambda folder: _ytdlp_video_cmd(url, folder),
+        lambda folder: _ytdlp_video_cmd(
+            url, folder, ["--user-agent", random.choice(USER_AGENTS)]
+        ),
+        lambda folder: [*YOU_GET_CMD, "--output-dir", folder, url],
+        lambda folder: [*LUX_CMD, "-o", folder, "--silent", url],
     ]
 
     # Track the longest result across attempts so that, if none is verifiably
@@ -540,11 +555,13 @@ def download_video(
     best_duration = -1.0
     attempt_errors: list[str] = []
 
-    for build_cmd in attempts:
-        _, stderr = _run_cmd(build_cmd())
+    for index, build_cmd in enumerate(attempts):
+        folder = os.path.join(out_dir, f"attempt-{index}")
+        os.makedirs(folder, exist_ok=True)
+        _, stderr = _run_cmd(build_cmd(folder))
         if stderr:
             attempt_errors.append(stderr)
-        largest = scan_largest_media_file(out_dir)
+        largest = scan_largest_media_file(folder)
         if not largest:
             continue
         # Probe when we can verify against expected duration; otherwise accept.
@@ -704,14 +721,19 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
 
     images = []
     formats = []
+    media_entries = []
     for entry in entries:
         entry_formats = entry.get("formats") or []
         if entry_formats:
-            formats.append({"url": entry_formats[-1].get("url")})
+            selected = {"url": entry_formats[-1].get("url")}
+            formats.append(selected)
+            media_entries.append({"kind": "video", "formats": [selected]})
         elif entry.get("thumbnail"):
-            images.append({"url": entry["thumbnail"]})
+            selected = {"url": entry["thumbnail"]}
+            images.append(selected)
+            media_entries.append({"kind": "image", "formats": [selected]})
 
-    if not images and not formats:
+    if len(media_entries) != len(entries) or not media_entries:
         return None
 
     first = entries[0]
@@ -719,7 +741,8 @@ def fetch_instagram_fallback_media(url: str) -> Optional[dict]:
         "id": first.get("id", ""),
         "title": (first.get("description") or first.get("title") or "")[:100],
         "uploader": first.get("uploader") or first.get("channel") or "unknown",
-        "type": "video" if formats else "image",
+        "type": "carousel" if len(entries) > 1 else ("video" if formats else "image"),
+        "entries": media_entries,
         "images": images,
         "formats": formats,
         "thumbnail": first.get("thumbnail"),

@@ -83,6 +83,38 @@ class TestDownloader(unittest.TestCase):
             "https://example.com/v/abc?ref=x",
         )
 
+    def test_video_hosts_reject_substrings_and_userinfo(self):
+        for url in (
+            "http://127.0.0.1/youtube.com",
+            "https://youtube.com.evil.test/watch",
+            "https://youtube.com@evil.test/watch",
+            "https://evil.test/bilibili.com",
+        ):
+            self.assertFalse(downloader.is_youtube_url(url))
+            self.assertFalse(downloader.is_bilibili_url(url))
+        self.assertTrue(downloader.is_youtube_url("https://www.youtube.com/watch?v=x"))
+        self.assertTrue(downloader.is_bilibili_url("https://b23.tv/abc"))
+
+    def test_unprobeable_file_with_expected_duration_is_not_complete(self):
+        self.assertFalse(downloader._is_complete(None, 120))
+
+    def test_retry_selects_smaller_complete_file(self):
+        def run(cmd):
+            folder = cmd[cmd.index("--output") + 1]
+            path = os.path.join(os.path.dirname(folder), "result.mp4")
+            with open(path, "wb") as f:
+                f.write(b"x" * (100 if "attempt-0" in path else 10))
+            return "", ""
+
+        with (
+            patch("daphne.downloader._run_cmd", side_effect=run),
+            patch("daphne.downloader.probe_video_duration", side_effect=[20, 120]),
+        ):
+            result = download_video(
+                "https://www.youtube.com/watch?v=x", self.test_dir, 120
+            )
+        self.assertIn("attempt-1", result)
+
     def test_scan_largest_media_file(self):
         # 1. No media files
         self.assertIsNone(scan_largest_media_file(self.test_dir))
@@ -324,7 +356,10 @@ class TestDownloader(unittest.TestCase):
 
         self.assertEqual(data["images"], [{"url": "https://cdn/img1.jpg"}])
         self.assertEqual(data["formats"], [{"url": "https://cdn/video.mp4"}])
-        self.assertEqual(data["type"], "video")
+        self.assertEqual(data["type"], "carousel")
+        self.assertEqual(
+            [entry["kind"] for entry in data["entries"]], ["image", "video"]
+        )
 
     @patch("subprocess.run")
     def test_fetch_instagram_fallback_media_no_usable_data(self, mock_run):
@@ -510,6 +545,16 @@ class TestBilibiliChain(unittest.TestCase):
         download_video(self.BILI, self.test_dir)
         self.assertEqual(order, ["yt-dlp", "you-get", "lux", "yutto"])
 
+    def test_unprobeable_native_file_is_not_cached(self):
+        self.native.side_effect = lambda link, folder: _media(folder, "unknown.mp4")
+        with (
+            patch("daphne.downloader.probe_video_duration", return_value=None),
+            patch("daphne.downloader.bilibili.store_video") as store,
+        ):
+            path = download_video(self.BILI, self.test_dir, expected_duration=300)
+        self.assertTrue(path.endswith("unknown.mp4"))
+        store.assert_not_called()
+
     def test_truncated_native_file_is_not_cached_and_yutto_completes(self):
         self.native.side_effect = lambda link, folder: _media(folder, "partial.mp4")
         self.yutto.side_effect = lambda link, folder: (
@@ -611,7 +656,10 @@ class TestYuttoHardening(unittest.TestCase):
     def test_exit_code_zero_without_a_file_is_a_failure(self):
         proc = MagicMock(pid=1)
         proc.communicate.return_value = ("", "")
-        with patch("daphne.downloader.subprocess.Popen", return_value=proc):
+        with (
+            patch("daphne.downloader.check_public_url"),
+            patch("daphne.downloader.subprocess.Popen", return_value=proc),
+        ):
             with self.assertRaisesRegex(RuntimeError, "produced no file"):
                 yutto_fetch(self.BILI, self.test_dir)
 

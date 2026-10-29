@@ -104,10 +104,18 @@ def _open(client: Optional[httpx.Client]) -> Iterator[httpx.Client]:
         yield owned
 
 
+def _is_bilibili_video_host(host: str) -> bool:
+    clean = host.lower()
+    return clean == "bilibili.com" or clean.endswith(".bilibili.com")
+
+
 def _expand_short_link(client: httpx.Client, url: str) -> str:
     """Follow b23.tv share links by hand so the final bilibili.com URL is known."""
     for _ in range(3):
-        if not (urlsplit(url).hostname or "").endswith("b23.tv"):
+        host = (urlsplit(url).hostname or "").lower()
+        if host != "b23.tv":
+            if not _is_bilibili_video_host(host):
+                raise BilibiliError("b23.tv link did not resolve to bilibili.com")
             return url
         resp = client.get(url, headers=_headers())
         location = resp.headers.get("location")
@@ -318,21 +326,51 @@ def _stream_urls(stream: dict[str, Any]) -> list[str]:
 
 def _stream_to_file(client: httpx.Client, url: str, dest: str) -> None:
     """Write one CDN response to ``dest``, within the time limit and the size cap."""
+    from daphne.doh import check_public_url
+
     deadline = time.monotonic() + STREAM_TIMEOUT_SECONDS
     written = 0
-    # Signed CDN URLs are never logged; only the reason for a failed host is.
-    with client.stream("GET", url, headers=_headers(), follow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(dest, "wb") as out:
-            for chunk in resp.iter_bytes():
-                written += len(chunk)
-                if written > MAX_STREAM_BYTES:
-                    raise BilibiliError(
-                        "Bilibili stream is larger than the 2 GiB limit"
-                    )
-                if time.monotonic() > deadline:
-                    raise BilibiliError("Bilibili stream download timed out")
-                out.write(chunk)
+    current = url
+    live_transport = isinstance(
+        getattr(client, "_transport", None), httpx.HTTPTransport
+    )
+    for _ in range(4):
+        parsed = urlsplit(current)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+        ):
+            raise BilibiliError("Invalid Bilibili media URL")
+        if live_transport:
+            try:
+                check_public_url(current)
+            except ValueError as exc:
+                raise BilibiliError(str(exc)) from exc
+        # Signed CDN URLs are never logged; only the reason for a failed host is.
+        with client.stream(
+            "GET", current, headers=_headers(), follow_redirects=False
+        ) as resp:
+            if resp.status_code in REDIRECT_CODES:
+                location = resp.headers.get("location")
+                if not location:
+                    raise BilibiliError("Bilibili media redirect missing location")
+                current = urljoin(current, location)
+                continue
+            resp.raise_for_status()
+            with open(dest, "wb") as out:
+                for chunk in resp.iter_bytes():
+                    written += len(chunk)
+                    if written > MAX_STREAM_BYTES:
+                        raise BilibiliError(
+                            "Bilibili stream is larger than the 2 GiB limit"
+                        )
+                    if time.monotonic() > deadline:
+                        raise BilibiliError("Bilibili stream download timed out")
+                    out.write(chunk)
+            return
+    raise BilibiliError("Bilibili stream redirected too many times")
 
 
 def _download_stream(client: httpx.Client, stream: dict[str, Any], dest: str) -> None:

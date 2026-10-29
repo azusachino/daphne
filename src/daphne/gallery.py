@@ -2,6 +2,7 @@ import logging
 import os
 import subprocess
 
+from daphne.doh import check_public_url
 from daphne.downloader import _redacted, tool_env
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,11 @@ def download_gallery(
     cmd = ["gallery-dl", "-D", out_dir, *extra_args, "--", url]
     logger.info("Running command: %s", _redacted(cmd))
     try:
+        check_public_url(url)
+    except ValueError as exc:
+        logger.warning("gallery-dl destination check failed: %s", exc)
+        return []
+    try:
         subprocess.run(
             cmd,
             capture_output=True,
@@ -45,6 +51,7 @@ def download_gallery(
             check=True,
             timeout=180.0,
             env=tool_env(),
+            start_new_session=True,
         )
     except subprocess.CalledProcessError as e:
         logger.warning(

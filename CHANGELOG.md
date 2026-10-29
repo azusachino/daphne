@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - Unreleased
+
+### Fixed
+
+- Preserve original links when Bluesky or TikTok video delivery fails and when a video card is shown instead of an upload.
+- Match supported video hosts by hostname rather than substrings in arbitrary URLs. Before running external downloaders or bounded media streams, check initial URL hostnames through Cloudflare DNS over HTTPS, rejecting non-public answers and lookup failures. This pre-check does not constrain redirects, later DNS resolution, or other in-process fetches.
+- Do not cache unprobeable Bilibili videos as verified complete when an expected duration is known; isolate generic downloader attempts so earlier partials do not hide later complete files.
+- Show a video card for oversized TikTok downloads. Try Instagram's fallback if the primary extractor cannot initialize, and retain distinct image and video entries in carousels.
+- Group Pixiv and booru photos separately from oversized documents when possible.
+- Stream direct social-media downloads with a size limit and apply download slots to the affected paths.
+- Verify expanded `b23.tv` links resolve to `bilibili.com`, validate Bilibili CDN stream redirects and Pixiv candidate hosts/sizes, bound Moebooru and `gallery-dl` booru downloads, deduplicate concurrent video-card download clicks, bound per-user rate-limiter and semaphore maps, and omit plain-text chat prose from update logs.
+
 ## [0.5.0] - 2026-10-29
 
 ### Changed

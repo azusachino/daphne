@@ -106,6 +106,54 @@ async def send_photo_or_document(
         )
 
 
+async def send_image_groups(
+    bot: Any,
+    chat_id: int,
+    images: list[tuple[bytes, str]],
+    caption: str,
+    parse_mode: str,
+) -> None:
+    """Send eligible photos and oversized files in separate albums of at most ten."""
+    caption_available = True
+    photos = [(data, name) for data, name in images if len(data) <= 10_000_000]
+    documents = [(data, name) for data, name in images if len(data) > 10_000_000]
+    for kind, entries in (("photo", photos), ("document", documents)):
+        for start in range(0, len(entries), 10):
+            batch = entries[start : start + 10]
+            if len(batch) >= 2:
+                media_type = InputMediaPhoto if kind == "photo" else InputMediaDocument
+                media = [
+                    media_type(
+                        media=image_input(data, name),
+                        caption=caption if index == 0 and caption_available else None,
+                        parse_mode=parse_mode
+                        if index == 0 and caption_available
+                        else None,
+                    )
+                    for index, (data, name) in enumerate(batch)
+                ]
+                try:
+                    await bot.send_media_group(chat_id=chat_id, media=media)
+                    caption_available = False
+                    continue
+                except Exception as exc:
+                    logger.info("Image album refused: %s", failure_reason(exc))
+            for data, name in batch:
+                text = caption if caption_available else None
+                if kind == "photo":
+                    await send_photo_or_document(
+                        bot, chat_id, data, name, text, parse_mode
+                    )
+                else:
+                    await bot.send_document(
+                        chat_id=chat_id,
+                        document=image_input(data, name),
+                        caption=text,
+                        parse_mode=parse_mode,
+                    )
+                caption_available = False
+
+
 def _media(value: Any) -> Any:
     if isinstance(value, InputMediaPhoto | InputMediaDocument | InputMediaVideo):
         return value

@@ -4,12 +4,16 @@ import os
 import httpx
 import tempfile
 import logging
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import FSInputFile, InputMediaVideo
+
 from daphne.tg import TelegramContext, TelegramUpdate
 
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, author_tag, sender_attribution
 from daphne.twitter import send_photos, try_delete_message
 from daphne.downloader import probe_video_dimensions
 from daphne.config import video_upload_limit_mb
+from daphne.media_http import MediaTooLarge, stream_media
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,46 @@ def extract_instagram_link(text: str) -> str | None:
     if match:
         return match.group(0)
     return None
+
+
+async def send_carousel_videos(bot, chat_id, urls, caption):
+    """Stream every item to disk under the configured limit, then group videos."""
+    with tempfile.TemporaryDirectory() as directory:
+        paths = []
+        async with httpx.AsyncClient() as client:
+            for index, url in enumerate(urls):
+                path = os.path.join(directory, f"{index}.mp4")
+                with open(path, "wb") as output:
+                    await stream_media(
+                        client, url, output, video_upload_limit_mb() * 1024 * 1024
+                    )
+                paths.append(path)
+        for start in range(0, len(paths), 10):
+            batch = paths[start : start + 10]
+            batch_caption = caption if start == 0 else ""
+            if len(batch) >= 2:
+                media = [
+                    InputMediaVideo(
+                        media=FSInputFile(path),
+                        caption=batch_caption if i == 0 else None,
+                        parse_mode=PARSE_MODE_HTML if i == 0 else None,
+                        supports_streaming=True,
+                    )
+                    for i, path in enumerate(batch)
+                ]
+                try:
+                    await bot.send_media_group(chat_id=chat_id, media=media)
+                    continue
+                except TelegramBadRequest as exc:
+                    logger.warning("Instagram video album refused: %s", exc.message)
+            for i, path in enumerate(batch):
+                await bot.send_video(
+                    chat_id=chat_id,
+                    video=FSInputFile(path),
+                    caption=batch_caption if i == 0 else None,
+                    parse_mode=PARSE_MODE_HTML,
+                    supports_streaming=True,
+                )
 
 
 async def handle_instagram_links(
@@ -63,17 +107,18 @@ async def handle_instagram_links(
         pass
 
     # 2. Extract media metadata via parth-dl
+    clean_url = url.split("?")[0]
     try:
         from parth_dl.extractors import MediaExtractor
 
         extractor = MediaExtractor()
-        # Clean URL parameter for more reliable API parsing
-        clean_url = url.split("?")[0]
         logger.info(
             "Instagram handler: extracting metadata using parth-dl for clean URL %s",
             clean_url,
         )
-        data = extractor.extract(clean_url)
+        data = await asyncio.get_running_loop().run_in_executor(
+            None, extractor.extract, clean_url
+        )
     except Exception as e:
         logger.exception("Failed to extract Instagram media via parth-dl: %s", e)
         data = None
@@ -146,6 +191,42 @@ async def handle_instagram_links(
 
     success = False
 
+    # A carousel's entries represent different items; formats within an entry
+    # are alternatives for that item, not additional videos.
+    entries = data.get("entries") or []
+    if media_type == "carousel" and entries:
+        photos = []
+        videos = []
+        from daphne.bot import REACTION_FAILED, download_slot, set_reaction
+
+        try:
+            for entry in entries:
+                formats = [fmt for fmt in entry.get("formats", []) if fmt.get("url")]
+                if not formats or entry.get("kind") not in {"image", "video"}:
+                    raise ValueError("Instagram carousel contains an unavailable item")
+                target = photos if entry["kind"] == "image" else videos
+                target.append(formats[0]["url"])
+            user_id = update.effective_user.id if update.effective_user else 0
+            async with download_slot(user_id):
+                if photos:
+                    await send_photos(
+                        context.bot, chat_id, photos, caption, PARSE_MODE_HTML
+                    )
+                if videos:
+                    await send_carousel_videos(
+                        context.bot, chat_id, videos, "" if photos else caption
+                    )
+        except Exception:
+            logger.exception("Instagram carousel delivery failed")
+            await set_reaction(message, REACTION_FAILED)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Could not deliver every carousel item; your original link was kept.",
+            )
+            return
+        await try_delete_message(update)
+        return
+
     # Check media type
     if media_type == "image" or not data.get("formats"):
         # Image post or carousel of images
@@ -157,13 +238,17 @@ async def handle_instagram_links(
             logger.info(
                 "Instagram handler: sending %d image(s) to Telegram", len(photo_urls)
             )
-            success = await send_photos(
-                context.bot,
-                chat_id,
-                photo_urls,
-                caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
+            from daphne.bot import download_slot
+
+            user_id = update.effective_user.id if update.effective_user else 0
+            async with download_slot(user_id):
+                success = await send_photos(
+                    context.bot,
+                    chat_id,
+                    photo_urls,
+                    caption,
+                    parse_mode=PARSE_MODE_HTML,
+                )
     else:
         # Video/Reel post
         formats = data.get("formats", [])
@@ -183,15 +268,33 @@ async def handle_instagram_links(
                     "Instagram handler: downloading video bytes from %s", video_url
                 )
                 try:
-                    async with httpx.AsyncClient() as client:
-                        resp = await client.get(video_url, timeout=30.0)
-                        resp.raise_for_status()
-                        with open(video_path, "wb") as f:
-                            f.write(resp.content)
+                    from daphne.bot import download_slot
+
+                    user_id = update.effective_user.id if update.effective_user else 0
+                    async with download_slot(user_id):
+                        async with httpx.AsyncClient() as client:
+                            with open(video_path, "wb") as f:
+                                await stream_media(
+                                    client,
+                                    video_url,
+                                    f,
+                                    video_upload_limit_mb() * 1024 * 1024,
+                                )
                     logger.info(
                         "Instagram handler: video download completed. File size: %d bytes",
                         os.path.getsize(video_path),
                     )
+                except MediaTooLarge:
+                    from daphne.bot import send_video_card
+
+                    await send_video_card(
+                        update,
+                        url,
+                        {"title": title, "uploader": uploader, "webpage_url": url},
+                        sender,
+                        f"Video is over {video_upload_limit_mb()} MB",
+                    )
+                    return
                 except Exception as exc:
                     logger.exception(
                         "Failed to download Instagram video from direct URL: %s", exc

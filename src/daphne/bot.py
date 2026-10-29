@@ -32,6 +32,7 @@ from daphne.downloader import (
     format_duration,
     format_video_caption,
     is_bilibili_url,
+    is_youtube_url,
     probe_video_dimensions,
     sanitize_video_url,
 )
@@ -41,6 +42,7 @@ from daphne.messages import (
     sender_attribution,
 )
 from daphne.rbac import RbacService
+from daphne.redact import redact
 from daphne.tg import (
     TelegramBot,
     TelegramContext,
@@ -75,6 +77,8 @@ logger = logging.getLogger(__name__)
 # so one big transfer cannot starve the executor for everyone else.
 _global_download_semaphore: Optional[asyncio.Semaphore] = None
 _user_download_semaphores: dict[int, asyncio.Semaphore] = {}
+_active_card_downloads: set[str] = set()
+MAX_USER_SEMAPHORES = 1024
 
 
 def _get_global_download_semaphore() -> asyncio.Semaphore:
@@ -87,6 +91,11 @@ def _get_global_download_semaphore() -> asyncio.Semaphore:
 def _get_user_download_semaphore(user_id: int) -> asyncio.Semaphore:
     sem = _user_download_semaphores.get(user_id)
     if sem is None:
+        if len(_user_download_semaphores) >= MAX_USER_SEMAPHORES:
+            for uid in [
+                k for k, v in _user_download_semaphores.items() if not v.locked()
+            ]:
+                _user_download_semaphores.pop(uid, None)
         sem = asyncio.Semaphore(max_user_concurrent_downloads())
         _user_download_semaphores[user_id] = sem
     return sem
@@ -178,6 +187,9 @@ async def check_access_and_reply(update: TelegramUpdate, command: str) -> bool:
     if access.is_allowed():
         return True
 
+    if chat_id not in rbac_service.chats and not rbac_service.is_admin(user_id):
+        return False
+
     if access.is_rate_limited():
         text = HtmlMessage().text("Rate limit exceeded. Please wait.").render()
     else:
@@ -201,8 +213,8 @@ def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
 
 
 async def start_command(update: TelegramUpdate, context: TelegramContext) -> None:
-    # Always answers, bypassing RBAC: this is the one command Telegram expects
-    # to respond even to a user/chat that isn't whitelisted yet.
+    if not await check_access_and_reply(update, "help"):
+        return
     text = _daphne_overview(sender_attribution(update.effective_user), greeting=True)
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
@@ -233,7 +245,7 @@ def extract_video_url(text: str) -> str | None:
     text = preprocess_text_links(text)
     for match in URL_REGEX.finditer(text):
         url = sanitize_video_url(match.group(0))
-        if is_bilibili_url(url) or "youtube.com" in url or "youtu.be" in url:
+        if is_bilibili_url(url) or is_youtube_url(url):
             return url
     return None
 
@@ -391,7 +403,6 @@ async def handle_video_link(
             sender,
             f"Video is over {video_upload_limit_mb()} MB",
         )
-        await delete_original_message(update)
         return
 
     with tempfile.TemporaryDirectory() as out_dir:
@@ -419,7 +430,7 @@ async def handle_video_link(
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video download failed: {exc}")
+                .text(f"Video download failed: {redact(str(exc))}")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -435,7 +446,6 @@ async def handle_video_link(
                 sender,
                 f"Video is over {video_upload_limit_mb()} MB",
             )
-            await delete_original_message(update)
             return
 
         await status_msg.edit_text(
@@ -476,7 +486,7 @@ async def handle_video_link(
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Failed to upload video: {exc}")
+                .text(f"Failed to upload video: {redact(str(exc))}")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -496,10 +506,10 @@ async def media_message_handler(
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
     logger.info(
-        "Received message from user_id=%s in chat_id=%s: %r",
+        "Received message from user_id=%s in chat_id=%s (%d chars)",
         user_id,
         chat_id,
-        message.text,
+        len(message.text),
     )
 
     text = preprocess_text_links(message.text)
@@ -521,43 +531,43 @@ async def media_message_handler(
     is_booru = contains_booru_link(message.text)
     video_url = extract_video_url(message.text)
 
-    # Acknowledge a recognised link with a lightweight "working" reaction. On
-    # success the original message is deleted (taking the reaction with it); on
-    # failure the handlers switch it to a failure reaction.
-    if any(
-        [is_twitter, is_pixiv, is_bluesky, is_instagram, is_tiktok, is_booru, video_url]
-    ):
-        await set_reaction(message, REACTION_WORKING)
-
     if is_twitter:
         logger.info("Routing to Twitter handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_twitter_links(update, context)
     elif is_pixiv:
         logger.info("Routing to Pixiv handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_pixiv_links(update, context)
     elif is_bluesky:
         logger.info("Routing to Bluesky handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_bluesky_links(update, context)
     elif is_instagram:
         logger.info("Routing to Instagram handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_instagram_links(update, context)
     elif is_booru:
         logger.info("Routing to booru handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_booru_links(update, context)
     elif is_tiktok:
         logger.info("Routing to TikTok handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_tiktok_links(update, context)
     elif video_url:
         logger.info("Routing to generic video handler for URL: %s", video_url)
         # Check fetch_metadata permission & quota
         access = rbac_service.check_access(user_id, chat_id, "fetch_metadata")
         if not access.is_allowed():
+            if chat_id not in rbac_service.chats and not rbac_service.is_admin(user_id):
+                return
             if access.is_rate_limited():
                 text = HtmlMessage().text(f"Quota exceeded: {access.reason}").render()
             else:
@@ -566,6 +576,8 @@ async def media_message_handler(
                 )
             await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
             return
+
+        await set_reaction(message, REACTION_WORKING)
 
         sender = sender_attribution(update.effective_user)
         status_msg = await update.message.reply_text(
@@ -637,10 +649,7 @@ async def media_message_handler(
                 sender,
                 reason,
             )
-            # While the card offers a download, keep the original link so a failed
-            # download still leaves it in the chat. Delete it only for a final card.
-            if size is not None and size > TG_HARD_LIMIT_BYTES:
-                await delete_original_message(update)
+            # A card is not an upload; keep the source message.
 
 
 async def download_button_callback(
@@ -656,6 +665,9 @@ async def download_button_callback(
         return
 
     short_id = data[3:]
+    if short_id in _active_card_downloads:
+        await query.answer("Download is already in progress.", show_alert=True)
+        return
     entry = CALLBACK_URL_CACHE.get(short_id)
     if not entry:
         await query.answer("Error: Video link has expired.", show_alert=True)
@@ -673,6 +685,25 @@ async def download_button_callback(
         await query.answer(access.reason or "Permission denied", show_alert=True)
         return
 
+    _active_card_downloads.add(short_id)
+    try:
+        await _run_card_download(
+            query, context, short_id, url, metadata, user_id, chat_id, sender
+        )
+    finally:
+        _active_card_downloads.discard(short_id)
+
+
+async def _run_card_download(
+    query,
+    context: TelegramContext,
+    short_id: str,
+    url: str,
+    metadata: dict,
+    user_id: int,
+    chat_id: int,
+    sender: Optional[str],
+) -> None:
     # Acknowledge the callback query immediately to avoid loading animation on button
     await query.answer()
 
@@ -735,7 +766,7 @@ async def download_button_callback(
             logger.exception("Failed to download video")
             failure = (
                 HtmlMessage(sender=sender)
-                .text(f"Video download failed: {exc}")
+                .text(f"Video download failed: {redact(str(exc))}")
                 .render()
             )
             try:
@@ -804,7 +835,7 @@ async def download_button_callback(
             try:
                 await query.edit_message_text(
                     HtmlMessage(sender=sender)
-                    .text(f"Failed to upload video: {exc}")
+                    .text(f"Failed to upload video: {redact(str(exc))}")
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )
@@ -835,7 +866,12 @@ async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:
     user_id = update.effective_user.id if update.effective_user else None
     chat_id = update.effective_chat.id if update.effective_chat else None
     if update.message is not None:
-        kind = f"message: {update.message.text!r}"
+        text = update.message.text or ""
+        kind = (
+            f"message: {text!r}"
+            if text.startswith("/")
+            else f"message: <{len(text)} chars>"
+        )
     elif update.callback_query is not None:
         kind = f"callback_query: {update.callback_query.data!r}"
     else:

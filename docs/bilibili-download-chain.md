@@ -73,7 +73,8 @@ sequenceDiagram
 ## Decision rules
 
 - **Complete** means the probed duration covers at least 95% of the expected duration
-  from metadata. Without an expected duration, a file counts as complete.
+  from metadata. Without an expected duration, a file counts as complete. When an
+  expected duration is known but probing fails, the file is not verified complete.
 - Only complete files are cached, so a truncated download is never served again.
 - If no engine is complete, the longest partial file is returned and marked as partial in
   the logs. It is never cached.

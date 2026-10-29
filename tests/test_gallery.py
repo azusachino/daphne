@@ -28,8 +28,9 @@ class TestGallery(unittest.TestCase):
         result = scan_images(self.test_dir)
         self.assertEqual([os.path.basename(p) for p in result], ["a.png", "b.jpg"])
 
+    @patch("daphne.gallery.check_public_url")
     @patch("daphne.gallery.subprocess.run")
-    def test_download_gallery_returns_scanned_images(self, mock_run):
+    def test_download_gallery_returns_scanned_images(self, mock_run, mock_check):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         self._touch("img1.jpg")
         self._touch("img2.webp")
@@ -39,8 +40,9 @@ class TestGallery(unittest.TestCase):
         self.assertEqual(cmd[0], "gallery-dl")
         self.assertIn("-D", cmd)
 
+    @patch("daphne.gallery.check_public_url")
     @patch("daphne.gallery.subprocess.run", side_effect=Exception("boom"))
-    def test_download_gallery_handles_failure(self, mock_run):
+    def test_download_gallery_handles_failure(self, mock_run, mock_check):
         result = download_gallery("http://example.com/gallery", self.test_dir)
         self.assertEqual(result, [])
 

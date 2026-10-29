@@ -15,6 +15,8 @@ from daphne.tg import (
     send_photo_or_document,
 )
 
+from daphne.config import video_upload_limit_mb
+from daphne.media_http import stream_media
 from daphne.messages import (
     HtmlMessage,
     PARSE_MODE_HTML,
@@ -126,15 +128,22 @@ def select_twitter_video_url(video: dict) -> str:
     return select_twitter_video(video)["url"]
 
 
-async def download_bytes(url: str) -> bytes:
+async def download_bytes(url: str, limit: int = 50_000_000) -> bytes:
     """
     Downloads media bytes from URL using a standard browser user agent.
     """
     headers = {"User-Agent": USER_AGENT}
     async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers, timeout=15.0)
-        resp.raise_for_status()
-        return resp.content
+        buffer = io.BytesIO()
+        await stream_media(
+            client,
+            url,
+            buffer,
+            limit,
+            headers=headers,
+            timeout=15.0,
+        )
+        return buffer.getvalue()
 
 
 async def send_photo_helper(
@@ -190,7 +199,7 @@ async def send_video_helper(
         logger.warning(
             f"Failed to send video by URL {url}: {e}. Retrying by downloading bytes..."
         )
-        video_bytes = await download_bytes(url)
+        video_bytes = await download_bytes(url, video_upload_limit_mb() * 1024 * 1024)
         bio = io.BytesIO(video_bytes)
         bio.name = "video.mp4"
         await bot.send_video(
@@ -213,7 +222,7 @@ async def send_animation_helper(
         logger.warning(
             f"Failed to send animation by URL {url}: {e}. Retrying by downloading bytes..."
         )
-        gif_bytes = await download_bytes(url)
+        gif_bytes = await download_bytes(url, video_upload_limit_mb() * 1024 * 1024)
         bio = io.BytesIO(gif_bytes)
         bio.name = "animation.gif"
         await bot.send_animation(
@@ -337,7 +346,12 @@ async def send_videos(bot, chat_id, urls, caption, parse_mode, video_meta):
                 logger.warning("Video album by URL refused: %s", failure_reason(exc))
             try:
                 files = [
-                    image_input(await download_bytes(url), f"video_{i}.mp4")
+                    image_input(
+                        await download_bytes(
+                            url, video_upload_limit_mb() * 1024 * 1024
+                        ),
+                        f"video_{i}.mp4",
+                    )
                     for i, url in enumerate(batch)
                 ]
                 await bot.send_media_group(chat_id=chat_id, media=album(files))
@@ -552,6 +566,16 @@ async def try_delete_message(update: TelegramUpdate) -> None:
 
 
 async def handle_twitter_links(
+    update: TelegramUpdate, context: TelegramContext
+) -> None:
+    from daphne.bot import download_slot
+
+    user_id = update.effective_user.id if update.effective_user else 0
+    async with download_slot(user_id):
+        await _handle_twitter_links(update, context)
+
+
+async def _handle_twitter_links(
     update: TelegramUpdate, context: TelegramContext
 ) -> None:
     message = update.message

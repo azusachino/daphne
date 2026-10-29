@@ -265,6 +265,17 @@ class TestMetadataAndShortLinks(BilibiliTestCase):
         self.assertEqual(fake.order[0], "b23.tv")
         self.assertEqual(fake.calls["/x/player/pagelist"], 1)
 
+    def test_b23_short_link_to_non_bilibili_host_is_refused(self):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    302, headers={"location": "https://evil.example/video"}
+                )
+            )
+        )
+        with self.assertRaisesRegex(BilibiliError, "did not resolve to bilibili.com"):
+            fetch_bilibili_metadata("https://b23.tv/abc123", client=client)
+
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
 class TestDownloadEndToEnd(BilibiliTestCase):

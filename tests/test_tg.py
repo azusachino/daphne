@@ -7,7 +7,7 @@ from aiogram import Bot
 from aiogram.types import Chat, Message, Update, User
 
 from daphne import bot as bot_module
-from daphne.tg import TelegramMessage, build_bot, failure_reason
+from daphne.tg import TelegramMessage, build_bot, failure_reason, send_image_groups
 
 
 class TestFailureReason(unittest.TestCase):
@@ -27,6 +27,25 @@ class TestFailureReason(unittest.TestCase):
 
 
 class TestTelegramBoundary(unittest.IsolatedAsyncioTestCase):
+    async def test_image_groups_separate_large_files_and_cap_album_size(self):
+        bot = MagicMock()
+        bot.send_media_group = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.send_document = AsyncMock()
+        images = [(b"small", f"{i}.jpg") for i in range(11)] + [
+            (b"x" * 10_000_001, "large1.jpg"),
+            (b"x" * 10_000_001, "large2.jpg"),
+        ]
+        await send_image_groups(bot, 1, images, "caption", "HTML")
+        first, second = [
+            call.kwargs["media"] for call in bot.send_media_group.await_args_list
+        ]
+        self.assertEqual(len(first), 10)
+        self.assertEqual([item.type for item in second], ["document", "document"])
+        self.assertEqual(first[0].caption, "caption")
+        bot.send_photo.assert_awaited_once()
+        self.assertIsNone(second[0].caption)
+
     async def test_reply_text_translates_preview_option_and_wraps_result(self):
         raw_message = MagicMock()
         raw_message.answer = AsyncMock(return_value=MagicMock())

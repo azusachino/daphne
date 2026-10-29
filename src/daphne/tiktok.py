@@ -9,6 +9,7 @@ from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
 from daphne.downloader import probe_video_dimensions, format_video_caption
 from daphne.config import video_upload_limit_mb
+from daphne.media_http import MediaTooLarge, stream_media
 
 logger = logging.getLogger(__name__)
 
@@ -105,24 +106,34 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                 "TikTok handler: downloading video bytes from direct URL %s",
                                 video_url,
                             )
-                            video_resp = await client.get(
-                                video_url, headers=headers, timeout=30.0
-                            )
-                            video_resp.raise_for_status()
-                            with open(video_path, "wb") as f:
-                                f.write(video_resp.content)
-                            logger.info(
-                                "TikTok handler: video download completed. File size: %d bytes",
-                                os.path.getsize(video_path),
-                            )
+                            from daphne.bot import download_slot, send_video_card
 
                             max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-                            file_size = os.path.getsize(video_path)
-                            if file_size > max_upload_bytes:
-                                logger.warning(
-                                    "TikTok video size %d exceeds limit %d",
-                                    file_size,
-                                    max_upload_bytes,
+                            user_id = (
+                                update.effective_user.id if update.effective_user else 0
+                            )
+                            try:
+                                async with download_slot(user_id):
+                                    with open(video_path, "wb") as f:
+                                        await stream_media(
+                                            client,
+                                            video_url,
+                                            f,
+                                            max_upload_bytes,
+                                            headers=headers,
+                                        )
+                            except MediaTooLarge:
+                                await send_video_card(
+                                    update,
+                                    url,
+                                    {
+                                        "title": title,
+                                        "uploader": uploader,
+                                        "duration": duration_secs,
+                                        "webpage_url": url,
+                                    },
+                                    sender,
+                                    f"Video is over {video_upload_limit_mb()} MB",
                                 )
                                 return
 
@@ -171,7 +182,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
         from daphne.bot import handle_video_link
 
         await handle_video_link(update, context, url)
-        success = True  # We assume handled
+        return
 
     if success:
         logger.info(
