@@ -16,6 +16,7 @@ class TestBotLifecycle(unittest.IsolatedAsyncioTestCase):
             patch.dict(os.environ, {main_module.ENV_BOT_TOKEN: "token"}),
             patch.object(main_module, "build_bot", return_value=bot),
             patch.object(main_module, "build_dispatcher", return_value=dispatcher),
+            patch.object(main_module, "warm_up_tools"),
             patch.object(
                 main_module,
                 "register_bot_commands",

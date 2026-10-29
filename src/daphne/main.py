@@ -56,7 +56,8 @@ async def run_bot() -> None:
     token = os.environ[ENV_BOT_TOKEN]
     bot = build_bot(token)
     dispatcher = build_dispatcher()
-    await asyncio.to_thread(warm_up_tools)
+    # Tool refreshes run in the background, so polling starts without waiting for PyPI.
+    asyncio.get_running_loop().run_in_executor(None, warm_up_tools)
     try:
         await register_bot_commands(bot)
         await dispatcher.start_polling(bot.raw)

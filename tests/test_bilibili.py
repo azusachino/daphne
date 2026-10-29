@@ -29,17 +29,18 @@ PARTS = [
     {
         "cid": 111,
         "page": 1,
+        "part": "Cat",
         "duration": 100,
         "dimension": {"width": 852, "height": 480, "rotate": 0},
     },
     {
         "cid": 222,
         "page": 2,
+        "part": "Second cut",
         "duration": 8,
         "dimension": {"width": 852, "height": 480, "rotate": 0},
     },
 ]
-VIEW = {"bvid": "BV1aMEj62EdA"}
 URL = "https://www.bilibili.com/video/BV1aMEj62EdA"
 
 
@@ -66,6 +67,8 @@ class FakeBilibili:
             if self.spi_status != 200:
                 return httpx.Response(self.spi_status)
             return _json(SPI)
+        if path == "/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket":
+            return _json({"code": 0, "data": {"ticket": "ticket-test"}})
         if path == "/x/player/pagelist":
             self.pagelist_cookies.append(request.headers.get("cookie", ""))
             if self.pagelist_statuses:
@@ -226,12 +229,27 @@ class TestMetadataAndShortLinks(BilibiliTestCase):
     def test_metadata_matches_the_shape_the_yt_dlp_path_returns(self):
         fake = FakeBilibili()
         meta = fetch_bilibili_metadata(URL + "?p=2", client=fake.client())
-        self.assertEqual(meta["title"], "")  # view is refused, so no title
-        self.assertEqual(meta["uploader"], "")
+        self.assertEqual(meta["title"], "Second cut")  # the part's name
+        self.assertEqual(meta["uploader"], "")  # view is refused, so no uploader
         self.assertEqual(meta["duration"], 8)  # part 2's duration
         self.assertEqual(meta["webpage_url"], URL)
         self.assertEqual((meta["width"], meta["height"]), (852, 480))
         self.assertNotIn("/x/web-interface/view", fake.calls)
+
+    def test_ticket_is_attached_to_the_visitor_session(self):
+        fake = FakeBilibili()
+        fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(
+            fake.calls["/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket"], 1
+        )
+        self.assertIn("bili_ticket=ticket-test", fake.pagelist_cookies[-1])
+
+    def test_failed_ticket_does_not_block_the_download(self):
+        fake = FakeBilibili()
+        with patch.object(bilibili, "_bili_ticket", return_value=None):
+            meta = fetch_bilibili_metadata(URL, client=fake.client())
+        self.assertEqual(meta["duration"], 100)
+        self.assertNotIn("bili_ticket", fake.pagelist_cookies[-1])
 
     def test_b23_short_link_is_expanded_before_the_api_calls(self):
         fake = FakeBilibili()
@@ -358,14 +376,13 @@ class TestDownloadEndToEnd(BilibiliTestCase):
         out_dir = tempfile.mkdtemp(prefix="bili-out-")
         self.addCleanup(shutil.rmtree, out_dir, True)
         other = "https://www.bilibili.com/video/BV1kh4y1Y7Ko"
-        with patch.object(bilibili, "CACHE_MAX_BYTES", 1):
-            store_video(
-                URL, download_native_video(URL, out_dir, client=self._fake().client())
-            )
-            store_video(
-                other,
-                download_native_video(other, out_dir, client=self._fake().client()),
-            )
+        first = download_native_video(URL, out_dir, client=self._fake().client())
+        store_video(URL, first)
+        size = os.path.getsize(first)
+        second = download_native_video(other, out_dir, client=self._fake().client())
+        # The cap fits one stored video but not two, so the older one must go.
+        with patch.object(bilibili, "CACHE_MAX_BYTES", size + size // 2):
+            store_video(other, second)
         names = sorted(os.listdir(self.cache_dir))
         self.assertEqual(names, ["BV1kh4y1Y7Ko-p1.mp4"])
 
@@ -386,6 +403,59 @@ class TestCanonicalUrl(unittest.TestCase):
             canonical_url("https://www.bilibili.com/video/av170001"),
             "https://www.bilibili.com/video/av170001",
         )
+
+
+class TestLimitsAndCacheRules(BilibiliTestCase):
+    def test_oversize_video_is_not_cached(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = os.path.join(out_dir, "BV1aMEj62EdA.mp4")
+        with open(path, "wb") as f:
+            f.write(b"x" * 64)
+        with patch.object(bilibili, "CACHE_MAX_BYTES", 16):
+            store_video(URL, path)
+        self.assertEqual(os.listdir(self.cache_dir), [])
+
+    def test_stale_partial_files_are_removed_on_the_next_store(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        stale = os.path.join(self.cache_dir, "crashed.part")
+        Path(stale).write_bytes(b"partial")
+        old = time.time() - bilibili.STALE_PARTIAL_SECONDS - 60
+        os.utime(stale, (old, old))
+        path = os.path.join(out_dir, "BV1aMEj62EdA.mp4")
+        Path(path).write_bytes(b"video")
+        store_video(URL, path)
+        self.assertFalse(os.path.exists(stale))
+        self.assertEqual(os.listdir(self.cache_dir), ["BV1aMEj62EdA-p1.mp4"])
+
+    def test_cache_owned_by_another_user_is_not_used(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = os.path.join(out_dir, "BV1aMEj62EdA.mp4")
+        Path(path).write_bytes(b"video")
+        store_video(URL, path)
+        with patch.object(bilibili.os, "getuid", return_value=os.getuid() + 1):
+            self.assertIsNone(cached_video(URL, out_dir))
+        self.assertIsNotNone(cached_video(URL, out_dir))
+
+    def test_stream_over_the_size_cap_is_refused(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        fake = FakeBilibili(media={"v": b"x" * 100, "a": b"y" * 4})
+        with patch.object(bilibili, "MAX_STREAM_BYTES", 10):
+            with self.assertRaisesRegex(BilibiliError, "larger than the 2 GiB limit"):
+                download_native_video(URL, out_dir, client=fake.client())
+
+    def test_stream_past_the_time_limit_is_refused(self):
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        fake = FakeBilibili(media={"v": b"x" * 100, "a": b"y" * 4})
+        with (
+            patch.object(bilibili, "STREAM_TIMEOUT_SECONDS", -1.0),
+            self.assertRaisesRegex(BilibiliError, "timed out"),
+        ):
+            download_native_video(URL, out_dir, client=fake.client())
 
 
 if __name__ == "__main__":

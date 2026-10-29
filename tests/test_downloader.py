@@ -105,6 +105,25 @@ class TestDownloader(unittest.TestCase):
         res = scan_largest_media_file(self.test_dir)
         self.assertEqual(res, file_mp4_large)
 
+    def test_scan_ignores_yt_dlp_intermediate_streams(self):
+        # A video-only leftover from a failed merge must never be taken as the result.
+        for name, size in [("BV1.f100026.mp4", 900), ("BV1.mp4", 100)]:
+            with open(os.path.join(self.test_dir, name), "wb") as f:
+                f.write(b"x" * size)
+        self.assertEqual(
+            os.path.basename(scan_largest_media_file(self.test_dir)), "BV1.mp4"
+        )
+
+    def test_bilibili_part_query_is_kept_and_the_first_part_dropped(self):
+        self.assertEqual(
+            sanitize_video_url("https://www.bilibili.com/video/BV1aMEj62EdA/?p=2&t=5"),
+            "https://www.bilibili.com/video/BV1aMEj62EdA?p=2",
+        )
+        self.assertEqual(
+            sanitize_video_url("https://www.bilibili.com/video/BV1aMEj62EdA?p=1"),
+            "https://www.bilibili.com/video/BV1aMEj62EdA",
+        )
+
     def test_format_duration(self):
         self.assertEqual(format_duration(5), "00:05")
         self.assertEqual(format_duration(125), "02:05")
@@ -545,19 +564,22 @@ class TestBilibiliChain(unittest.TestCase):
         self.assertTrue(path.endswith("longer.mp4"))
         store.assert_not_called()
 
-    def test_rate_limited_native_engine_reports_the_rate_limit(self):
+    def test_rate_limit_stops_the_chain_at_once(self):
+        # The other engines reach the same throttled host, so none of them may run.
         self.native.side_effect = RateLimitedError("risk control")
         with self.assertRaisesRegex(RuntimeError, "rate-limiting"):
             download_video(self.BILI, self.test_dir)
+        self.ytdlp.assert_not_called()
+        self.youget.assert_not_called()
+        self.lux.assert_not_called()
+        self.yutto.assert_not_called()
 
     def test_all_engines_failing_reports_the_generic_message(self):
         with self.assertRaisesRegex(RuntimeError, "no download engine could fetch"):
             download_video(self.BILI, self.test_dir)
 
     def test_no_new_engine_starts_after_the_time_budget(self):
-        with patch(
-            "daphne.downloader.time.monotonic", side_effect=[0.0] + [1000.0] * 20
-        ):
+        with patch.object(downloader, "BILIBILI_CHAIN_BUDGET_SECONDS", -1.0):
             with self.assertRaises(RuntimeError):
                 download_video(self.BILI, self.test_dir)
         self.native.assert_not_called()
