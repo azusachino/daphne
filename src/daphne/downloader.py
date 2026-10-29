@@ -284,7 +284,11 @@ TOOL_REFRESH_CMDS = {
         "--version",
     ],
     "yutto": ["uvx", "--refresh-package", "yutto", "yutto", "--version"],
+    "you-get": ["uvx", "--refresh-package", "you-get", "you-get", "--version"],
 }
+# you-get runs through uvx like yt-dlp. lux is a Go binary installed in the image.
+YOU_GET_CMD = ["uvx", "you-get"]
+LUX_CMD = ["lux"]
 TOOL_WARMUP_TIMEOUT_SECONDS = 180.0
 YUTTO_OPTIONS = ["--no-danmaku", "--no-subtitle", "--no-cover", "--no-progress"]
 YUTTO_TIMEOUT_SECONDS = 600.0
@@ -478,13 +482,40 @@ def _ytdlp_bilibili_audio(url: str, out_dir: str) -> str:
     return largest
 
 
+def _youget_video(url: str, out_dir: str) -> str:
+    """you-get as a Bilibili video engine. It names the file itself, so the largest one wins."""
+    _run_cmd([*YOU_GET_CMD, "--output-dir", out_dir, url])
+    largest = scan_largest_media_file(out_dir)
+    if not largest:
+        raise RuntimeError("you-get produced no video file")
+    return largest
+
+
+def _lux_video(url: str, out_dir: str) -> str:
+    """lux as a Bilibili video engine."""
+    _run_cmd([*LUX_CMD, "-o", out_dir, "--silent", url])
+    largest = scan_largest_media_file(out_dir)
+    if not largest:
+        raise RuntimeError("lux produced no video file")
+    return largest
+
+
+def _lux_audio(url: str, out_dir: str) -> str:
+    """lux's own audio-only mode, as a Bilibili audio engine."""
+    _run_cmd([*LUX_CMD, "-o", out_dir, "--silent", "--audio-only", url])
+    largest = scan_largest_audio_file(out_dir) or scan_largest_media_file(out_dir)
+    if not largest:
+        raise RuntimeError("lux produced no audio file")
+    return largest
+
+
 def _download_bilibili_video(
     url: str, out_dir: str, expected_duration: Optional[float]
 ) -> str:
-    """The Bilibili video chain: disk cache, native player API, yutto, then yt-dlp.
+    """The Bilibili video chain: disk cache, native player API, yt-dlp, you-get, lux, yutto.
 
-    Only a file that passes the duration check is cached, so a truncated download is
-    never served again from the cache.
+    yutto is the last engine. Only a file that passes the duration check is cached, so a
+    truncated download is never served again from the cache.
     """
     link = _canonical_bilibili(url)
     try:
@@ -496,8 +527,10 @@ def _download_bilibili_video(
 
     engines: list[tuple[str, Callable[[str], str]]] = [
         ("native", lambda folder: bilibili.download_native_video(link, folder)),
-        ("yutto", lambda folder: yutto_fetch(link, folder)[0]),
         ("yt-dlp", lambda folder: _ytdlp_bilibili_video(link, folder)),
+        ("you-get", lambda folder: _youget_video(link, folder)),
+        ("lux", lambda folder: _lux_video(link, folder)),
+        ("yutto", lambda folder: yutto_fetch(link, folder)[0]),
     ]
     path, complete = _run_bilibili_chain(engines, out_dir, expected_duration)
     if complete:
@@ -506,12 +539,13 @@ def _download_bilibili_video(
 
 
 def _download_bilibili_audio(url: str, out_dir: str) -> str:
-    """The Bilibili audio chain: native audio track, yutto audio-only, then yt-dlp."""
+    """The Bilibili audio chain: native audio track, yt-dlp, lux audio-only, then yutto."""
     link = _canonical_bilibili(url)
     engines: list[tuple[str, Callable[[str], str]]] = [
         ("native", lambda folder: bilibili.download_native_audio(link, folder)),
-        ("yutto", lambda folder: yutto_fetch(link, folder, audio_only=True)[0]),
         ("yt-dlp", lambda folder: _ytdlp_bilibili_audio(link, folder)),
+        ("lux", lambda folder: _lux_audio(link, folder)),
+        ("yutto", lambda folder: yutto_fetch(link, folder, audio_only=True)[0]),
     ]
     path, _ = _run_bilibili_chain(engines, out_dir)
     return path
@@ -557,7 +591,12 @@ def download_video(
         ]
         return cmd
 
-    attempts = [cmd_pass1, cmd_pass2]
+    attempts = [
+        cmd_pass1,
+        cmd_pass2,
+        lambda: [*YOU_GET_CMD, "--output-dir", out_dir, url],
+        lambda: [*LUX_CMD, "-o", out_dir, "--silent", url],
+    ]
 
     # Track the longest result across attempts so that, if none is verifiably
     # complete, we still return the best partial rather than failing outright.

@@ -340,16 +340,18 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(res, "/tmp/pass2.mp4")
         self.assertEqual(mock_run.call_count, 2)
 
-        # Both attempts failing must not invoke another downloader.
+        # Every engine failing ends at lux, after yt-dlp twice, you-get, and lux.
         mock_run.reset_mock()
         mock_scan.reset_mock()
-        mock_scan.side_effect = [None, None]
+        mock_scan.side_effect = [None, None, None, None]
         with self.assertRaisesRegex(RuntimeError, "yt-dlp"):
             download_video("http://x.com", self.test_dir)
-        self.assertEqual(mock_run.call_count, 2)
-        for call in mock_run.call_args_list:
-            self.assertEqual(call.args[0][:2], ["uvx", "--from"])
-            self.assertIn("yt-dlp", call.args[0])
+        self.assertEqual(mock_run.call_count, 4)
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(commands[0][:2], ["uvx", "--from"])
+        self.assertEqual(commands[1][:2], ["uvx", "--from"])
+        self.assertEqual(commands[2][:2], ["uvx", "you-get"])
+        self.assertEqual(commands[3][0], "lux")
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
     @patch("subprocess.run")
@@ -390,12 +392,12 @@ class TestDownloader(unittest.TestCase):
     def test_download_video_returns_longest_partial(
         self, mock_run, mock_scan, mock_dur
     ):
-        # Both yt-dlp attempts truncate; preserve the longest partial.
-        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4"]
+        # Both yt-dlp attempts truncate and you-get and lux find nothing; keep the longest partial.
+        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4", None, None]
         mock_dur.side_effect = [100, 200]
         res = download_video("http://x.com", self.test_dir, expected_duration=270)
         self.assertEqual(res, "/tmp/b.mp4")
-        self.assertEqual(mock_run.call_count, 2)
+        self.assertEqual(mock_run.call_count, 4)
 
     @patch("daphne.downloader.scan_largest_audio_file")
     @patch("subprocess.run")
@@ -441,6 +443,22 @@ class TestBilibiliChain(unittest.TestCase):
             "daphne.downloader._ytdlp_bilibili_video",
             side_effect=RuntimeError("yt-dlp unavailable"),
         )
+        self.ytdlp_audio = self._patch(
+            "daphne.downloader._ytdlp_bilibili_audio",
+            side_effect=RuntimeError("yt-dlp unavailable"),
+        )
+        self.youget = self._patch(
+            "daphne.downloader._youget_video",
+            side_effect=RuntimeError("you-get unavailable"),
+        )
+        self.lux = self._patch(
+            "daphne.downloader._lux_video",
+            side_effect=RuntimeError("lux unavailable"),
+        )
+        self.lux_audio = self._patch(
+            "daphne.downloader._lux_audio",
+            side_effect=RuntimeError("lux unavailable"),
+        )
         self._patch("daphne.bilibili.CACHE_DIR", new=self.cache_dir)
 
     def _patch(self, target, **kwargs):
@@ -470,12 +488,31 @@ class TestBilibiliChain(unittest.TestCase):
         )
         path = download_video(self.BILI, self.test_dir)
         self.assertEqual(os.path.basename(os.path.dirname(path)), "yutto")
-        self.ytdlp.assert_not_called()
+        self.ytdlp.assert_called_once()
+        self.youget.assert_called_once()
+        self.lux.assert_called_once()
 
-    def test_yt_dlp_is_the_last_resort(self):
-        self.ytdlp.side_effect = lambda link, folder: _media(folder, "last.mp4")
-        path = download_video(self.BILI, self.test_dir)
-        self.assertEqual(os.path.basename(os.path.dirname(path)), "yt-dlp")
+    def test_engines_run_in_order_and_yutto_is_last(self):
+        order = []
+
+        def failing(name):
+            def run(*args, **kwargs):
+                order.append(name)
+                raise RuntimeError(f"{name} unavailable")
+
+            return run
+
+        self.ytdlp.side_effect = failing("yt-dlp")
+        self.youget.side_effect = failing("you-get")
+        self.lux.side_effect = failing("lux")
+
+        def yutto(link, folder, audio_only=False):
+            order.append("yutto")
+            return (_media(folder, "last.mp4"), None)
+
+        self.yutto.side_effect = yutto
+        download_video(self.BILI, self.test_dir)
+        self.assertEqual(order, ["yt-dlp", "you-get", "lux", "yutto"])
 
     def test_truncated_native_file_is_not_cached_and_yutto_completes(self):
         self.native.side_effect = lambda link, folder: _media(folder, "partial.mp4")
