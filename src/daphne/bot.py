@@ -32,6 +32,7 @@ from daphne.downloader import (
     format_duration,
     format_video_caption,
     is_bilibili_url,
+    is_youtube_url,
     probe_video_dimensions,
     sanitize_video_url,
 )
@@ -233,7 +234,7 @@ def extract_video_url(text: str) -> str | None:
     text = preprocess_text_links(text)
     for match in URL_REGEX.finditer(text):
         url = sanitize_video_url(match.group(0))
-        if is_bilibili_url(url) or "youtube.com" in url or "youtu.be" in url:
+        if is_bilibili_url(url) or is_youtube_url(url):
             return url
     return None
 
@@ -391,7 +392,6 @@ async def handle_video_link(
             sender,
             f"Video is over {video_upload_limit_mb()} MB",
         )
-        await delete_original_message(update)
         return
 
     with tempfile.TemporaryDirectory() as out_dir:
@@ -435,7 +435,6 @@ async def handle_video_link(
                 sender,
                 f"Video is over {video_upload_limit_mb()} MB",
             )
-            await delete_original_message(update)
             return
 
         await status_msg.edit_text(
@@ -637,10 +636,7 @@ async def media_message_handler(
                 sender,
                 reason,
             )
-            # While the card offers a download, keep the original link so a failed
-            # download still leaves it in the chat. Delete it only for a final card.
-            if size is not None and size > TG_HARD_LIMIT_BYTES:
-                await delete_original_message(update)
+            # A card is not an upload; keep the source message.
 
 
 async def download_button_callback(

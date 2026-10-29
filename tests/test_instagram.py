@@ -5,6 +5,7 @@ from daphne.instagram import (
     contains_instagram_link,
     extract_instagram_link,
     handle_instagram_links,
+    send_carousel_videos,
 )
 
 # Real link that triggered the fail-fast bug in production: parth-dl's
@@ -42,6 +43,84 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_chat_action = AsyncMock()
         self.context.bot.send_message = AsyncMock()
         self.context.bot.send_photo = AsyncMock()
+
+    @patch("daphne.downloader.fetch_instagram_fallback_media", return_value=None)
+    @patch(
+        "parth_dl.extractors.MediaExtractor", side_effect=RuntimeError("init failed")
+    )
+    async def test_constructor_failure_still_tries_fallback(
+        self, mock_extractor, mock_fallback
+    ):
+        await handle_instagram_links(self.update, self.context)
+        mock_fallback.assert_called_once_with("https://www.instagram.com/p/DRZSlC7D3OT")
+        self.context.bot.send_message.assert_awaited_once()
+
+    async def test_carousel_videos_are_streamed_before_grouping(self):
+        async def stream(client, url, output, limit):
+            output.write(b"video")
+
+        self.context.bot.send_media_group = AsyncMock()
+        with patch(
+            "daphne.instagram.stream_media", new=AsyncMock(side_effect=stream)
+        ) as download:
+            await send_carousel_videos(self.context.bot, 7, ["one", "two"], "caption")
+        self.assertEqual(download.await_count, 2)
+        media = self.context.bot.send_media_group.await_args.kwargs["media"]
+        self.assertEqual([item.type for item in media], ["video", "video"])
+        self.assertEqual(media[0].caption, "caption")
+
+    @patch("daphne.instagram.try_delete_message", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_carousel_videos", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_carousel_send_failure_keeps_original(
+        self, extract, photos, videos, delete
+    ):
+        extract.return_value = {
+            "id": "ABC",
+            "type": "carousel",
+            "entries": [
+                {"kind": "image", "formats": [{"url": "https://cdn.test/1.jpg"}]},
+                {"kind": "video", "formats": [{"url": "https://cdn.test/1.mp4"}]},
+            ],
+        }
+        videos.side_effect = RuntimeError("upload failed")
+        await handle_instagram_links(self.update, self.context)
+        delete.assert_not_awaited()
+        self.assertIn(
+            "original link was kept",
+            self.context.bot.send_message.await_args.kwargs["text"],
+        )
+
+    @patch("daphne.instagram.try_delete_message", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_carousel_videos", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_mixed_carousel_sends_every_entry(
+        self, extract, photos, videos, delete
+    ):
+        extract.return_value = {
+            "id": "ABC",
+            "type": "carousel",
+            "entries": [
+                {"kind": "image", "formats": [{"url": "https://cdn.test/1.jpg"}]},
+                {
+                    "kind": "video",
+                    "formats": [
+                        {"url": "https://cdn.test/1.mp4"},
+                        {"url": "https://cdn.test/alt.mp4"},
+                    ],
+                },
+                {"kind": "video", "formats": [{"url": "https://cdn.test/2.mp4"}]},
+            ],
+        }
+        await handle_instagram_links(self.update, self.context)
+        self.assertEqual(photos.await_args.args[2], ["https://cdn.test/1.jpg"])
+        self.assertEqual(
+            videos.await_args.args[2],
+            ["https://cdn.test/1.mp4", "https://cdn.test/2.mp4"],
+        )
+        delete.assert_awaited_once()
 
     @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
     @patch("daphne.downloader.fetch_instagram_fallback_media", return_value=None)

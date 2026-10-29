@@ -200,13 +200,17 @@ async def handle_bluesky_links(
             post_text, original_url, author_name, author_handle, sender
         )
         try:
-            success = await send_photos(
-                context.bot,
-                chat_id,
-                photo_urls,
-                caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
+            from daphne.bot import download_slot
+
+            user_id = update.effective_user.id if update.effective_user else 0
+            async with download_slot(user_id):
+                success = await send_photos(
+                    context.bot,
+                    chat_id,
+                    photo_urls,
+                    caption,
+                    parse_mode=PARSE_MODE_HTML,
+                )
         except Exception as exc:
             logger.warning("Bluesky photo send failed: %s", failure_reason(exc))
             await _report_failure(message, context, chat_id, sender, "send")
@@ -223,7 +227,7 @@ async def handle_bluesky_links(
         await handle_video_link(
             update, context, video_url, custom_metadata=custom_metadata
         )
-        success = True
+        return
     else:
         # No media to send: say so and keep the original message, without a link fallback.
         await _report_failure(message, context, chat_id, sender, "no-media")

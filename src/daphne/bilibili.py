@@ -107,7 +107,7 @@ def _open(client: Optional[httpx.Client]) -> Iterator[httpx.Client]:
 def _expand_short_link(client: httpx.Client, url: str) -> str:
     """Follow b23.tv share links by hand so the final bilibili.com URL is known."""
     for _ in range(3):
-        if not (urlsplit(url).hostname or "").endswith("b23.tv"):
+        if (urlsplit(url).hostname or "").lower() != "b23.tv":
             return url
         resp = client.get(url, headers=_headers())
         location = resp.headers.get("location")

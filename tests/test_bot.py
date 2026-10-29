@@ -285,7 +285,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(button_download.callback_data.startswith("dl:"))
         self.assertEqual(button_source.text, "Open source")
         self.assertEqual(button_source.url, "https://www.bilibili.com/video/BV1abc")
-        self.update.message.delete.assert_called_once()
+        self.update.message.delete.assert_not_called()
 
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))

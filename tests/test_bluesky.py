@@ -128,6 +128,27 @@ class TestBlueskyFailureReporting(unittest.IsolatedAsyncioTestCase):
         update.effective_user = MagicMock(username="u", full_name="U")
         return update
 
+    async def test_video_failure_does_not_delete_original(self):
+        context = MagicMock()
+        context.bot.send_chat_action = AsyncMock()
+        update = self._update()
+        thread = {
+            "thread": {
+                "post": {"author": {"handle": "alice.test"}, "record": {}, "embed": {}}
+            }
+        }
+        with (
+            patch("daphne.bluesky.resolve_handle", AsyncMock(return_value="did:plc:x")),
+            patch("daphne.bluesky.fetch_post_thread", AsyncMock(return_value=thread)),
+            patch(
+                "daphne.bluesky.extract_media_from_embed",
+                return_value=([], "https://video.example/a.m3u8"),
+            ),
+            patch("daphne.bot.handle_video_link", new=AsyncMock()),
+        ):
+            await handle_bluesky_links(update, context)
+        update.message.delete.assert_not_awaited()
+
     async def test_unresolvable_handle_gets_failure_reaction_and_reply(self):
         context = MagicMock()
         context.bot.send_chat_action = AsyncMock()
