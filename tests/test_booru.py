@@ -173,5 +173,56 @@ class TestBooruFallbacks(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class TestKonachanNet(unittest.TestCase):
+    def _client(self, posts, image=b"img", image_url=None):
+        import httpx as _httpx
+
+        def handler(request):
+            if request.url.path == "/post.json":
+                return _httpx.Response(200, json=posts)
+            return _httpx.Response(200, content=image)
+
+        return _httpx.Client(transport=_httpx.MockTransport(handler))
+
+    def test_single_post_is_fetched_from_the_site_api(self):
+        posts = [
+            {
+                "id": 7,
+                "file_url": "//konachan.net/image/abc/Konachan.com%20-%207%20x.jpg",
+            }
+        ]
+        images = booru._direct_moebooru_images(
+            "konachan.net", "7", client=self._client(posts)
+        )
+        self.assertEqual(images, [(b"img", "Konachan.com - 7 x.jpg")])
+
+    def test_an_image_from_another_host_is_refused(self):
+        posts = [{"id": 7, "file_url": "https://evil.example/x.jpg"}]
+        with self.assertRaises(ValueError):
+            booru._direct_moebooru_images(
+                "konachan.net", "7", client=self._client(posts)
+            )
+
+    def test_a_missing_post_gives_no_images(self):
+        self.assertEqual(
+            booru._direct_moebooru_images("konachan.net", "7", client=self._client([])),
+            [],
+        )
+
+    def test_konachan_net_links_skip_gallery_dl(self):
+        with (
+            patch(
+                "daphne.booru._direct_moebooru_images", return_value=[(b"x", "x.jpg")]
+            ) as direct,
+            patch("daphne.booru.download_gallery") as gallery,
+        ):
+            self.assertEqual(
+                booru._download_images("https://konachan.net/post/show/7"),
+                [(b"x", "x.jpg")],
+            )
+        direct.assert_called_once_with("konachan.net", "7")
+        gallery.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 """Single-post links from the booru family, converted with gallery-dl.
 
-Covers Moebooru (yande.re, Konachan, lolibooru) and Danbooru. Only single-post URLs are
+Covers Moebooru (yande.re, Konachan, lolibooru) and Danbooru. konachan.net is fetched directly,
+because gallery-dl's Konachan extractor goes to konachan.com, which challenges it. Only single-post URLs are
 accepted: a tag or search page would make gallery-dl download a whole result set.
 """
 
@@ -9,17 +10,19 @@ import logging
 import re
 import tempfile
 from typing import Optional
+from urllib.parse import unquote, urlsplit
 
+import httpx
 
 from daphne.gallery import MEDIA_GROUP_LIMIT, download_gallery
 from daphne.messages import HtmlMessage, sender_attribution
 from daphne.tg import (
-    image_input,
-    send_photo_or_document,
     InputMediaPhoto,
     TelegramContext,
     TelegramUpdate,
     failure_reason,
+    image_input,
+    send_photo_or_document,
 )
 from daphne.twitter import try_delete_message
 
@@ -54,8 +57,50 @@ def _site_label(url: str) -> str:
     return host.split(".")[0].capitalize()
 
 
+# konachan.net serves its post JSON and images directly. gallery-dl's Konachan extractor
+# always goes to konachan.com, which answers with a Cloudflare challenge, so the single
+# post is fetched here instead. Images must come from the same site.
+DIRECT_POST_RE = re.compile(
+    r"https?://(konachan\.net)/post/show/(\d+)(?![\w/])", re.IGNORECASE
+)
+DIRECT_IMAGE_LIMIT_BYTES = 50 * 1024 * 1024
+USER_AGENT = "daphne/0.5.0"
+
+
+def _direct_moebooru_images(
+    site: str, post_id: str, client: Optional[httpx.Client] = None
+) -> list[tuple[bytes, str]]:
+    owned = client is None
+    client = client or httpx.Client(
+        headers={"User-Agent": USER_AGENT}, timeout=30.0, follow_redirects=False
+    )
+    try:
+        resp = client.get(f"https://{site}/post.json", params={"tags": f"id:{post_id}"})
+        resp.raise_for_status()
+        posts = resp.json()
+        if not posts:
+            return []
+        file_url = str(posts[0].get("file_url") or "")
+        if file_url.startswith("//"):
+            file_url = "https:" + file_url
+        if not file_url.startswith(f"https://{site}/"):
+            raise ValueError("Moebooru returned an image from another host")
+        image = client.get(file_url, headers={"Referer": f"https://{site}/"})
+        image.raise_for_status()
+        if len(image.content) > DIRECT_IMAGE_LIMIT_BYTES:
+            raise ValueError("Moebooru image is larger than the download limit")
+        name = unquote(urlsplit(file_url).path.rsplit("/", 1)[-1])
+        return [(image.content, name)]
+    finally:
+        if owned:
+            client.close()
+
+
 def _download_images(url: str) -> list[tuple[bytes, str]]:
     """Fetch every image of the post with gallery-dl, reading the bytes before the folder goes."""
+    direct = DIRECT_POST_RE.fullmatch(url)
+    if direct:
+        return _direct_moebooru_images(direct.group(1), direct.group(2))
     if extract_booru_url(url) != url:
         raise ValueError("only single booru post links are downloaded")
     with tempfile.TemporaryDirectory(prefix="daphne-booru-") as work:
