@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bilibili stream limits**: each stream must finish within 300 seconds and stay under 2 GiB.
 - **lux and you-get are back** as fallbacks after yt-dlp for other sites. lux is the latest GitHub release, resolved at each image build, and the tarball is checked against the release's checksums file.
 - **yt-dlp, you-get and yutto run through uvx**: the latest releases are fetched once at bot start, in the background, so polling does not wait for PyPI. Releases must be at least three days old (`UV_EXCLUDE_NEWER=P3D`).
+- **Booru single posts**: yande.re, Konachan, lolibooru and Danbooru post links are converted with gallery-dl and sent as photo groups. Tag and search pages are refused.
 - **Pixiv fallback chain**: when the CDN route cannot read a work, gallery-dl tries it with the owner's login (`DAPHNE_PIXIV_REFRESH_TOKEN`, optional). Without a login, the bot says the work could not be read and why, instead of failing silently. Age-restricted works need that login.
 - **Metadata reused on the download button**: a card keeps its link and metadata, so pressing Download does not look the link up again. The button cache is bounded to 500 entries.
 - **Log redaction**: request URLs, with or without a scheme, are cut to their host, and Telegram bot tokens and secret query values (token, key, secret, sessdata, password, including compound names) are redacted from every log line and traceback.

@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-195%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-203%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -36,7 +36,7 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 
 ## Features
 
-- **🔗 Paste a link** — Twitter/X, Pixiv, Bluesky, Instagram, TikTok, YouTube, and Bilibili links convert in the chat. Nothing else is needed.
+- **🔗 Paste a link** — Twitter/X, Pixiv, Bluesky, Instagram, TikTok, YouTube, Bilibili, and single yande.re, Konachan, lolibooru, or Danbooru post links convert in the chat. Nothing else is needed.
 - **🎯 Per-platform handlers** — photos, GIFs, videos, and carousels render natively instead of dumping a link.
 - **🎬 Video** — YouTube through `yt-dlp` (two passes), then `you-get` and `lux`. A file that is shorter than its metadata says is retried.
 - **📺 Bilibili** — its own chain: disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last). Every engine's file must pass the duration check. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
@@ -55,6 +55,7 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 | **Instagram**       | `parth-dl` (GraphQL), `yt-dlp` fallback      | Images, carousels, reels                                 |
 | **YouTube**         | `yt-dlp` (two passes), then `you-get`, `lux` | Video                                                    |
 | **Bilibili · b23**  | Native API → yt-dlp → you-get → lux → yutto  | Video (480p anonymous)                                   |
+| **Danbooru family** | gallery-dl (single post links) | yande.re, Konachan, lolibooru, Danbooru post pages |
 | **Pixiv**           | Pixiv API; pixiv.cat and CDN; gallery-dl with an owner login for age-restricted works | Photos and media groups |
 | **Bluesky**         | XRPC identity + HLS parsing                  | Image carousels, videos                                  |
 | **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback)              | Direct video                                             |
