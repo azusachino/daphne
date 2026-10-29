@@ -1,5 +1,9 @@
 """Bounded streaming for direct social-media downloads."""
 
+import asyncio
+
+from daphne.doh import check_public_url
+
 
 class MediaTooLarge(ValueError):
     pass
@@ -8,6 +12,7 @@ class MediaTooLarge(ValueError):
 async def stream_media(
     client, url, sink, limit: int, *, headers=None, timeout=30.0
 ) -> None:
+    await asyncio.to_thread(check_public_url, url)
     size = 0
     async with client.stream("GET", url, headers=headers, timeout=timeout) as response:
         response.raise_for_status()

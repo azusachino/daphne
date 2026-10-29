@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Preserve original links when Bluesky or TikTok video delivery fails and when a video card is shown instead of an upload.
-- Match supported video hosts by hostname rather than substrings in arbitrary URLs.
+- Match supported video hosts by hostname rather than substrings in arbitrary URLs. Before running external downloaders or bounded media streams, check initial URL hostnames through Cloudflare DNS over HTTPS, rejecting non-public answers and lookup failures. This pre-check does not constrain redirects, later DNS resolution, or other in-process fetches.
 - Do not cache unprobeable Bilibili videos as verified complete when an expected duration is known; isolate generic downloader attempts so earlier partials do not hide later complete files.
 - Show a video card for oversized TikTok downloads. Try Instagram's fallback if the primary extractor cannot initialize, and retain distinct image and video entries in carousels.
 - Group Pixiv and booru photos separately from oversized documents when possible.

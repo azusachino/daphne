@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from typing import Callable, Tuple, Optional
 
 from daphne import bilibili
+from daphne.doh import check_public_url
 from daphne.messages import HtmlMessage, author_tag
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,10 @@ def run_tool(cmd: list[str], timeout: float) -> tuple[int, str, str]:
     children it started (yt-dlp's ffmpeg, yutto's uvx child) cannot keep writing into a
     folder that is about to be removed. Raises subprocess.TimeoutExpired after the kill.
     """
+    # A best-effort preflight only: child redirects and DNS are not confined.
+    for arg in cmd:
+        if arg.startswith(("https://", "http://")):
+            check_public_url(arg)
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

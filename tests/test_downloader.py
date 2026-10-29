@@ -656,7 +656,10 @@ class TestYuttoHardening(unittest.TestCase):
     def test_exit_code_zero_without_a_file_is_a_failure(self):
         proc = MagicMock(pid=1)
         proc.communicate.return_value = ("", "")
-        with patch("daphne.downloader.subprocess.Popen", return_value=proc):
+        with (
+            patch("daphne.downloader.check_public_url"),
+            patch("daphne.downloader.subprocess.Popen", return_value=proc),
+        ):
             with self.assertRaisesRegex(RuntimeError, "produced no file"):
                 yutto_fetch(self.BILI, self.test_dir)
 
