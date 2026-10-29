@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-190%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-195%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -55,7 +55,7 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 | **Instagram**       | `parth-dl` (GraphQL), `yt-dlp` fallback      | Images, carousels, reels                                 |
 | **YouTube**         | `yt-dlp` (two passes), then `you-get`, `lux` | Video                                                    |
 | **Bilibili · b23**  | Native API → yt-dlp → you-get → lux → yutto  | Video (480p anonymous)                                   |
-| **Pixiv**           | Pixiv API + CDN / pixiv.cat fallback         | Photos and media groups                                  |
+| **Pixiv**           | Pixiv API; pixiv.cat and CDN; gallery-dl with an owner login for age-restricted works | Photos and media groups |
 | **Bluesky**         | XRPC identity + HLS parsing                  | Image carousels, videos                                  |
 | **TikTok / Douyin** | TikWM API (+ `yt-dlp` fallback)              | Direct video                                             |
 
@@ -110,6 +110,7 @@ For 2 GB uploads, run the local Telegram Bot API sidecar from `docker-compose.ym
 | Variable                                | Purpose                                             |
 | --------------------------------------- | --------------------------------------------------- |
 | `DAPHNE_BOT_TOKEN`                      | Bot token from [@BotFather](https://t.me/BotFather) |
+| `DAPHNE_PIXIV_REFRESH_TOKEN` (optional) | A Pixiv login token. Lets gallery-dl read age-restricted works; never logged, never passed on the command line |
 | `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` | Credentials for the local Bot API sidecar           |
 
 ## Configuration

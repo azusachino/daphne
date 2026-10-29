@@ -25,14 +25,16 @@ def scan_images(out_dir: str) -> list[str]:
     return images
 
 
-def download_gallery(url: str, out_dir: str) -> list[str]:
+def download_gallery(
+    url: str, out_dir: str, extra_args: list[str] | tuple[str, ...] = ()
+) -> list[str]:
     """
     Download an image gallery with gallery-dl into ``out_dir`` and return the
     resulting image paths (empty list on failure). ``-D`` flattens everything
     into ``out_dir`` so no per-site subdirectories are created.
     """
     os.makedirs(out_dir, exist_ok=True)
-    cmd = ["gallery-dl", "-D", out_dir, "--", url]
+    cmd = ["gallery-dl", "-D", out_dir, *extra_args, "--", url]
     logger.info("Running command: %s", " ".join(cmd))
     try:
         subprocess.run(

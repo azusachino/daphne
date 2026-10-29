@@ -1,4 +1,8 @@
+import asyncio
 import io
+import json
+import os
+import tempfile
 import logging
 import re
 import unicodedata
@@ -20,6 +24,7 @@ from daphne.messages import (
     PARSE_MODE_HTML,
     sender_attribution,
 )
+from daphne.gallery import download_gallery
 from daphne.twitter import try_delete_message
 
 logger = logging.getLogger(__name__)
@@ -29,6 +34,11 @@ PIXIV_RESTRICTED_TEXT = (
     "This Pixiv work is age-restricted, so the bot can't convert it anonymously. "
     "Open it in Pixiv while signed in. Your original link was kept."
 )
+PIXIV_UNAVAILABLE_TEXT = (
+    "This Pixiv work could not be read. Age-restricted works need a Pixiv login, which "
+    "this bot has only when its owner sets one. Your original link was kept."
+)
+PIXIV_REFRESH_TOKEN_ENV = "DAPHNE_PIXIV_REFRESH_TOKEN"
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
 
@@ -247,6 +257,60 @@ def build_caption(
     return message.render()
 
 
+async def _fetch_primary(
+    artwork_id: str, info: Optional[PixivInfo]
+) -> tuple[list[tuple[bytes, str]], int]:
+    """The CDN route: pixiv.cat, then Pixiv's own files. Raises ValueError when nothing works."""
+    if info and info.page_count > 1:
+        if not info.image_urls or len(info.image_urls) != info.page_count:
+            raise ValueError(f"Pixiv page URLs unavailable for artwork {artwork_id}")
+        remaining = max(0, info.page_count - MAX_PIXIV_IMAGES)
+        images = [
+            await fetch_pixiv_image(artwork_id, [url], page=index)
+            for index, url in enumerate(info.image_urls[:MAX_PIXIV_IMAGES])
+        ]
+        return images, remaining
+    image = await fetch_pixiv_image(artwork_id, info.image_urls if info else None)
+    return [image], 0
+
+
+def pixiv_refresh_token() -> str:
+    """A Pixiv login token, set by the owner. It is only read here and never logged."""
+    return os.environ.get(PIXIV_REFRESH_TOKEN_ENV, "").strip()
+
+
+def _page_index(path: str) -> int:
+    match = re.search(r"_p(\d+)", os.path.basename(path))
+    return int(match.group(1)) if match else 0
+
+
+def _gallery_fallback_sync(artwork_id: str) -> list[tuple[bytes, str]]:
+    """gallery-dl with the owner's login, for works the CDN route cannot read.
+
+    The token goes into a private config file that is removed afterwards. It is not put on
+    the command line, in the environment, or in any log line. Without a token this is a no-op.
+    """
+    token = pixiv_refresh_token()
+    if not token:
+        return []
+    with tempfile.TemporaryDirectory(prefix="daphne-pixiv-") as work:
+        config = os.path.join(work, "gallery-dl.json")
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"extractor": {"pixiv": {"refresh-token": token}}}, handle)
+        out_dir = os.path.join(work, "out")
+        paths = download_gallery(
+            f"https://www.pixiv.net/artworks/{artwork_id}",
+            out_dir,
+            ["--config", config],
+        )
+        images = []
+        for path in sorted(paths, key=_page_index):
+            with open(path, "rb") as handle:
+                images.append((handle.read(), os.path.basename(path)))
+    return images
+
+
 async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -> None:
     message = update.message
     if not message or not message.text:
@@ -284,26 +348,28 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
         )
         return
 
+    from daphne.bot import REACTION_FAILED, set_reaction
+
     try:
-        remaining_images = 0
-        if info and info.page_count > 1:
-            if not info.image_urls or len(info.image_urls) != info.page_count:
-                raise ValueError(
-                    f"Pixiv page URLs unavailable for artwork {artwork_id}"
-                )
-            remaining_images = max(0, info.page_count - MAX_PIXIV_IMAGES)
-            images = [
-                await fetch_pixiv_image(artwork_id, [url], page=index)
-                for index, url in enumerate(info.image_urls[:MAX_PIXIV_IMAGES])
-            ]
-        else:
-            images = [
-                await fetch_pixiv_image(artwork_id, info.image_urls if info else None)
-            ]
+        images, remaining_images = await _fetch_primary(artwork_id, info)
+    except ValueError as exc:
+        logger.info("Pixiv CDN route failed for %s: %s", artwork_id, exc)
+        loop = asyncio.get_running_loop()
+        gallery = await loop.run_in_executor(None, _gallery_fallback_sync, artwork_id)
+        images = gallery[:MAX_PIXIV_IMAGES]
+        remaining_images = max(0, len(gallery) - MAX_PIXIV_IMAGES)
+        if not images:
+            await set_reaction(message, REACTION_FAILED)
+            await message.reply_text(
+                HtmlMessage(sender=sender).text(PIXIV_UNAVAILABLE_TEXT).render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+
+    try:
         caption = build_caption(
             original_url, images[0][1], info, sender, remaining_images
         )
-
         if len(images) == 1 and len(images[0][0]) <= 10 * 1024 * 1024:
             image_bytes, image_url = images[0]
             await context.bot.send_photo(
@@ -334,8 +400,6 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
             await context.bot.send_media_group(chat_id=message.chat_id, media=media)
     except Exception as exc:
         logger.warning("Pixiv image upload failed for %s: %s", artwork_id, exc)
-        from daphne.bot import REACTION_FAILED, set_reaction
-
         await set_reaction(message, REACTION_FAILED)
         return
 
