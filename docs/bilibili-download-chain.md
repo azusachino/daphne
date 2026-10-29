@@ -31,13 +31,13 @@ flowchart TD
 | Order | Engine | What it does | Typical failure |
 | --- | --- | --- | --- |
 | 0 | Disk cache | Serves a finished mp4 by `bvid` and part for 6 hours (2 GiB cap, oldest evicted). Only files that passed the duration check are stored. | None; a miss falls through. |
-| 1 | Native player API (`bilibili.py`) | `view` for metadata, `playurl` with `fnval=4048` for DASH. Downloads the video and audio tracks and muxes them with ffmpeg, without re-encoding. Anonymous, so quality is capped at 480p. | HTTP 412 or code -412 risk control. Retried with backoff, once with a fresh visitor session. |
+| 1 | Native player API (`bilibili.py`) | `pagelist` for the part's cid and duration, `playurl` with `fnval=4048` for DASH. The `view` endpoint is refused, so it is not used. Downloads the video and audio tracks and muxes them with ffmpeg, without re-encoding. Anonymous, so quality is capped at 480p. | HTTP 412 or code -412 risk control. Retried with backoff, once with a fresh visitor session. |
 | 2 | yt-dlp (`uvx yt-dlp`) | One pass with the site's headers. | Bilibili extractor broken upstream (`Unable to extract initial state`). |
 | 3 | you-get (`uvx you-get`) | Writes its own file into the engine folder. | Varies by extractor. |
 | 4 | lux (image binary) | Writes its own file into the engine folder. | Varies by extractor. |
 | 5 | yutto (`uvx yutto`), **last** | Bilibili-specific downloader with its own API client. Its exit code is ignored; the output file decides. | Anonymous requests get the same risk control. |
 
-Metadata uses engine 1 first, and yt-dlp `--dump-json` only if the native call fails.
+Metadata comes from pagelist: duration, size, and link. Title and uploader are empty, because the view endpoint is refused. yt-dlp `--dump-json` runs only if the native call fails.
 
 Audio order: native audio track → yt-dlp audio extract → lux `--audio-only` → yutto
 `--audio-only` (last). you-get has no audio-only mode, so it is skipped for audio.
@@ -89,9 +89,12 @@ sequenceDiagram
 
 - **Quality:** anonymous requests cap at 480p in native, yutto, and the other engines.
   Higher quality needs a logged-in cookie (`SESSDATA`), which is not wired in yet.
-- **Risk control:** Bilibili answers `-412 request was banned` per IP. On 2026-10-29 the
-  test host got it from the first `view` call, with and without visitor cookies, and yutto
-  failed the same way. The chain can only recover once the ban lifts.
+- **Risk control:** on 2026-10-29 the test host got `-412 request was banned` from the `view`
+  endpoint in every variant: plain, with visitor cookies, and with a `bili_ticket`. The
+  `pagelist` and `playurl` endpoints answered with code 0, both unsigned and wbi-signed,
+  once the visitor cookies and ticket were sent. yutto failed on the same host at its first
+  call. The result comes from one host and one moment; it is not
+  a guarantee.
 - **Bangumi and paid content:** not handled natively. The native engine refuses them, and
   the chain falls through.
 - **Versions:** yt-dlp, you-get, and yutto run at the latest PyPI release, refreshed at

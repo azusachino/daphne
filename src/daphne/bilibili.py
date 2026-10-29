@@ -52,14 +52,12 @@ BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
 AV_RE = re.compile(r"/av(\d+)", re.IGNORECASE)
 
 SESSION_TTL = 30 * 60
-VIEW_TTL = 30 * 60
 CACHE_TTL = 6 * 60 * 60
 CACHE_MAX_BYTES = 2 * 1024**3
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "daphne-bilibili")
 
 _state_lock = threading.Lock()
 _session: dict[str, Any] = {"cookies": None, "at": 0.0}
-_view_cache: dict[tuple[tuple[str, str], ...], tuple[float, dict[str, Any]]] = {}
 
 
 class BilibiliError(RuntimeError):
@@ -190,18 +188,18 @@ def _api(client: httpx.Client, path: str, params: dict[str, Any]) -> dict[str, A
     raise RateLimitedError("Bilibili kept rate-limiting this video; try again later")
 
 
-def _view(client: httpx.Client, ref: dict[str, str]) -> dict[str, Any]:
-    key = tuple(sorted(ref.items()))
-    cached = _view_cache.get(key)
-    if cached and time.monotonic() - cached[0] < VIEW_TTL:
-        return cached[1]
-    data = _api(client, "/x/web-interface/view", ref)
-    _view_cache[key] = (time.monotonic(), data)
-    return data
+def _ident(ref: dict[str, str]) -> str:
+    """The BV id, or ``av<aid>`` for old-style links."""
+    return ref["bvid"] if "bvid" in ref else f"av{ref['aid']}"
 
 
-def _page(view: dict[str, Any], page: int) -> dict[str, Any]:
-    pages = view.get("pages") or []
+def _part(client: httpx.Client, ref: dict[str, str], page: int) -> dict[str, Any]:
+    """One part's cid, duration and size from the pagelist endpoint.
+
+    The view endpoint returns 412 on every probe of 2026-10-29, while pagelist and
+    playurl answered, so the native path reads parts from pagelist only.
+    """
+    pages = _api(client, "/x/player/pagelist", ref)
     if not pages:
         raise BilibiliError("Bilibili returned no parts for this video")
     if not 1 <= page <= len(pages):
@@ -209,12 +207,12 @@ def _page(view: dict[str, Any], page: int) -> dict[str, Any]:
     return pages[page - 1]
 
 
-def _playurl(client: httpx.Client, bvid: str, cid: int) -> dict[str, Any]:
+def _playurl(client: httpx.Client, ref: dict[str, str], cid: int) -> dict[str, Any]:
     return _api(
         client,
         "/x/player/playurl",
         {
-            "bvid": bvid,
+            **ref,
             "cid": cid,
             "qn": MAX_QN,
             "fnval": FNVAL_DASH,
@@ -227,22 +225,24 @@ def _playurl(client: httpx.Client, bvid: str, cid: int) -> dict[str, Any]:
 def fetch_bilibili_metadata(
     url: str, client: Optional[httpx.Client] = None
 ) -> dict[str, Any]:
-    """Metadata in the same shape as the yt-dlp path returns."""
+    """Metadata in the same shape as the yt-dlp path returns.
+
+    Title and uploader are empty: they come from the view endpoint, which is refused.
+    """
     with _open(client) as open_client:
         ref, page = video_ref(_expand_short_link(open_client, url))
         _ensure_visitor_session(open_client)
-        view = _view(open_client, ref)
-        part = _page(view, page)
-    dimension = view.get("dimension") or {}
+        part = _part(open_client, ref, page)
+    dimension = part.get("dimension") or {}
     width, height = dimension.get("width"), dimension.get("height")
     if dimension.get("rotate") == 1:
         width, height = height, width
     return {
-        "title": view.get("title", ""),
-        "uploader": (view.get("owner") or {}).get("name", ""),
-        "duration": part.get("duration") or view.get("duration"),
-        "thumbnail": view.get("pic"),
-        "webpage_url": f"https://www.bilibili.com/video/{view.get('bvid', '')}",
+        "title": "",
+        "uploader": "",
+        "duration": part.get("duration"),
+        "thumbnail": None,
+        "webpage_url": f"https://www.bilibili.com/video/{_ident(ref)}",
         "width": width,
         "height": height,
         "filesize": None,
@@ -314,11 +314,10 @@ def _fetch_tracks(
     work: str,
     want_video: bool,
 ) -> tuple[str, str, str]:
-    """Download the chosen streams into ``work``. Returns (bvid, video path, audio path)."""
+    """Download the chosen streams into ``work``. Returns (ident, video path, audio path)."""
     _ensure_visitor_session(client)
-    view = _view(client, ref)
-    part = _page(view, page)
-    play = _playurl(client, view["bvid"], part["cid"])
+    part = _part(client, ref, page)
+    play = _playurl(client, ref, part["cid"])
     dash = play.get("dash") or {}
     if not dash:
         raise BilibiliError("Bilibili returned no DASH streams for this video")
@@ -328,7 +327,7 @@ def _fetch_tracks(
     if want_video:
         _download_stream(client, pick_video_stream(dash), video_path)
     _download_stream(client, audio, audio_path)
-    return view["bvid"], video_path, audio_path
+    return _ident(ref), video_path, audio_path
 
 
 def _cache_file(bvid: str, page: int) -> str:

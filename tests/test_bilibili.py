@@ -25,15 +25,21 @@ from daphne.bilibili import (
 )
 
 SPI = {"code": 0, "data": {"b_3": "buvid3-test", "b_4": "buvid4-test", "b_nut": "1"}}
-VIEW = {
-    "bvid": "BV1aMEj62EdA",
-    "title": "Cat",
-    "owner": {"name": "Uploader"},
-    "pic": "https://i.example/cover.jpg",
-    "duration": 108,
-    "dimension": {"width": 852, "height": 480, "rotate": 0},
-    "pages": [{"cid": 111, "duration": 100}, {"cid": 222, "duration": 8}],
-}
+PARTS = [
+    {
+        "cid": 111,
+        "page": 1,
+        "duration": 100,
+        "dimension": {"width": 852, "height": 480, "rotate": 0},
+    },
+    {
+        "cid": 222,
+        "page": 2,
+        "duration": 8,
+        "dimension": {"width": 852, "height": 480, "rotate": 0},
+    },
+]
+VIEW = {"bvid": "BV1aMEj62EdA"}
 URL = "https://www.bilibili.com/video/BV1aMEj62EdA"
 
 
@@ -44,10 +50,10 @@ def _json(payload: dict) -> httpx.Response:
 class FakeBilibili:
     """Serves the endpoints the module calls and records what it asked for."""
 
-    def __init__(self, view_statuses=(), media=None, spi_status=200):
+    def __init__(self, pagelist_statuses=(), media=None, spi_status=200):
         self.calls = collections.Counter()
-        self.view_statuses = list(view_statuses)
-        self.view_cookies = []
+        self.pagelist_statuses = list(pagelist_statuses)
+        self.pagelist_cookies = []
         self.media = media or {}
         self.spi_status = spi_status
         self.order = []
@@ -60,14 +66,13 @@ class FakeBilibili:
             if self.spi_status != 200:
                 return httpx.Response(self.spi_status)
             return _json(SPI)
-        if path == "/x/web-interface/view":
-            self.view_cookies.append(request.headers.get("cookie", ""))
-            if self.view_statuses:
-                status = self.view_statuses.pop(0)
+        if path == "/x/player/pagelist":
+            self.pagelist_cookies.append(request.headers.get("cookie", ""))
+            if self.pagelist_statuses:
+                status = self.pagelist_statuses.pop(0)
                 if status != 200:
                     return httpx.Response(status)
-            bvid = request.url.params.get("bvid", VIEW["bvid"])
-            return _json({"code": 0, "data": dict(VIEW, bvid=bvid)})
+            return _json({"code": 0, "data": PARTS})
         if path == "/x/player/playurl":
             return _json(
                 {
@@ -107,7 +112,6 @@ class BilibiliTestCase(unittest.TestCase):
     def setUp(self):
         # Module state is shared across calls, so every test starts cold.
         bilibili._session.update(cookies=None, at=0.0)
-        bilibili._view_cache.clear()
         cache_dir = tempfile.mkdtemp(prefix="bili-cache-")
         self.addCleanup(shutil.rmtree, cache_dir, True)
         patcher = patch.object(bilibili, "CACHE_DIR", cache_dir)
@@ -164,15 +168,15 @@ class TestStreamSelection(unittest.TestCase):
 
 class TestApiBackoff(BilibiliTestCase):
     def test_risk_control_412_is_retried_until_it_clears(self):
-        fake = FakeBilibili(view_statuses=[412, 412, 200])
+        fake = FakeBilibili(pagelist_statuses=[412, 412, 200])
         with patch("daphne.bilibili.time.sleep") as sleep:
             meta = fetch_bilibili_metadata(URL, client=fake.client())
-        self.assertEqual(meta["title"], "Cat")
-        self.assertEqual(fake.calls["/x/web-interface/view"], 3)
+        self.assertEqual(meta["duration"], 100)
+        self.assertEqual(fake.calls["/x/player/pagelist"], 3)
         self.assertEqual(sleep.call_count, 2)
 
     def test_gives_up_after_all_retries(self):
-        fake = FakeBilibili(view_statuses=[412] * 10)
+        fake = FakeBilibili(pagelist_statuses=[412] * 10)
         with patch("daphne.bilibili.time.sleep"):
             with self.assertRaisesRegex(BilibiliError, "rate-limiting"):
                 fetch_bilibili_metadata(URL, client=fake.client())
@@ -193,11 +197,10 @@ class TestVisitorSession(BilibiliTestCase):
     def test_spi_cookies_are_sent_and_reused_within_the_ttl(self):
         fake = FakeBilibili()
         fetch_bilibili_metadata(URL, client=fake.client())
-        bilibili._view_cache.clear()  # force a second view call so cookies are re-checked
         fetch_bilibili_metadata(URL, client=fake.client())
         self.assertEqual(fake.calls["/x/frontend/finger/spi"], 1)
-        self.assertIn("buvid3=buvid3-test", fake.view_cookies[0])
-        self.assertIn("buvid4=buvid4-test", fake.view_cookies[-1])
+        self.assertIn("buvid3=buvid3-test", fake.pagelist_cookies[0])
+        self.assertIn("buvid4=buvid4-test", fake.pagelist_cookies[-1])
 
     def test_session_is_refreshed_after_the_ttl(self):
         fake = FakeBilibili()
@@ -207,7 +210,7 @@ class TestVisitorSession(BilibiliTestCase):
         self.assertEqual(fake.calls["/x/frontend/finger/spi"], 2)
 
     def test_risk_control_refreshes_the_session_once(self):
-        fake = FakeBilibili(view_statuses=[412, 200])
+        fake = FakeBilibili(pagelist_statuses=[412, 200])
         with patch("daphne.bilibili.time.sleep"):
             fetch_bilibili_metadata(URL, client=fake.client())
         self.assertEqual(fake.calls["/x/frontend/finger/spi"], 2)
@@ -215,7 +218,7 @@ class TestVisitorSession(BilibiliTestCase):
     def test_failed_visitor_setup_does_not_block_the_api_call(self):
         fake = FakeBilibili(spi_status=500)
         meta = fetch_bilibili_metadata(URL, client=fake.client())
-        self.assertEqual(meta["title"], "Cat")
+        self.assertEqual(meta["duration"], 100)
         self.assertIsNone(bilibili._session["cookies"])
 
 
@@ -223,17 +226,12 @@ class TestMetadataAndShortLinks(BilibiliTestCase):
     def test_metadata_matches_the_shape_the_yt_dlp_path_returns(self):
         fake = FakeBilibili()
         meta = fetch_bilibili_metadata(URL + "?p=2", client=fake.client())
-        self.assertEqual(meta["title"], "Cat")
-        self.assertEqual(meta["uploader"], "Uploader")
+        self.assertEqual(meta["title"], "")  # view is refused, so no title
+        self.assertEqual(meta["uploader"], "")
         self.assertEqual(meta["duration"], 8)  # part 2's duration
         self.assertEqual(meta["webpage_url"], URL)
         self.assertEqual((meta["width"], meta["height"]), (852, 480))
-
-    def test_view_responses_are_cached_in_memory(self):
-        fake = FakeBilibili()
-        fetch_bilibili_metadata(URL, client=fake.client())
-        fetch_bilibili_metadata(URL, client=fake.client())
-        self.assertEqual(fake.calls["/x/web-interface/view"], 1)
+        self.assertNotIn("/x/web-interface/view", fake.calls)
 
     def test_b23_short_link_is_expanded_before_the_api_calls(self):
         fake = FakeBilibili()
@@ -247,7 +245,7 @@ class TestMetadataAndShortLinks(BilibiliTestCase):
         client = httpx.Client(transport=httpx.MockTransport(handler))
         fetch_bilibili_metadata("https://b23.tv/abc123", client=client)
         self.assertEqual(fake.order[0], "b23.tv")
-        self.assertEqual(fake.calls["/x/web-interface/view"], 1)
+        self.assertEqual(fake.calls["/x/player/pagelist"], 1)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "needs ffmpeg")
