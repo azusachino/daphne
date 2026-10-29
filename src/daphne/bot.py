@@ -3,7 +3,6 @@ import functools
 import logging
 import os
 import re
-import shlex
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
@@ -11,19 +10,12 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from aiogram import BaseMiddleware, Bot, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
     ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQueryResultArticle,
-    InlineQueryResultsButton,
-    InlineQueryResultMpeg4Gif,
-    InlineQueryResultPhoto,
-    InlineQueryResultVideo,
-    InputMediaPhoto,
-    InputTextMessageContent,
     ReactionTypeEmoji,
     TelegramObject,
 )
@@ -35,7 +27,6 @@ from daphne.config import (
     video_upload_limit_mb,
 )
 from daphne.downloader import (
-    download_audio,
     download_video,
     fetch_video_metadata,
     format_duration,
@@ -44,7 +35,6 @@ from daphne.downloader import (
     probe_video_dimensions,
     sanitize_video_url,
 )
-from daphne.gallery import chunk_images, download_gallery
 from daphne.messages import (
     HtmlMessage,
     PARSE_MODE_HTML,
@@ -56,21 +46,30 @@ from daphne.tg import (
     TelegramContext,
     TelegramUpdate,
     adapt_callback_query,
-    adapt_inline_query,
     adapt_message,
     adapt_update,
-    as_input_file,
     failure_reason,
     context_for,
     new_dispatcher,
     new_router,
 )
 
-CALLBACK_URL_CACHE: dict[str, str] = {}
+TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+# A download button keeps its card's link and metadata here. The cache is bounded, so a
+# busy bot cannot grow it without limit; an evicted button reports that the link expired.
+CALLBACK_CACHE_LIMIT = 500
+CALLBACK_URL_CACHE: dict[str, tuple[str, dict]] = {}
+
+
+def _remember_callback(short_id: str, webpage_url: str, metadata: dict) -> None:
+    CALLBACK_URL_CACHE[short_id] = (webpage_url, metadata)
+    while len(CALLBACK_URL_CACHE) > CALLBACK_CACHE_LIMIT:
+        CALLBACK_URL_CACHE.pop(next(iter(CALLBACK_URL_CACHE)))
+
 
 logger = logging.getLogger(__name__)
 
-# In-process concurrency guard for heavy downloads (yt-dlp / gallery-dl).
+# In-process concurrency guard for heavy downloads (yt-dlp, you-get, lux, yutto).
 # Semaphores are created lazily inside the running loop. A user must clear both
 # their own per-user slot and a shared global slot before a download proceeds,
 # so one big transfer cannot starve the executor for everyone else.
@@ -147,6 +146,7 @@ LINK_RE = re.compile(
     r"\b(?<!@)(?:https?://)?(?:www\.|vm\.|vt\.)?(?:"
     r"bilibili\.com|b23\.tv|"
     r"youtube\.com|youtu\.be|"
+    r"yande\.re|konachan\.(?:com|net)|lolibooru\.moe|danbooru\.donmai\.us|"
     r"twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com|"
     r"pixiv\.net|"
     r"bsky\.app|"
@@ -189,9 +189,7 @@ async def check_access_and_reply(update: TelegramUpdate, command: str) -> bool:
 def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
     body = (
         "Send a Twitter/X, Pixiv, Bluesky, Instagram, TikTok, Bilibili, or "
-        "YouTube link and I will convert it into Telegram-friendly media.\n\n"
-        "/audio <link> — extract audio as MP3\n"
-        "/gallery <link> — download an image gallery"
+        "YouTube link and I will convert it into Telegram-friendly media."
     )
     return (
         HtmlMessage(sender=sender)
@@ -330,9 +328,8 @@ async def send_video_card(
     )
     buttons = []
     short_id = str(uuid.uuid4())[:8]
-    CALLBACK_URL_CACHE[short_id] = webpage_url
+    _remember_callback(short_id, webpage_url, metadata)
 
-    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
     size = _metadata_size(metadata)
     if size is None or size <= TG_HARD_LIMIT_BYTES:
         buttons.append(
@@ -362,8 +359,11 @@ async def handle_video_link(
     custom_metadata: dict | None = None,
 ) -> None:
     sender = sender_attribution(update.effective_user)
+    status_text = (
+        "Preparing download..." if custom_metadata else "Fetching video metadata..."
+    )
     status_msg = await update.message.reply_text(
-        HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+        HtmlMessage(sender=sender).text(status_text).render(),
         parse_mode=PARSE_MODE_HTML,
     )
 
@@ -468,8 +468,19 @@ async def handle_video_link(
         if duration is not None:
             kwargs["duration"] = int(float(duration))
 
-        with open(video_path, "rb") as video_file:
-            await context.bot.send_video(video=video_file, **kwargs)
+        try:
+            with open(video_path, "rb") as video_file:
+                await context.bot.send_video(video=video_file, **kwargs)
+        except Exception as exc:
+            logger.exception("Failed to send video")
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"Failed to upload video: {exc}")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
 
     await status_msg.delete()
     await delete_original_message(update)
@@ -500,18 +511,22 @@ async def media_message_handler(
     from daphne.bluesky import contains_bluesky_link, handle_bluesky_links
     from daphne.instagram import contains_instagram_link, handle_instagram_links
     from daphne.tiktok import contains_tiktok_link, handle_tiktok_links
+    from daphne.booru import contains_booru_link, handle_booru_links
 
     is_twitter = contains_twitter_link(message.text)
     is_pixiv = contains_pixiv_link(message.text)
     is_bluesky = contains_bluesky_link(message.text)
     is_instagram = contains_instagram_link(message.text)
     is_tiktok = contains_tiktok_link(message.text)
+    is_booru = contains_booru_link(message.text)
     video_url = extract_video_url(message.text)
 
     # Acknowledge a recognised link with a lightweight "working" reaction. On
     # success the original message is deleted (taking the reaction with it); on
     # failure the handlers switch it to a failure reaction.
-    if any([is_twitter, is_pixiv, is_bluesky, is_instagram, is_tiktok, video_url]):
+    if any(
+        [is_twitter, is_pixiv, is_bluesky, is_instagram, is_tiktok, is_booru, video_url]
+    ):
         await set_reaction(message, REACTION_WORKING)
 
     if is_twitter:
@@ -530,6 +545,10 @@ async def media_message_handler(
         logger.info("Routing to Instagram handler")
         if await check_access_and_reply(update, "convert_link"):
             await handle_instagram_links(update, context)
+    elif is_booru:
+        logger.info("Routing to booru handler")
+        if await check_access_and_reply(update, "convert_link"):
+            await handle_booru_links(update, context)
     elif is_tiktok:
         logger.info("Routing to TikTok handler")
         if await check_access_and_reply(update, "convert_link"):
@@ -602,7 +621,6 @@ async def media_message_handler(
         else:
             # Fallback to sending the video card
             await status_msg.delete()
-            TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
             if size is not None and size > TG_HARD_LIMIT_BYTES:
                 reason = "Video is over Telegram's 2GiB limit"
             elif size is not None and size > max_upload_bytes:
@@ -625,518 +643,6 @@ async def media_message_handler(
                 await delete_original_message(update)
 
 
-async def audio_command(update: TelegramUpdate, context: TelegramContext) -> None:
-    if not await check_access_and_reply(update, "extract_audio"):
-        return
-
-    message = update.message
-    if not message:
-        return
-
-    # Extract text/link
-    text = ""
-    if len(context.args) > 0:
-        text = " ".join(context.args)
-    elif message.reply_to_message and message.reply_to_message.text:
-        text = message.reply_to_message.text
-
-    url = None
-    if text:
-        text = preprocess_text_links(text)
-        match = URL_REGEX.search(text)
-        if match:
-            url = sanitize_video_url(match.group(0))
-
-    if not url:
-        await message.reply_text(
-            HtmlMessage()
-            .text(
-                "Please provide a link or reply to a message containing a link.\n\n"
-                "Example: /audio <link>"
-            )
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-        return
-
-    sender = sender_attribution(update.effective_user)
-    await set_reaction(message, REACTION_WORKING)
-    status_msg = await message.reply_text(
-        HtmlMessage(sender=sender).text("Fetching audio metadata...").render(),
-        parse_mode=PARSE_MODE_HTML,
-    )
-
-    loop = asyncio.get_running_loop()
-    try:
-        await context.bot.send_chat_action(
-            chat_id=message.chat_id, action="upload_audio"
-        )
-    except Exception as exc:
-        logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
-
-    metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-    max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-
-    with tempfile.TemporaryDirectory() as out_dir:
-        try:
-            user_id = update.effective_user.id if update.effective_user else 0
-
-            async def _notify_queued() -> None:
-                await status_msg.edit_text(
-                    HtmlMessage(sender=sender)
-                    .text("Queued, waiting for a free download slot...")
-                    .render(),
-                    parse_mode=PARSE_MODE_HTML,
-                )
-
-            async with download_slot(user_id, on_wait=_notify_queued):
-                await status_msg.edit_text(
-                    HtmlMessage(sender=sender).text("Downloading audio...").render(),
-                    parse_mode=PARSE_MODE_HTML,
-                )
-                try:
-                    await context.bot.send_chat_action(
-                        chat_id=message.chat_id, action="upload_audio"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Best-effort Telegram call failed: %s", failure_reason(exc)
-                    )
-                audio_path = await loop.run_in_executor(
-                    None, download_audio, url, out_dir
-                )
-        except Exception:
-            logger.exception("Failed to download audio")
-            await set_reaction(message, REACTION_FAILED)
-            await status_msg.edit_text(
-                HtmlMessage(sender=sender).text("Audio download failed.").render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-            return
-
-        file_size = os.path.getsize(audio_path)
-        if file_size > max_upload_bytes:
-            await status_msg.delete()
-            await message.reply_text(
-                HtmlMessage(sender=sender)
-                .title("Audio is too large")
-                .text(f"Audio file is over {video_upload_limit_mb()} MB limit.")
-                .render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-            await delete_original_message(update)
-            return
-
-        await status_msg.edit_text(
-            HtmlMessage(sender=sender).text("Uploading audio...").render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-        try:
-            await context.bot.send_chat_action(
-                chat_id=message.chat_id, action="upload_audio"
-            )
-        except Exception as exc:
-            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
-
-        title = (
-            metadata.get("title") or os.path.splitext(os.path.basename(audio_path))[0]
-        )
-        performer = metadata.get("uploader") or "Unknown"
-        duration_secs = metadata.get("duration")
-        dur_val = None
-        if duration_secs is not None:
-            try:
-                dur_val = int(float(duration_secs))
-            except ValueError, TypeError:
-                pass
-
-        # Construct simple caption
-        platform = detect_platform(url)
-        caption = (
-            HtmlMessage(sender=sender)
-            .title(title)
-            .fields(("Uploader:", performer))
-            .link(metadata.get("webpage_url") or url)
-            .tags(platform, "audio")
-            .render()
-        )
-
-        kwargs = {
-            "chat_id": message.chat_id,
-            "title": title,
-            "performer": performer,
-            "caption": caption,
-            "parse_mode": PARSE_MODE_HTML,
-        }
-        if dur_val is not None:
-            kwargs["duration"] = dur_val
-
-        with open(audio_path, "rb") as audio_file:
-            await context.bot.send_audio(audio=audio_file, **kwargs)
-
-    await set_reaction(message, REACTION_DONE)
-    await status_msg.delete()
-    await delete_original_message(update)
-
-
-async def gallery_command(update: TelegramUpdate, context: TelegramContext) -> None:
-    if not await check_access_and_reply(update, "download_gallery"):
-        return
-
-    message = update.message
-    if not message:
-        return
-
-    text = ""
-    if context.args:
-        text = " ".join(context.args)
-    elif message.reply_to_message and message.reply_to_message.text:
-        text = message.reply_to_message.text
-
-    url = None
-    if text:
-        text = preprocess_text_links(text)
-        match = URL_REGEX.search(text)
-        if match:
-            url = match.group(0)
-
-    if not url:
-        await message.reply_text(
-            HtmlMessage()
-            .text(
-                "Please provide a link or reply to a message containing a link.\n\n"
-                "Example: /gallery <link>"
-            )
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-        return
-
-    sender = sender_attribution(update.effective_user)
-    user_id = update.effective_user.id if update.effective_user else 0
-    await set_reaction(message, REACTION_WORKING)
-    status_msg = await message.reply_text(
-        HtmlMessage(sender=sender).text("Downloading gallery...").render(),
-        parse_mode=PARSE_MODE_HTML,
-    )
-
-    loop = asyncio.get_running_loop()
-    with tempfile.TemporaryDirectory() as out_dir:
-        try:
-
-            async def _notify_queued() -> None:
-                await status_msg.edit_text(
-                    HtmlMessage(sender=sender)
-                    .text("Queued, waiting for a free download slot...")
-                    .render(),
-                    parse_mode=PARSE_MODE_HTML,
-                )
-
-            async with download_slot(user_id, on_wait=_notify_queued):
-                try:
-                    await context.bot.send_chat_action(
-                        chat_id=message.chat_id, action="upload_photo"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Best-effort Telegram call failed: %s", failure_reason(exc)
-                    )
-                images = await loop.run_in_executor(
-                    None, download_gallery, url, out_dir
-                )
-        except Exception:
-            logger.exception("Failed to download gallery")
-            await set_reaction(message, REACTION_FAILED)
-            await status_msg.edit_text(
-                HtmlMessage(sender=sender).text("Gallery download failed.").render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-            return
-
-        if not images:
-            await set_reaction(message, REACTION_FAILED)
-            await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text("No images found for that link.")
-                .render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-            return
-
-        caption = (
-            HtmlMessage(sender=sender)
-            .text(f"{len(images)} image(s)")
-            .link(url)
-            .tags("gallery")
-            .render()
-        )
-        await status_msg.edit_text(
-            HtmlMessage(sender=sender)
-            .text(f"Uploading {len(images)} image(s)...")
-            .render(),
-            parse_mode=PARSE_MODE_HTML,
-        )
-
-        first_group = True
-        for chunk in chunk_images(images):
-            open_files = []
-            try:
-                media = []
-                for index, path in enumerate(chunk):
-                    handle = open(path, "rb")
-                    open_files.append(handle)
-                    if first_group and index == 0:
-                        media.append(
-                            InputMediaPhoto(
-                                media=as_input_file(handle),
-                                caption=caption,
-                                parse_mode=PARSE_MODE_HTML,
-                            )
-                        )
-                    else:
-                        media.append(InputMediaPhoto(media=as_input_file(handle)))
-                await context.bot.send_media_group(chat_id=message.chat_id, media=media)
-            finally:
-                for handle in open_files:
-                    handle.close()
-            first_group = False
-
-    await set_reaction(message, REACTION_DONE)
-    await status_msg.delete()
-    await delete_original_message(update)
-
-
-INLINE_RESULT_LIMIT = 10
-
-
-def _twitter_inline_results(media: dict, caption: str) -> list:
-    """Build inline photo/video/gif results from a resolved tweet."""
-    results: list = []
-    for photo_url in media.get("photos", []):
-        results.append(
-            InlineQueryResultPhoto(
-                id=uuid.uuid4().hex,
-                photo_url=photo_url,
-                thumbnail_url=photo_url,
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        )
-    for video in media.get("videos", []):
-        thumb = video.get("thumbnail")
-        if not thumb:
-            continue
-        results.append(
-            InlineQueryResultVideo(
-                id=uuid.uuid4().hex,
-                video_url=video["url"],
-                mime_type="video/mp4",
-                thumbnail_url=thumb,
-                title="Video",
-                video_width=video.get("width"),
-                video_height=video.get("height"),
-                video_duration=video.get("duration"),
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        )
-    for gif in media.get("gifs", []):
-        thumb = gif.get("thumbnail")
-        if not thumb:
-            continue
-        results.append(
-            InlineQueryResultMpeg4Gif(
-                id=uuid.uuid4().hex,
-                mpeg4_url=gif["url"],
-                thumbnail_url=thumb,
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        )
-    return results[:INLINE_RESULT_LIMIT]
-
-
-def _instagram_inline_results(media: dict, caption: str) -> list:
-    """Build inline photo/video results from a resolved Instagram post."""
-    results: list = []
-    for photo_url in media.get("photos", []):
-        results.append(
-            InlineQueryResultPhoto(
-                id=uuid.uuid4().hex,
-                photo_url=photo_url,
-                thumbnail_url=photo_url,
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        )
-    if media.get("video_url") and media.get("thumbnail"):
-        results.append(
-            InlineQueryResultVideo(
-                id=uuid.uuid4().hex,
-                video_url=media["video_url"],
-                mime_type="video/mp4",
-                thumbnail_url=media["thumbnail"],
-                title=media.get("title") or "Video",
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        )
-    return results[:INLINE_RESULT_LIMIT]
-
-
-async def inline_query_handler(
-    update: TelegramUpdate, context: TelegramContext
-) -> None:
-    """
-    Inline conversion: ``@daphne <url>`` — resolves a link to native media
-    (photos/video/gif) the user can send straight into any chat. Telegram
-    provides no chat context for inline queries, so authorization is user-level
-    only (``chat_id=0`` means the chat tier of RBAC can never match) via the
-    ``inline_convert`` permission.
-    """
-    inline_query = update.inline_query
-    if inline_query is None:
-        return
-
-    user_id = inline_query.from_user.id if inline_query.from_user else 0
-    query = (inline_query.query or "").strip()
-
-    access = rbac_service.check_access(user_id, 0, "inline_convert")
-    if not access.is_allowed():
-        await inline_query.answer(
-            results=[],
-            cache_time=5,
-            is_personal=True,
-            button=InlineQueryResultsButton(
-                text="Not authorized — open a chat with me",
-                start_parameter="start",
-            ),
-        )
-        return
-
-    if not query:
-        await inline_query.answer(
-            results=[],
-            cache_time=5,
-            is_personal=True,
-            button=InlineQueryResultsButton(
-                text="Paste a link after the bot name",
-                start_parameter="start",
-            ),
-        )
-        return
-
-    from daphne.twitter import (
-        contains_twitter_link,
-        extract_twitter_link,
-        resolve_twitter_media,
-        build_caption,
-    )
-    from daphne.instagram import (
-        contains_instagram_link,
-        extract_instagram_link,
-        resolve_instagram_media,
-    )
-
-    processed = preprocess_text_links(query)
-    sender = sender_attribution(inline_query.from_user)
-    loop = asyncio.get_running_loop()
-    results: list = []
-    source_url: str | None = None
-    source_title = "Media"
-
-    if contains_twitter_link(processed):
-        info = extract_twitter_link(processed)
-        if info:
-            domain, username, tweet_id = info
-            source_url = f"https://{domain}/{username}/status/{tweet_id}"
-            source_title = "Tweet"
-            media = await resolve_twitter_media(username, tweet_id)
-            if media:
-                source_url = media["url"]
-                caption = build_caption(media["text"], media["url"], sender)
-                results = _twitter_inline_results(media, caption)
-    elif contains_instagram_link(processed):
-        ig_url = extract_instagram_link(processed)
-        if ig_url:
-            source_url = ig_url
-            source_title = "Instagram post"
-            media = await loop.run_in_executor(None, resolve_instagram_media, ig_url)
-            if media:
-                source_url = media["original_url"]
-                source_title = media.get("title") or (
-                    f"Instagram post by @{media['uploader']}"
-                )
-                caption = (
-                    HtmlMessage(sender=sender)
-                    .title(source_title)
-                    .fields(("Uploader:", f"@{media['uploader']}"))
-                    .link(media["original_url"])
-                    .tags("instagram")
-                    .render()
-                )
-                results = _instagram_inline_results(media, caption)
-    else:
-        match = URL_REGEX.search(processed)
-        if match:
-            url = sanitize_video_url(match.group(0))
-            source_url = url
-            try:
-                metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-            except Exception:
-                logger.exception("Inline metadata fetch failed")
-                metadata = {}
-            source_title = metadata.get("title") or "Media"
-            source_url = metadata.get("webpage_url") or url
-            direct_url = metadata.get("url")
-            thumbnail = metadata.get("thumbnail")
-            if direct_url and thumbnail:
-                caption = (
-                    HtmlMessage(sender=sender)
-                    .title(source_title)
-                    .link(source_url)
-                    .tags(detect_platform(url))
-                    .render()
-                )
-                results.append(
-                    InlineQueryResultVideo(
-                        id=uuid.uuid4().hex,
-                        video_url=direct_url,
-                        mime_type="video/mp4",
-                        thumbnail_url=thumbnail,
-                        title=source_title,
-                        caption=caption,
-                        parse_mode=PARSE_MODE_HTML,
-                    )
-                )
-
-    # Always offer a link-sharing article so an authorized user gets a usable
-    # result even when direct media can't be resolved.
-    if source_url:
-        results.append(
-            InlineQueryResultArticle(
-                id=uuid.uuid4().hex,
-                title=f"Share link: {source_title}",
-                description=source_url,
-                input_message_content=InputTextMessageContent(
-                    message_text=(
-                        HtmlMessage(sender=sender)
-                        .title(source_title)
-                        .link(source_url)
-                        .render()
-                    ),
-                    parse_mode=PARSE_MODE_HTML,
-                ),
-            )
-        )
-
-    if not results:
-        await inline_query.answer(results=[], cache_time=5, is_personal=True)
-        return
-
-    await inline_query.answer(results=results, cache_time=30, is_personal=True)
-
-
 async def download_button_callback(
     update: TelegramUpdate, context: TelegramContext
 ) -> None:
@@ -1150,10 +656,11 @@ async def download_button_callback(
         return
 
     short_id = data[3:]
-    url = CALLBACK_URL_CACHE.get(short_id)
-    if not url:
+    entry = CALLBACK_URL_CACHE.get(short_id)
+    if not entry:
         await query.answer("Error: Video link has expired.", show_alert=True)
         return
+    url, metadata = entry
 
     user_id = query.from_user.id if query.from_user else 0
     chat_id = query.message.chat.id if query.message else 0
@@ -1169,10 +676,11 @@ async def download_button_callback(
     # Acknowledge the callback query immediately to avoid loading animation on button
     await query.answer()
 
-    # Edit the card message to indicate progress and remove the buttons
+    # Edit the card message to indicate progress and remove the buttons. The metadata
+    # came with the card, so the link is not looked up again.
     try:
         await query.edit_message_text(
-            HtmlMessage(sender=sender).text("Fetching video metadata...").render(),
+            HtmlMessage(sender=sender).text("Preparing download...").render(),
             parse_mode=PARSE_MODE_HTML,
             reply_markup=None,
         )
@@ -1180,22 +688,6 @@ async def download_button_callback(
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     loop = asyncio.get_running_loop()
-    try:
-        metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-    except Exception:
-        logger.exception("Failed to fetch video metadata")
-        try:
-            await query.edit_message_text(
-                HtmlMessage(sender=sender)
-                .text("Video metadata fetch failed.")
-                .render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-        except Exception as exc:
-            logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
-        return
-
-    TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
     size = _metadata_size(metadata)
     if size is not None and size > TG_HARD_LIMIT_BYTES:
         try:
@@ -1346,8 +838,6 @@ async def log_update(update: TelegramUpdate, context: TelegramContext) -> None:
         kind = f"message: {update.message.text!r}"
     elif update.callback_query is not None:
         kind = f"callback_query: {update.callback_query.data!r}"
-    elif update.inline_query is not None:
-        kind = f"inline_query: {update.inline_query.query!r}"
     else:
         kind = type(update).__name__
     logger.info(
@@ -1430,15 +920,6 @@ async def _dispatch_handler(
     await log_handler(name)(handler)(update, context)
 
 
-def _command_args(command: CommandObject) -> list[str]:
-    if not command.args:
-        return []
-    try:
-        return shlex.split(command.args)
-    except ValueError:
-        return command.args.split()
-
-
 def build_dispatcher():
     router = new_router()
 
@@ -1459,28 +940,6 @@ def build_dispatcher():
     @router.message(Command("help"))
     async def _help(message, bot: Bot):
         await _dispatch_handler("help", help_command, adapt_message(message), bot)
-
-    @router.message(Command("audio"))
-    async def _audio(message, bot: Bot, command: CommandObject):
-        await _dispatch_handler(
-            "audio", audio_command, adapt_message(message), bot, _command_args(command)
-        )
-
-    @router.message(Command("gallery"))
-    async def _gallery(message, bot: Bot, command: CommandObject):
-        await _dispatch_handler(
-            "gallery",
-            gallery_command,
-            adapt_message(message),
-            bot,
-            _command_args(command),
-        )
-
-    @router.inline_query()
-    async def _inline(inline_query, bot: Bot):
-        await _dispatch_handler(
-            "inline_query", inline_query_handler, adapt_inline_query(inline_query), bot
-        )
 
     @router.callback_query(F.data.startswith("dl:"))
     async def _download_callback(callback_query, bot: Bot):
@@ -1505,8 +964,6 @@ def build_dispatcher():
 BOT_COMMANDS = [
     BotCommand(command="start", description="Welcome & quick overview"),
     BotCommand(command="help", description="Show what daphne can do"),
-    BotCommand(command="audio", description="Extract audio as MP3 from a link"),
-    BotCommand(command="gallery", description="Download an image gallery from a link"),
 ]
 
 

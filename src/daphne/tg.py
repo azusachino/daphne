@@ -9,8 +9,9 @@ rewrite.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import httpx
 from aiogram import Bot, Dispatcher, Router
@@ -23,7 +24,6 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     FSInputFile,
-    InlineQuery,
     InputMediaPhoto,
     LinkPreviewOptions,
     Message,
@@ -32,6 +32,8 @@ from aiogram.types import (
 )
 
 from daphne.config import telegram_api_url
+
+logger = logging.getLogger(__name__)
 
 LOCAL_BOT_API_TIMEOUT_SECONDS = 7200
 
@@ -63,6 +65,43 @@ def _input_file(value: Any) -> Any:
 
 
 as_input_file = _input_file
+
+
+def image_input(data: bytes, name: str) -> Any:
+    """A fresh upload for one image. Each send needs its own, because a send consumes it."""
+    bio = io.BytesIO(data)
+    bio.name = name
+    return as_input_file(bio)
+
+
+async def send_photo_or_document(
+    bot: Any,
+    chat_id: int,
+    data: bytes,
+    name: str,
+    caption: Optional[str] = None,
+    parse_mode: Optional[str] = None,
+) -> None:
+    """Send one image as a photo; if Telegram refuses it as one, send the file as a document.
+
+    Telegram rejects some photos by size, dimensions or aspect ratio, whatever the file size.
+    A document carries the same image without that limit.
+    """
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=image_input(data, name),
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+    except Exception as exc:
+        logger.info("Photo refused, sending as a document: %s", failure_reason(exc))
+        await bot.send_document(
+            chat_id=chat_id,
+            document=image_input(data, name),
+            caption=caption,
+            parse_mode=parse_mode,
+        )
 
 
 def _media(value: Any) -> Any:
@@ -204,25 +243,6 @@ class TelegramCallbackQuery:
         return await self._query.message.edit_text(text, **kwargs)
 
 
-class TelegramInlineQuery:
-    def __init__(self, query: InlineQuery):
-        self._query = query
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._query, name)
-
-    @property
-    def from_user(self) -> Any:
-        return self._query.from_user
-
-    @property
-    def query(self) -> str:
-        return self._query.query
-
-    async def answer(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._query.answer(*args, **kwargs)
-
-
 class TelegramUpdate:
     def __init__(self, update: Update):
         self._update = update
@@ -232,9 +252,6 @@ class TelegramUpdate:
             if update.callback_query
             else None
         )
-        self.inline_query = (
-            TelegramInlineQuery(update.inline_query) if update.inline_query else None
-        )
         self.update_id = update.update_id
 
     @property
@@ -243,8 +260,6 @@ class TelegramUpdate:
             return self.message.from_user
         if self.callback_query:
             return self.callback_query.from_user
-        if self.inline_query:
-            return self.inline_query.from_user
         return None
 
     @property
@@ -272,10 +287,6 @@ def adapt_message(message: Message) -> TelegramUpdate:
 
 def adapt_callback_query(query: CallbackQuery) -> TelegramUpdate:
     return TelegramUpdate(Update(update_id=0, callback_query=query))
-
-
-def adapt_inline_query(query: InlineQuery) -> TelegramUpdate:
-    return TelegramUpdate(Update(update_id=0, inline_query=query))
 
 
 def context_for(bot: TelegramBot, args: list[str] | None = None) -> TelegramContext:

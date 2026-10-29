@@ -4,7 +4,7 @@ import shutil
 import unittest
 from unittest.mock import patch, MagicMock
 
-from daphne.gallery import scan_images, chunk_images, download_gallery
+from daphne.gallery import scan_images, download_gallery
 
 
 class TestGallery(unittest.TestCase):
@@ -27,11 +27,6 @@ class TestGallery(unittest.TestCase):
         self._touch("clip.mp4")
         result = scan_images(self.test_dir)
         self.assertEqual([os.path.basename(p) for p in result], ["a.png", "b.jpg"])
-
-    def test_chunk_images(self):
-        images = [f"{i}.jpg" for i in range(23)]
-        chunks = chunk_images(images, size=10)
-        self.assertEqual([len(c) for c in chunks], [10, 10, 3])
 
     @patch("daphne.gallery.subprocess.run")
     def test_download_gallery_returns_scanned_images(self, mock_run):

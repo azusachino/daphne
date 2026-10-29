@@ -8,6 +8,7 @@ import subprocess
 from unittest.mock import patch, MagicMock
 
 from daphne import downloader
+from daphne.bilibili import BilibiliError, RateLimitedError
 from daphne.downloader import (
     yutto_fetch,
     scan_largest_media_file,
@@ -17,7 +18,6 @@ from daphne.downloader import (
     fetch_instagram_fallback_media,
     format_duration,
     format_video_caption,
-    download_audio,
     sanitize_video_url,
 )
 
@@ -103,6 +103,25 @@ class TestDownloader(unittest.TestCase):
         # Largest media file should be large.mp4
         res = scan_largest_media_file(self.test_dir)
         self.assertEqual(res, file_mp4_large)
+
+    def test_scan_ignores_yt_dlp_intermediate_streams(self):
+        # A video-only leftover from a failed merge must never be taken as the result.
+        for name, size in [("BV1.f100026.mp4", 900), ("BV1.mp4", 100)]:
+            with open(os.path.join(self.test_dir, name), "wb") as f:
+                f.write(b"x" * size)
+        self.assertEqual(
+            os.path.basename(scan_largest_media_file(self.test_dir)), "BV1.mp4"
+        )
+
+    def test_bilibili_part_query_is_kept_and_the_first_part_dropped(self):
+        self.assertEqual(
+            sanitize_video_url("https://www.bilibili.com/video/BV1aMEj62EdA/?p=2&t=5"),
+            "https://www.bilibili.com/video/BV1aMEj62EdA?p=2",
+        )
+        self.assertEqual(
+            sanitize_video_url("https://www.bilibili.com/video/BV1aMEj62EdA?p=1"),
+            "https://www.bilibili.com/video/BV1aMEj62EdA",
+        )
 
     def test_format_duration(self):
         self.assertEqual(format_duration(5), "00:05")
@@ -193,8 +212,12 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(meta["uploader"], "My Uploader")
         self.assertEqual(meta["duration"], 300)
 
+    @patch(
+        "daphne.bilibili.fetch_bilibili_metadata",
+        side_effect=BilibiliError("native unavailable"),
+    )
     @patch("subprocess.run")
-    def test_fetch_video_metadata_trims_bilibili_webpage_url(self, mock_run):
+    def test_fetch_video_metadata_trims_bilibili_webpage_url(self, mock_run, _native):
         # yt-dlp returns a Bilibili webpage_url with tracking query params;
         # the caption link must be trimmed to the canonical video URL.
         mock_run.return_value = MagicMock(
@@ -212,10 +235,14 @@ class TestDownloader(unittest.TestCase):
             meta["webpage_url"], "https://www.bilibili.com/video/BV1aMEj62EdA"
         )
 
+    @patch(
+        "daphne.bilibili.fetch_bilibili_metadata",
+        side_effect=BilibiliError("native unavailable"),
+    )
     @patch("daphne.downloader.logger.warning")
     @patch("subprocess.run")
     def test_fetch_video_metadata_bilibili_retries_with_headers(
-        self, mock_run, mock_log_warn
+        self, mock_run, mock_log_warn, _native
     ):
         mock_run.side_effect = [
             Exception("HTTP 412"),
@@ -331,16 +358,18 @@ class TestDownloader(unittest.TestCase):
         self.assertEqual(res, "/tmp/pass2.mp4")
         self.assertEqual(mock_run.call_count, 2)
 
-        # Both attempts failing must not invoke another downloader.
+        # Every engine failing ends at lux, after yt-dlp twice, you-get, and lux.
         mock_run.reset_mock()
         mock_scan.reset_mock()
-        mock_scan.side_effect = [None, None]
+        mock_scan.side_effect = [None, None, None, None]
         with self.assertRaisesRegex(RuntimeError, "yt-dlp"):
             download_video("http://x.com", self.test_dir)
-        self.assertEqual(mock_run.call_count, 2)
-        for call in mock_run.call_args_list:
-            self.assertEqual(call.args[0][:2], ["uvx", "--from"])
-            self.assertIn("yt-dlp", call.args[0])
+        self.assertEqual(mock_run.call_count, 4)
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(commands[0][:2], ["uvx", "--from"])
+        self.assertEqual(commands[1][:2], ["uvx", "--from"])
+        self.assertEqual(commands[2][:2], ["uvx", "you-get"])
+        self.assertEqual(commands[3][0], "lux")
 
     @patch("daphne.downloader.scan_largest_media_file", return_value=None)
     @patch("subprocess.run")
@@ -381,73 +410,195 @@ class TestDownloader(unittest.TestCase):
     def test_download_video_returns_longest_partial(
         self, mock_run, mock_scan, mock_dur
     ):
-        # Both yt-dlp attempts truncate; preserve the longest partial.
-        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4"]
+        # Both yt-dlp attempts truncate and you-get and lux find nothing; keep the longest partial.
+        mock_scan.side_effect = ["/tmp/a.mp4", "/tmp/b.mp4", None, None]
         mock_dur.side_effect = [100, 200]
         res = download_video("http://x.com", self.test_dir, expected_duration=270)
         self.assertEqual(res, "/tmp/b.mp4")
-        self.assertEqual(mock_run.call_count, 2)
-
-    @patch("daphne.downloader.scan_largest_audio_file")
-    @patch("subprocess.run")
-    def test_download_audio(self, mock_run, mock_scan):
-        mock_scan.return_value = "/tmp/audio.mp3"
-        res = download_audio("http://x.com", self.test_dir)
-        self.assertEqual(res, "/tmp/audio.mp3")
-        self.assertEqual(mock_run.call_count, 1)
-        cmd = mock_run.call_args[0][0]
-        self.assertIn("--extract-audio", cmd)
+        self.assertEqual(mock_run.call_count, 4)
 
 
-class TestBilibiliYuttoFallback(unittest.TestCase):
+def _media(folder: str, name: str) -> str:
+    path = os.path.join(folder, name)
+    with open(path, "wb") as f:
+        f.write(b"media")
+    return path
+
+
+class TestBilibiliChain(unittest.TestCase):
+    """Cache, then native, yt-dlp, you-get, lux, and yutto last. Only complete files are cached."""
+
     BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
+        self.cache_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.test_dir, True)
+        self.addCleanup(shutil.rmtree, self.cache_dir, True)
+        self.native = self._patch(
+            "daphne.bilibili.download_native_video",
+            side_effect=BilibiliError("native unavailable"),
+        )
+        self.yutto = self._patch(
+            "daphne.downloader.yutto_fetch",
+            side_effect=RuntimeError("yutto unavailable"),
+        )
+        self.ytdlp = self._patch(
+            "daphne.downloader._ytdlp_bilibili_video",
+            side_effect=RuntimeError("yt-dlp unavailable"),
+        )
+        self.youget = self._patch(
+            "daphne.downloader._youget_video",
+            side_effect=RuntimeError("you-get unavailable"),
+        )
+        self.lux = self._patch(
+            "daphne.downloader._lux_video",
+            side_effect=RuntimeError("lux unavailable"),
+        )
+        self._patch("daphne.bilibili.CACHE_DIR", new=self.cache_dir)
 
-    @staticmethod
-    def _yutto_writes(name):
-        def run(args):
-            target = args[args.index("-d") + 1]
-            with open(os.path.join(target, name), "wb") as f:
-                f.write(b"media")
-            return ""
+    def _patch(self, target, **kwargs):
+        patcher = patch(target, **kwargs)
+        self.addCleanup(patcher.stop)
+        return patcher.start()
 
-        return run
-
-    @patch("daphne.downloader._run_yutto")
-    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
-    def test_yutto_runs_after_yt_dlp_fails_and_its_file_is_returned(
-        self, mock_ytdlp, mock_yutto
-    ):
-        mock_yutto.side_effect = self._yutto_writes("clip.mp4")
+    def test_native_file_is_returned_and_cached(self):
+        self.native.side_effect = lambda link, folder: _media(
+            folder, "BV1aMEj62EdA.mp4"
+        )
         path = download_video(self.BILI, self.test_dir)
-        self.assertEqual(os.path.basename(path), "clip.mp4")
-        self.assertEqual(os.path.basename(os.path.dirname(path)), "yutto")
-        mock_yutto.assert_called_once()
-        self.assertNotIn("--audio-only", mock_yutto.call_args[0][0])
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "native")
+        self.yutto.assert_not_called()
 
-    @patch("daphne.downloader._run_yutto", return_value="ERROR 无法获取该视频")
-    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
-    def test_both_engines_failing_reports_both(self, mock_ytdlp, mock_yutto):
-        with self.assertRaisesRegex(RuntimeError, "yt-dlp and yutto could not fetch"):
+        again = download_video(self.BILI, self.test_dir)
+        self.assertEqual(self.native.call_count, 1)
+        self.assertEqual(os.path.basename(again), "BV1aMEj62EdA.mp4")
+        self.assertTrue(
+            os.path.exists(os.path.join(self.cache_dir, "BV1aMEj62EdA-p1.mp4"))
+        )
+
+    def test_yutto_runs_when_native_fails(self):
+        self.yutto.side_effect = lambda link, folder: (
+            _media(folder, "clip.mp4"),
+            None,
+        )
+        path = download_video(self.BILI, self.test_dir)
+        self.assertEqual(os.path.basename(os.path.dirname(path)), "yutto")
+        self.ytdlp.assert_called_once()
+        self.youget.assert_called_once()
+        self.lux.assert_called_once()
+
+    def test_engines_run_in_order_and_yutto_is_last(self):
+        order = []
+
+        def failing(name):
+            def run(*args, **kwargs):
+                order.append(name)
+                raise RuntimeError(f"{name} unavailable")
+
+            return run
+
+        self.ytdlp.side_effect = failing("yt-dlp")
+        self.youget.side_effect = failing("you-get")
+        self.lux.side_effect = failing("lux")
+
+        def yutto(link, folder):
+            order.append("yutto")
+            return (_media(folder, "last.mp4"), None)
+
+        self.yutto.side_effect = yutto
+        download_video(self.BILI, self.test_dir)
+        self.assertEqual(order, ["yt-dlp", "you-get", "lux", "yutto"])
+
+    def test_truncated_native_file_is_not_cached_and_yutto_completes(self):
+        self.native.side_effect = lambda link, folder: _media(folder, "partial.mp4")
+        self.yutto.side_effect = lambda link, folder: (
+            _media(folder, "full.mp4"),
+            290,
+        )
+        durations = lambda path: 50 if "partial" in path else 290  # noqa: E731
+        with (
+            patch("daphne.downloader.probe_video_duration", side_effect=durations),
+            patch("daphne.downloader.bilibili.store_video") as store,
+        ):
+            path = download_video(self.BILI, self.test_dir, expected_duration=300)
+        self.assertTrue(path.endswith("full.mp4"))
+        store.assert_called_once()
+        self.assertTrue(store.call_args[0][1].endswith("full.mp4"))
+
+    def test_longest_partial_is_returned_and_not_cached_when_nothing_is_complete(self):
+        self.native.side_effect = lambda link, folder: _media(folder, "short.mp4")
+        self.yutto.side_effect = lambda link, folder: (
+            _media(folder, "longer.mp4"),
+            120,
+        )
+        durations = lambda path: 50 if "short" in path else 120  # noqa: E731
+        with (
+            patch("daphne.downloader.probe_video_duration", side_effect=durations),
+            patch("daphne.downloader.bilibili.store_video") as store,
+        ):
+            path = download_video(self.BILI, self.test_dir, expected_duration=300)
+        self.assertTrue(path.endswith("longer.mp4"))
+        store.assert_not_called()
+
+    def test_rate_limit_stops_the_chain_at_once(self):
+        # The other engines reach the same throttled host, so none of them may run.
+        self.native.side_effect = RateLimitedError("risk control")
+        with self.assertRaisesRegex(RuntimeError, "rate-limiting"):
+            download_video(self.BILI, self.test_dir)
+        self.ytdlp.assert_not_called()
+        self.youget.assert_not_called()
+        self.lux.assert_not_called()
+        self.yutto.assert_not_called()
+
+    def test_all_engines_failing_reports_the_generic_message(self):
+        with self.assertRaisesRegex(RuntimeError, "no download engine could fetch"):
             download_video(self.BILI, self.test_dir)
 
-    @patch("daphne.downloader._run_yutto")
-    @patch("daphne.downloader._run_cmd", return_value=(False, ""))
-    def test_other_sites_never_reach_yutto(self, mock_ytdlp, mock_yutto):
-        with self.assertRaises(RuntimeError):
-            download_video("https://www.youtube.com/watch?v=abc", self.test_dir)
-        mock_yutto.assert_not_called()
+    def test_no_new_engine_starts_after_the_time_budget(self):
+        with patch.object(downloader, "BILIBILI_CHAIN_BUDGET_SECONDS", -1.0):
+            with self.assertRaises(RuntimeError):
+                download_video(self.BILI, self.test_dir)
+        self.native.assert_not_called()
+        self.yutto.assert_not_called()
+
+    def test_logs_name_the_host_not_the_full_link(self):
+        with patch("daphne.downloader.logger.warning") as warn:
+            with self.assertRaises(RuntimeError):
+                download_video(self.BILI, self.test_dir)
+        logged = str(warn.call_args_list)
+        self.assertNotIn("BV1aMEj62EdA", logged)
+
+    def test_native_metadata_is_used_first(self):
+        with (
+            patch(
+                "daphne.bilibili.fetch_bilibili_metadata",
+                return_value={"title": "Cat"},
+            ),
+            patch("daphne.downloader.run_tool") as run,
+        ):
+            self.assertEqual(fetch_video_metadata(self.BILI), {"title": "Cat"})
+        run.assert_not_called()
+
+    def test_metadata_falls_back_to_yt_dlp_when_native_fails(self):
+        with (
+            patch(
+                "daphne.bilibili.fetch_bilibili_metadata",
+                side_effect=BilibiliError("view failed"),
+            ),
+            patch("daphne.downloader.run_tool", return_value=(1, "", "")) as run,
+        ):
+            self.assertEqual(fetch_video_metadata(self.BILI), {})
+        self.assertEqual(run.call_count, 2)
 
     @patch("daphne.downloader._run_yutto")
     @patch("daphne.downloader._run_cmd", return_value=(False, ""))
-    def test_audio_falls_back_to_yutto_audio_only(self, mock_ytdlp, mock_yutto):
-        mock_yutto.side_effect = self._yutto_writes("song.m4a")
-        path = download_audio(self.BILI, self.test_dir)
-        self.assertEqual(os.path.basename(path), "song.m4a")
-        self.assertIn("--audio-only", mock_yutto.call_args[0][0])
+    def test_other_sites_never_reach_the_bilibili_chain(self, mock_ytdlp, mock_yutto):
+        with self.assertRaises(RuntimeError):
+            download_video("https://www.youtube.com/watch?v=abc", self.test_dir)
+        self.native.assert_not_called()
+        self.yutto.assert_not_called()
+        mock_yutto.assert_not_called()
 
 
 class TestYuttoHardening(unittest.TestCase):
@@ -456,26 +607,6 @@ class TestYuttoHardening(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.test_dir, True)
-
-    def test_longer_yutto_output_beats_a_shorter_yt_dlp_partial(self):
-        with open(os.path.join(self.test_dir, "partial.mp4"), "wb") as f:
-            f.write(b"partial")
-
-        def yutto_writes(args):
-            target = args[args.index("-d") + 1]
-            with open(os.path.join(target, "clip.mp4"), "wb") as f:
-                f.write(b"full-ish")
-            return ""
-
-        durations = lambda path: 50 if "partial" in path else 120  # noqa: E731
-        with (
-            patch("daphne.downloader._run_cmd", return_value=(False, "")),
-            patch("daphne.downloader._run_yutto", side_effect=yutto_writes),
-            patch("daphne.downloader.probe_video_duration", side_effect=durations),
-        ):
-            result = download_video(self.BILI, self.test_dir, expected_duration=300)
-        self.assertEqual(os.path.basename(os.path.dirname(result)), "yutto")
-        self.assertTrue(result.endswith("clip.mp4"))
 
     def test_exit_code_zero_without_a_file_is_a_failure(self):
         proc = MagicMock(pid=1)
@@ -511,18 +642,6 @@ class TestYuttoHardening(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertNotIn("DAPHNE_BOT_TOKEN", env)
         self.assertEqual(env["PATH"], "/usr/bin")
-
-    def test_logs_name_the_host_not_the_full_link(self):
-        with (
-            patch("daphne.downloader._run_cmd", return_value=(False, "")),
-            patch("daphne.downloader._run_yutto", return_value="ERROR nope"),
-            patch("daphne.downloader.logger.warning") as warn,
-        ):
-            with self.assertRaises(RuntimeError):
-                download_video(self.BILI, self.test_dir)
-        logged = str(warn.call_args_list)
-        self.assertIn("www.bilibili.com", logged)
-        self.assertNotIn("BV1aMEj62EdA", logged)
 
 
 class TestToolWarmUp(unittest.TestCase):

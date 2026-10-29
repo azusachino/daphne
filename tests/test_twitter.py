@@ -6,6 +6,8 @@ from daphne.twitter import (
     X_RESOLVE_FAILED_TEXT,
     article_media_lists,
     article_preview_text,
+    build_caption,
+    extract_hashtags,
     contains_twitter_link,
     extract_twitter_link,
     handle_twitter_links,
@@ -13,6 +15,7 @@ from daphne.twitter import (
     send_video_helper,
     select_twitter_video,
     select_twitter_video_url,
+    without_tagged_hashtags,
 )
 
 
@@ -293,7 +296,8 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["chat_id"], 123456)
         self.assertEqual(kwargs["photo"], "https://pbs.twimg.com/media/test.jpg")
         self.assertEqual(kwargs["parse_mode"], "HTML")
-        self.assertIn("Beautiful space view #NASA #Hubble", kwargs["caption"])
+        self.assertIn("Beautiful space view", kwargs["caption"])
+        self.assertIn("#twitter #nasa #hubble", kwargs["caption"])
         self.assertIn("#twitter #nasa #hubble", kwargs["caption"])
         self.assertIn("via @test_user", kwargs["caption"])
         self.assertIn("https://twitter.com/nasa/status/999", kwargs["caption"])
@@ -414,7 +418,9 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_media_group.assert_called_once()
         self.context.bot.send_video.assert_called_once()
         media_group = self.context.bot.send_media_group.call_args[1]["media"]
-        self.assertIn("Mixed media #NASA", media_group[0].caption)
+        self.assertIn("Mixed media", media_group[0].caption)
+        self.assertNotIn("Mixed media #NASA", media_group[0].caption)
+        self.assertIn("#twitter #nasa", media_group[0].caption)
         self.assertEqual(
             self.context.bot.send_video.call_args[1]["video"],
             "https://video.twimg.com/test.mp4",
@@ -863,6 +869,41 @@ class TestTwitterHandler(unittest.IsolatedAsyncioTestCase):
 
         self.context.bot.send_message.assert_called_once()
         self.update.message.delete.assert_not_called()  # delete must not be called
+
+
+class TestCaptionHashtagDedupe(unittest.TestCase):
+    def test_hashtag_shown_on_the_tag_line_is_dropped_from_the_text(self):
+        caption = build_caption(
+            "Look at this #NASA shot", "https://x.com/nasa/status/1", None, "nasa"
+        )
+        self.assertEqual(caption.count("#nasa"), 1)
+        self.assertNotIn("#NASA", caption)
+        self.assertIn("Look at this shot", caption)
+
+    def test_links_are_kept_whole_even_with_a_fragment(self):
+        text = "Read https://example.com/page#section and #space"
+        self.assertEqual(
+            without_tagged_hashtags(text, ["space"]),
+            "Read https://example.com/page#section and",
+        )
+
+    def test_a_hashtag_joined_to_a_word_leaves_no_stray_space(self):
+        self.assertEqual(without_tagged_hashtags("word #tag.", ["tag"]), "word.")
+
+    def test_a_line_of_only_shown_hashtags_is_removed_and_blank_lines_stay(self):
+        self.assertEqual(
+            without_tagged_hashtags("para one #x\n\npara two", ["x"]),
+            "para one\n\npara two",
+        )
+        self.assertEqual(without_tagged_hashtags("#a\n#b", ["a", "b"]), "")
+
+    def test_a_fragment_inside_a_link_is_not_a_tag(self):
+        self.assertEqual(
+            extract_hashtags("see https://x.com/a#frag and #real"), ["real"]
+        )
+
+    def test_hashtags_not_on_the_tag_line_stay_in_the_text(self):
+        self.assertEqual(without_tagged_hashtags("a #keep b", ["twitter"]), "a #keep b")
 
 
 if __name__ == "__main__":

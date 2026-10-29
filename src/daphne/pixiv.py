@@ -1,4 +1,7 @@
-import io
+import asyncio
+import json
+import os
+import tempfile
 import logging
 import re
 import unicodedata
@@ -11,7 +14,8 @@ from daphne.tg import (
     InputMediaPhoto,
     TelegramContext,
     TelegramUpdate,
-    as_input_file,
+    image_input,
+    send_photo_or_document,
     failure_reason,
 )
 
@@ -20,6 +24,7 @@ from daphne.messages import (
     PARSE_MODE_HTML,
     sender_attribution,
 )
+from daphne.gallery import download_gallery
 from daphne.twitter import try_delete_message
 
 logger = logging.getLogger(__name__)
@@ -29,8 +34,15 @@ PIXIV_RESTRICTED_TEXT = (
     "This Pixiv work is age-restricted, so the bot can't convert it anonymously. "
     "Open it in Pixiv while signed in. Your original link was kept."
 )
+PIXIV_UNAVAILABLE_TEXT = (
+    "This Pixiv work could not be read. Age-restricted works need a Pixiv login, which "
+    "this bot has only when its owner sets one. Your original link was kept."
+)
+PIXIV_REFRESH_TOKEN_ENV = "DAPHNE_PIXIV_REFRESH_TOKEN"
 USER_AGENT = "daphne/0.1.0"
 MAX_PIXIV_IMAGES = 3
+# Telegram refuses photos over 10 MB; larger files go as documents.
+PHOTO_LIMIT_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -215,12 +227,6 @@ def _image_filename(url: str, index: int) -> str:
     return f"pixiv_{index}.{suffix}" if suffix else f"pixiv_{index}.jpg"
 
 
-def _image_file(content: bytes, url: str, index: int):
-    bio = io.BytesIO(content)
-    bio.name = _image_filename(url, index)
-    return as_input_file(bio)
-
-
 def build_caption(
     original_url: str,
     pixiv_cat_url: str = "",
@@ -247,7 +253,90 @@ def build_caption(
     return message.render()
 
 
+async def _fetch_primary(
+    artwork_id: str, info: Optional[PixivInfo]
+) -> tuple[list[tuple[bytes, str]], int]:
+    """The CDN route: pixiv.cat, then Pixiv's own files. Raises ValueError when nothing works."""
+    if info and info.page_count > 1:
+        if not info.image_urls or len(info.image_urls) != info.page_count:
+            raise ValueError(f"Pixiv page URLs unavailable for artwork {artwork_id}")
+        remaining = max(0, info.page_count - MAX_PIXIV_IMAGES)
+        images = [
+            await fetch_pixiv_image(artwork_id, [url], page=index)
+            for index, url in enumerate(info.image_urls[:MAX_PIXIV_IMAGES])
+        ]
+        return images, remaining
+    image = await fetch_pixiv_image(artwork_id, info.image_urls if info else None)
+    return [image], 0
+
+
+def pixiv_refresh_token() -> str:
+    """A Pixiv login token, set by the owner. It is only read here and never logged."""
+    return os.environ.get(PIXIV_REFRESH_TOKEN_ENV, "").strip()
+
+
+def _page_index(path: str) -> int:
+    match = re.search(r"_p(\d+)", os.path.basename(path))
+    return int(match.group(1)) if match else 0
+
+
+def _gallery_fallback_sync(artwork_id: str) -> list[tuple[bytes, str]]:
+    """gallery-dl with the owner's login, for works the CDN route cannot read or refuses.
+
+    The token goes into a private config file that is removed afterwards. gallery-dl's login
+    cache is kept in memory, so nothing it stores reaches the disk. The token is not put on
+    the command line, in the tool's environment, or in a log line. It reads only the first
+    pages. Without a token this is a no-op.
+    """
+    token = pixiv_refresh_token()
+    if not token:
+        return []
+    with tempfile.TemporaryDirectory(prefix="daphne-pixiv-") as work:
+        config = os.path.join(work, "gallery-dl.json")
+        settings = {
+            "extractor": {"pixiv": {"refresh-token": token}},
+            "cache": {"file": ":memory:"},
+        }
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(settings, handle)
+        paths = download_gallery(
+            f"https://www.pixiv.net/artworks/{artwork_id}",
+            os.path.join(work, "out"),
+            ["--config", config, "--range", f"1-{MAX_PIXIV_IMAGES}"],
+        )
+        images = []
+        for path in sorted(paths, key=_page_index):
+            with open(path, "rb") as handle:
+                images.append((handle.read(), os.path.basename(path)))
+    return images
+
+
+async def _gallery_images(
+    artwork_id: str, info: Optional[PixivInfo], user_id: int
+) -> tuple[list[tuple[bytes, str]], int]:
+    """The login fallback, inside the download slots. Returns the images and how many are left."""
+    from daphne.bot import download_slot
+
+    loop = asyncio.get_running_loop()
+    try:
+        async with download_slot(user_id):
+            images = await loop.run_in_executor(
+                None, _gallery_fallback_sync, artwork_id
+            )
+    except Exception as exc:
+        logger.warning(
+            "Pixiv login fallback failed for %s: %s", artwork_id, failure_reason(exc)
+        )
+        return [], 0
+    shown = images[:MAX_PIXIV_IMAGES]
+    remaining = max(0, info.page_count - len(shown)) if info else 0
+    return shown, remaining
+
+
 async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -> None:
+    from daphne.bot import REACTION_FAILED, set_reaction
+
     message = update.message
     if not message or not message.text:
         return
@@ -268,74 +357,89 @@ async def handle_pixiv_links(update: TelegramUpdate, context: TelegramContext) -
     )
     info = await fetch_artwork_info(artwork_id)
     sender = sender_attribution(update.effective_user)
+    user_id = update.effective_user.id if update.effective_user else 0
+    restricted = bool(info and info.restricted)
+    has_login = bool(pixiv_refresh_token())
+    if restricted:
+        logger.warning("Pixiv artwork %s is age-restricted", artwork_id)
 
-    if info and info.restricted:
-        # Anonymous access cannot read age-restricted works; say so instead of failing silently.
-        from daphne.bot import REACTION_FAILED, set_reaction
+    images: list[tuple[bytes, str]] = []
+    remaining = 0
+    if restricted:
+        # The CDN route cannot read age-restricted works, so only the login route is tried.
+        if has_login:
+            images, remaining = await _gallery_images(artwork_id, info, user_id)
+    else:
+        try:
+            images, remaining = await _fetch_primary(artwork_id, info)
+        except ValueError as exc:
+            logger.info("Pixiv CDN route failed for %s: %s", artwork_id, exc)
+            if has_login:
+                images, remaining = await _gallery_images(artwork_id, info, user_id)
 
+    if not images:
         await set_reaction(message, REACTION_FAILED)
-        logger.warning(
-            "Pixiv artwork %s is age-restricted; anonymous access cannot read it",
-            artwork_id,
+        text = (
+            PIXIV_RESTRICTED_TEXT
+            if restricted and not has_login
+            else PIXIV_UNAVAILABLE_TEXT
         )
         await message.reply_text(
-            HtmlMessage(sender=sender).text(PIXIV_RESTRICTED_TEXT).render(),
+            HtmlMessage(sender=sender).text(text).render(),
             parse_mode=PARSE_MODE_HTML,
         )
         return
 
     try:
-        remaining_images = 0
-        if info and info.page_count > 1:
-            if not info.image_urls or len(info.image_urls) != info.page_count:
-                raise ValueError(
-                    f"Pixiv page URLs unavailable for artwork {artwork_id}"
-                )
-            remaining_images = max(0, info.page_count - MAX_PIXIV_IMAGES)
-            images = [
-                await fetch_pixiv_image(artwork_id, [url], page=index)
-                for index, url in enumerate(info.image_urls[:MAX_PIXIV_IMAGES])
-            ]
-        else:
-            images = [
-                await fetch_pixiv_image(artwork_id, info.image_urls if info else None)
-            ]
-        caption = build_caption(
-            original_url, images[0][1], info, sender, remaining_images
-        )
-
-        if len(images) == 1 and len(images[0][0]) <= 10 * 1024 * 1024:
-            image_bytes, image_url = images[0]
-            await context.bot.send_photo(
-                chat_id=message.chat_id,
-                photo=_image_file(image_bytes, image_url, 0),
-                caption=caption,
-                parse_mode=PARSE_MODE_HTML,
-            )
-        elif len(images) == 1 or any(
-            len(content) > 10 * 1024 * 1024 for content, _ in images
-        ):
-            for index, (image_bytes, image_url) in enumerate(images):
+        caption = build_caption(original_url, images[0][1], info, sender, remaining)
+        chat_id = message.chat_id
+        if len(images) == 1:
+            data, name = images[0]
+            if len(data) > PHOTO_LIMIT_BYTES:
                 await context.bot.send_document(
-                    chat_id=message.chat_id,
-                    document=_image_file(image_bytes, image_url, index),
+                    chat_id=chat_id,
+                    document=image_input(data, name),
+                    caption=caption,
+                    parse_mode=PARSE_MODE_HTML,
+                )
+            else:
+                await send_photo_or_document(
+                    context.bot, chat_id, data, name, caption, PARSE_MODE_HTML
+                )
+        elif any(len(data) > PHOTO_LIMIT_BYTES for data, _ in images):
+            for index, (data, name) in enumerate(images):
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=image_input(data, name),
                     caption=caption if index == 0 else None,
                     parse_mode=PARSE_MODE_HTML if index == 0 else None,
                 )
         else:
             media = [
                 InputMediaPhoto(
-                    media=_image_file(image_bytes, image_url, index),
+                    media=image_input(data, name),
                     caption=caption if index == 0 else None,
                     parse_mode=PARSE_MODE_HTML if index == 0 else None,
                 )
-                for index, (image_bytes, image_url) in enumerate(images)
+                for index, (data, name) in enumerate(images)
             ]
-            await context.bot.send_media_group(chat_id=message.chat_id, media=media)
+            try:
+                await context.bot.send_media_group(chat_id=chat_id, media=media)
+            except Exception as exc:
+                logger.info(
+                    "Media group refused, sending one by one: %s", failure_reason(exc)
+                )
+                for index, (data, name) in enumerate(images):
+                    await send_photo_or_document(
+                        context.bot,
+                        chat_id,
+                        data,
+                        name,
+                        caption if index == 0 else None,
+                        PARSE_MODE_HTML if index == 0 else None,
+                    )
     except Exception as exc:
         logger.warning("Pixiv image upload failed for %s: %s", artwork_id, exc)
-        from daphne.bot import REACTION_FAILED, set_reaction
-
         await set_reaction(message, REACTION_FAILED)
         return
 

@@ -5,34 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-10-28
+## [0.5.0] - 2026-10-29
 
 ### Changed
 
-- Age-restricted Pixiv works get a clear reply instead of a silent failure, with a failure reaction.
-- Metadata, audio and gallery failures show a short message in the chat; the underlying error goes to the logs.
-- **Bilibili fallback**: Bilibili links try yt-dlp first, then yutto, and fail with a message naming both when both fail. yutto runs only for Bilibili; its exit code is ignored, so a missing output file counts as failure.
-- **Log redaction**: Request URLs, with or without a scheme, are cut to their host, and Telegram bot tokens and secret query values (token, key, secret, sessdata, password, including compound names) are redacted from every log line and traceback.
-- **Bilibili hardening**: yutto runs in its own process group, and yt-dlp and yutto get a scrubbed environment without the bot token. Every yt-dlp and yutto call is bounded by a timeout that kills its whole process group, so no child keeps writing after a timeout. When neither download is complete, the longer file wins. Failed X and Bluesky requests set the failure reaction on every failure stage, including a malformed Bluesky thread, and the reply is footered. gallery-dl gets the same scrubbed environment.
+- **Bilibili download chain**: Bilibili links have their own chain, separate from YouTube. A disk cache (6 hours, 2 GiB, per user) is checked first, then the native player API (480p for anonymous requests), then yt-dlp, you-get, lux, and yutto last. Every engine's file must cover the expected duration, and only complete files are cached. See `docs/bilibili-download-chain.md`.
+- **Bilibili native path reads parts from pagelist**: the view endpoint refuses requests, so the cid and duration come from pagelist and the title is the part's name. The uploader stays empty until view works again.
+- **Bilibili visitor session**: the native path sends the visitor cookies and a `bili_ticket`, reused for 30 minutes and refreshed once when Bilibili answers risk control. A rate-limit error ends the chain at once, so the other engines do not add to the limit.
+- **Bilibili stream limits**: each stream must finish within 300 seconds and stay under 2 GiB.
+- **lux and you-get are back** as fallbacks after yt-dlp for other sites. lux is the latest GitHub release, resolved at each image build, and the tarball is checked against the release's checksums file.
+- **yt-dlp, you-get and yutto run through uvx**: the latest releases are fetched once at bot start, in the background, so polling does not wait for PyPI. Releases must be at least three days old (`UV_EXCLUDE_NEWER=P3D`).
+- **Booru single posts**: yande.re, Konachan, lolibooru and Danbooru post links are converted; konachan.net is fetched directly, because konachan.com answers gallery-dl with a Cloudflare challenge. Images are sent as photos. A photo Telegram refuses goes out as a document. Video and animation posts are not converted. Tag and search pages are refused.
+- **Pixiv fallback chain**: when the CDN route cannot read a work, or the work is age-restricted, gallery-dl tries it with the owner's login (`DAPHNE_PIXIV_REFRESH_TOKEN`, optional). Without a login, the bot says the work could not be read and why, instead of failing silently. Age-restricted works need that login.
+- **Metadata reused on the download button**: a card keeps its link and metadata, so pressing Download does not look the link up again. The button cache is bounded to 500 entries.
+- **Log redaction**: request URLs, with or without a scheme, are cut to their host, and Telegram bot tokens and secret query values (token, key, secret, sessdata, password, including compound names) are redacted from every log line and traceback.
+- **Bilibili hardening**: yt-dlp, you-get, lux, and yutto get a scrubbed environment without the bot token, and every call is bounded by a timeout that kills its whole process group. When no engine is complete, the longest partial file is returned and never cached.
 - **Footer on every social reply**: Pixiv restricted replies, X failures and Bluesky no-media replies end with the Daphne footer.
-- **No link fallback**: A failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
+- **No link fallback**: a failed X conversion or a Bluesky post without media replies with a short message and keeps the original link, instead of posting a bare FxTwitter or Bluesky link.
 - **Failure logs**: Telegram progress and cleanup failures log their reason (HTTP status, Telegram description or exception type) instead of being silently ignored. Request URLs are not logged.
+- **Metadata failures** show a short message in the chat; the underlying error goes to the logs.
 - **Python 3.14.10** toolchain; `.mise.toml` pins the local development tools.
-- **Public, self-contained image.** The Dockerfile builds from public registries only, so anyone can build it without a local base. uv syncs the locked environment in the builder stage, and the runtime image carries uv for uvx.
-- **Non-root runtime.** The image runs as `daphne` (UID 10001); `/app` is read-only to it.
-- **yt-dlp and yutto run through uvx**: The latest releases are fetched once at each bot start. Downloads run the cached release, kept in the pod's /tmp for the life of the pod, so a new pod refreshes at its start and needs PyPI then. The runtime image carries uv for this.
+- **Public, self-contained image.** The Dockerfile builds from public registries only. uv syncs the locked environment in the builder stage, and the runtime image carries uv for uvx.
+- **Non-root runtime.** The image runs as `daphne` (UID 10001) and `/app` is read-only to it.
 - **CI** runs the lockfile check, lint, format and unit tests. The image job is removed.
 
 ### Removed
 
+- `/audio` and `/gallery` commands, and inline mode, to keep the bot to paste-and-convert. The `extract_audio`, `download_gallery` and `inline_convert` permissions go with them. gallery-dl stays for the booru and Pixiv login routes, with no command of its own.
+- The Kubernetes manifests in `deploy/k3s`. The running copy lives in the cluster repository, so this repository no longer keeps a second one.
 - The Phixiv metadata lookup, which no longer answers; Pixiv metadata comes from Pixiv's own API.
-- lux and you-get fallbacks; yt-dlp is the only general video and audio downloader.
 - Nix flake (`flake.nix`) and `Dockerfile.base`.
 
 ### Fixed
 
 - A failed video metadata lookup no longer produces a card with a Download button; the original link is kept.
-- **Failed video downloads from a card**: The error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
+- **Failed video downloads from a card**: the error now replaces the card, or is posted as a reply if the card cannot be edited, instead of being silently dropped. The original link is kept while the card still offers a download.
+- **Upload failures on the paste path** are reported on the card and set the failure reaction, instead of leaving the status at "Uploading video...".
+- **Bilibili multi-part links** keep `?p=N`, so the requested part is the one downloaded. `p=1` is the default.
+- **yt-dlp leftovers** from a failed merge (`<id>.f<n>.<ext>`) are never delivered.
+- **X caption tag dedupe**: a hashtag shown on the tag line is removed from the post text above it, so each appears once. Links stay whole, a `#fragment` inside a URL is not a tag, and a line that held only such hashtags is removed.
 
 ## [0.4.3] - 2026-10-05
 

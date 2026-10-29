@@ -1,12 +1,13 @@
+import logging
 import os
 import subprocess
-import logging
-from daphne.downloader import tool_env
+
+from daphne.downloader import _redacted, tool_env
 
 logger = logging.getLogger(__name__)
 
 # gallery-dl writes arbitrary image types; we only forward the ones Telegram can
-# render as a photo/media group.
+# render as a photo.
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
 # Telegram caps a single media group at 10 items.
@@ -25,15 +26,17 @@ def scan_images(out_dir: str) -> list[str]:
     return images
 
 
-def download_gallery(url: str, out_dir: str) -> list[str]:
+def download_gallery(
+    url: str, out_dir: str, extra_args: list[str] | tuple[str, ...] = ()
+) -> list[str]:
     """
     Download an image gallery with gallery-dl into ``out_dir`` and return the
     resulting image paths (empty list on failure). ``-D`` flattens everything
     into ``out_dir`` so no per-site subdirectories are created.
     """
     os.makedirs(out_dir, exist_ok=True)
-    cmd = ["gallery-dl", "-D", out_dir, "--", url]
-    logger.info("Running command: %s", " ".join(cmd))
+    cmd = ["gallery-dl", "-D", out_dir, *extra_args, "--", url]
+    logger.info("Running command: %s", _redacted(cmd))
     try:
         subprocess.run(
             cmd,
@@ -50,8 +53,3 @@ def download_gallery(url: str, out_dir: str) -> list[str]:
     except Exception as e:
         logger.warning("Failed to run gallery-dl: %s", e)
     return scan_images(out_dir)
-
-
-def chunk_images(images: list[str], size: int = MEDIA_GROUP_LIMIT) -> list[list[str]]:
-    """Split image paths into Telegram-sized media groups."""
-    return [images[i : i + size] for i in range(0, len(images), size)]

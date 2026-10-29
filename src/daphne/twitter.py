@@ -120,76 +120,6 @@ def select_twitter_video_url(video: dict) -> str:
     return select_twitter_video(video)["url"]
 
 
-def _media_lists_from_tweet(tweet: dict) -> tuple[list[str], list[dict], list[dict]]:
-    """
-    Split a tweet's media into (photo_urls, videos, gifs). Videos and gifs are
-    dicts carrying ``url`` plus a ``thumbnail`` (needed for inline results).
-    """
-    media_info = tweet.get("media", {}) or {}
-    media_all = media_info.get("all", [])
-    if media_all:
-        photos = [
-            m for m in media_all if str(m.get("type", "")).lower() in {"photo", "image"}
-        ]
-        vids = [
-            m
-            for m in media_all
-            if str(m.get("type", "")).lower() in {"video", "gif", "animated_gif"}
-        ]
-    else:
-        photos = media_info.get("photos", [])
-        vids = media_info.get("videos", [])
-
-    photo_urls = [p["url"] for p in photos if "url" in p]
-    videos: list[dict] = []
-    gifs: list[dict] = []
-    for v in vids:
-        if "url" not in v:
-            continue
-        is_gif = str(v.get("type", "")).lower() in {"gif", "animated_gif"}
-        if is_gif:
-            gifs.append({"url": v["url"], "thumbnail": v.get("thumbnail_url")})
-        else:
-            entry = select_twitter_video(v)
-            entry["thumbnail"] = v.get("thumbnail_url")
-            videos.append(entry)
-    return photo_urls, videos, gifs
-
-
-async def resolve_twitter_media(username: str, tweet_id: str) -> dict | None:
-    """
-    Fetch a tweet's media via the FxTwitter API and return direct URLs, without
-    sending anything. Used by inline mode. Returns None on any failure.
-    """
-    api_url = f"https://api.fxtwitter.com/{username}/status/{tweet_id}"
-    headers = {"User-Agent": USER_AGENT}
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(api_url, headers=headers, timeout=10.0)
-    except Exception as e:
-        logger.warning(f"resolve_twitter_media request failed: {e}")
-        return None
-
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-    except Exception:
-        return None
-    if data.get("code") != 200 or not data.get("tweet"):
-        return None
-
-    tweet = data["tweet"]
-    photo_urls, videos, gifs = _media_lists_from_tweet(tweet)
-    return {
-        "text": tweet.get("text", ""),
-        "url": tweet.get("url") or f"https://twitter.com/{username}/status/{tweet_id}",
-        "photos": photo_urls,
-        "videos": videos,
-        "gifs": gifs,
-    }
-
-
 async def download_bytes(url: str) -> bytes:
     """
     Downloads media bytes from URL using a standard browser user agent.
@@ -326,15 +256,42 @@ async def send_photos(
     return True
 
 
+URL_RE = re.compile(r"https?://\S+")
+
+
 def extract_hashtags(text: str) -> list[str]:
     tags = []
     seen = set()
-    for raw_tag in re.findall(r"#(\w+)", text):
+    # A #fragment inside a link is part of the link, not a hashtag.
+    for raw_tag in re.findall(r"#(\w+)", URL_RE.sub(" ", text)):
         tag = raw_tag.lower()
         if tag not in seen:
             seen.add(tag)
             tags.append(tag)
     return tags
+
+
+URL_OR_HASHTAG = re.compile(r"(https?://\S+)|[ \t]*#(\w+)")
+
+
+def without_tagged_hashtags(text: str, tags: list[str]) -> str:
+    """Drops the hashtags the tag line already shows, so each appears once. Links stay whole.
+
+    A line that held only such hashtags is removed; blank lines the author wrote stay.
+    """
+    shown = {tag.casefold() for tag in tags}
+
+    def drop(match: re.Match[str]) -> str:
+        if match.group(1):
+            return match.group(0)
+        return "" if match.group(2).casefold() in shown else match.group(0)
+
+    lines = []
+    for line in text.splitlines():
+        kept = re.sub(r"[ \t]{2,}", " ", URL_OR_HASHTAG.sub(drop, line)).strip()
+        if kept or not line.strip():
+            lines.append(kept)
+    return "\n".join(lines).strip()
 
 
 def build_caption(
@@ -349,6 +306,7 @@ def build_caption(
     if slug and slug not in tags:
         tags.append(slug)
 
+    tweet_text = without_tagged_hashtags(tweet_text, tags)
     if len(tweet_text) > 900:
         tweet_text = tweet_text[:900] + "..."
 
