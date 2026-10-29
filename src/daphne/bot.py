@@ -42,6 +42,7 @@ from daphne.messages import (
     sender_attribution,
 )
 from daphne.rbac import RbacService
+from daphne.redact import redact
 from daphne.tg import (
     TelegramBot,
     TelegramContext,
@@ -186,6 +187,9 @@ async def check_access_and_reply(update: TelegramUpdate, command: str) -> bool:
     if access.is_allowed():
         return True
 
+    if chat_id not in rbac_service.chats and not rbac_service.is_admin(user_id):
+        return False
+
     if access.is_rate_limited():
         text = HtmlMessage().text("Rate limit exceeded. Please wait.").render()
     else:
@@ -209,8 +213,8 @@ def _daphne_overview(sender: Optional[str], greeting: bool = False) -> str:
 
 
 async def start_command(update: TelegramUpdate, context: TelegramContext) -> None:
-    # Always answers, bypassing RBAC: this is the one command Telegram expects
-    # to respond even to a user/chat that isn't whitelisted yet.
+    if not await check_access_and_reply(update, "help"):
+        return
     text = _daphne_overview(sender_attribution(update.effective_user), greeting=True)
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
@@ -426,7 +430,7 @@ async def handle_video_link(
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Video download failed: {exc}")
+                .text(f"Video download failed: {redact(str(exc))}")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -482,7 +486,7 @@ async def handle_video_link(
             await set_reaction(update.message, REACTION_FAILED)
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
-                .text(f"Failed to upload video: {exc}")
+                .text(f"Failed to upload video: {redact(str(exc))}")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )
@@ -527,43 +531,43 @@ async def media_message_handler(
     is_booru = contains_booru_link(message.text)
     video_url = extract_video_url(message.text)
 
-    # Acknowledge a recognised link with a lightweight "working" reaction. On
-    # success the original message is deleted (taking the reaction with it); on
-    # failure the handlers switch it to a failure reaction.
-    if any(
-        [is_twitter, is_pixiv, is_bluesky, is_instagram, is_tiktok, is_booru, video_url]
-    ):
-        await set_reaction(message, REACTION_WORKING)
-
     if is_twitter:
         logger.info("Routing to Twitter handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_twitter_links(update, context)
     elif is_pixiv:
         logger.info("Routing to Pixiv handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_pixiv_links(update, context)
     elif is_bluesky:
         logger.info("Routing to Bluesky handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_bluesky_links(update, context)
     elif is_instagram:
         logger.info("Routing to Instagram handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_instagram_links(update, context)
     elif is_booru:
         logger.info("Routing to booru handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_booru_links(update, context)
     elif is_tiktok:
         logger.info("Routing to TikTok handler")
         if await check_access_and_reply(update, "convert_link"):
+            await set_reaction(message, REACTION_WORKING)
             await handle_tiktok_links(update, context)
     elif video_url:
         logger.info("Routing to generic video handler for URL: %s", video_url)
         # Check fetch_metadata permission & quota
         access = rbac_service.check_access(user_id, chat_id, "fetch_metadata")
         if not access.is_allowed():
+            if chat_id not in rbac_service.chats and not rbac_service.is_admin(user_id):
+                return
             if access.is_rate_limited():
                 text = HtmlMessage().text(f"Quota exceeded: {access.reason}").render()
             else:
@@ -572,6 +576,8 @@ async def media_message_handler(
                 )
             await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
             return
+
+        await set_reaction(message, REACTION_WORKING)
 
         sender = sender_attribution(update.effective_user)
         status_msg = await update.message.reply_text(
@@ -760,7 +766,7 @@ async def _run_card_download(
             logger.exception("Failed to download video")
             failure = (
                 HtmlMessage(sender=sender)
-                .text(f"Video download failed: {exc}")
+                .text(f"Video download failed: {redact(str(exc))}")
                 .render()
             )
             try:
@@ -829,7 +835,7 @@ async def _run_card_download(
             try:
                 await query.edit_message_text(
                     HtmlMessage(sender=sender)
-                    .text(f"Failed to upload video: {exc}")
+                    .text(f"Failed to upload video: {redact(str(exc))}")
                     .render(),
                     parse_mode=PARSE_MODE_HTML,
                 )

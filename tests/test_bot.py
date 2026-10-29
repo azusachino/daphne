@@ -211,11 +211,10 @@ class TestBotCommands(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("<link>", text)
 
     @patch("daphne.bot.check_access_and_reply", return_value=False)
-    async def test_start_command_bypasses_rbac(self, mock_check):
-        # /start must always answer, even for a chat/user RBAC would deny.
+    async def test_start_command_enforces_rbac(self, mock_check):
         await start_command(self.update, self.context)
-        mock_check.assert_not_called()
-        self.update.message.reply_text.assert_called_once()
+        mock_check.assert_called_once_with(self.update, "help")
+        self.update.message.reply_text.assert_not_called()
 
 
 class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
@@ -330,6 +329,31 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["height"], 1080)
         self.assertEqual(kwargs["duration"], 90)
         self.update.message.delete.assert_called_once()
+
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch(
+        "daphne.bot.download_video",
+        side_effect=RuntimeError(
+            "failed https://api.telegram.org/bot123456:ABCDEF1234567890abcdef/getMe?token=secret123"
+        ),
+    )
+    @patch("daphne.bot.fetch_video_metadata")
+    async def test_handle_video_link_redacts_exception_text(
+        self, mock_metadata, mock_download, mock_limit
+    ):
+        mock_metadata.return_value = {
+            "title": "Video",
+            "uploader": "Uploader",
+            "duration": 90,
+            "webpage_url": "https://www.bilibili.com/video/BV1abc",
+        }
+        await handle_video_link(
+            self.update, self.context, "https://www.bilibili.com/video/BV1abc"
+        )
+        edited_text = self.status.edit_text.call_args_list[-1][0][0]
+        self.assertIn("Video download failed:", edited_text)
+        self.assertNotIn("ABCDEF1234567890abcdef", edited_text)
+        self.assertNotIn("secret123", edited_text)
 
     def test_preprocess_text_links(self):
         from daphne.bot import preprocess_text_links
@@ -581,6 +605,25 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
             bot_module.sender_attribution(self.update.effective_user),
             "Video Details",
         )
+
+    @patch("daphne.bot.set_reaction", new_callable=AsyncMock)
+    @patch("daphne.bot.rbac_service")
+    async def test_unwhitelisted_chat_drops_silently_without_reaction_or_reply(
+        self, mock_rbac, mock_reaction
+    ):
+        denied = MagicMock()
+        denied.is_allowed.return_value = False
+        denied.is_rate_limited.return_value = False
+        denied.reason = "Chat not in whitelist"
+        mock_rbac.check_access.return_value = denied
+        mock_rbac.chats = {}
+        mock_rbac.is_admin.return_value = False
+
+        self.update.message.text = "https://x.com/user/status/123"
+        await bot_module.media_message_handler(self.update, self.context)
+
+        mock_reaction.assert_not_awaited()
+        self.update.message.reply_text.assert_not_called()
 
     @patch("daphne.bot.rbac_service")
     @patch("daphne.bot.fetch_video_metadata")
