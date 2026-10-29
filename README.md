@@ -73,8 +73,9 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 Daphne uses [uv](https://github.com/astral-sh/uv) for dependencies and runs cleanly in containers (Podman / Docker) with an optional [local Telegram Bot API](https://github.com/tdlib/telegram-bot-api) sidecar for 2 GB uploads.
 
 ```bash
-# 1. Generate local config + env templates (untracked)
-make init-local
+# 1. Copy the local templates (untracked, gitignored)
+cp .daphne.local.env.example .daphne.local.env
+cp .daphne.config.local.toml.example .daphne.config.local.toml
 
 # 2. Fill in your bot credentials and allowed user/chat IDs
 #    .daphne.local.env  and  .daphne.config.local.toml
@@ -88,6 +89,8 @@ make down
 
 
 ### Container image
+
+For building and deploying (compose and harus-k3s), see [docs/deploy.md](docs/deploy.md).
 
 The image builds from public registries only. It needs Docker or Podman and no local toolchain:
 

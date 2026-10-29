@@ -8,7 +8,6 @@ video_upload_limit_mb = 256
 [rbac]
 public_commands = ["help"]
 convert_link_limit = 60
-extract_audio_limit = 10
 download_video_limit = 5
 preview_video_limit = 10
 fetch_metadata_limit = 30
@@ -17,10 +16,7 @@ fetch_metadata_limit = 30
 permissions = ["*"]
 
 [rbac.roles.standard_group]
-permissions = ["convert_link", "extract_audio", "preview_video", "download_video", "fetch_metadata", "download_gallery"]
-
-[rbac.roles.inline_user]
-permissions = ["inline_convert"]
+permissions = ["convert_link", "preview_video", "download_video", "fetch_metadata"]
 
 [rbac.users]
 # Replace with your Telegram numeric user ID.

@@ -76,3 +76,6 @@ vendor/
 .daphne.local.env
 .daphne.config.local.toml
 .daphne.rbac.local.toml
+
+# Production-layout config from `make init-local` (docker-compose.yml mounts it)
+/config/
