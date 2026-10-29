@@ -9,8 +9,9 @@ rewrite.
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import httpx
 from aiogram import Bot, Dispatcher, Router
@@ -31,6 +32,8 @@ from aiogram.types import (
 )
 
 from daphne.config import telegram_api_url
+
+logger = logging.getLogger(__name__)
 
 LOCAL_BOT_API_TIMEOUT_SECONDS = 7200
 
@@ -62,6 +65,43 @@ def _input_file(value: Any) -> Any:
 
 
 as_input_file = _input_file
+
+
+def image_input(data: bytes, name: str) -> Any:
+    """A fresh upload for one image. Each send needs its own, because a send consumes it."""
+    bio = io.BytesIO(data)
+    bio.name = name
+    return as_input_file(bio)
+
+
+async def send_photo_or_document(
+    bot: Any,
+    chat_id: int,
+    data: bytes,
+    name: str,
+    caption: Optional[str] = None,
+    parse_mode: Optional[str] = None,
+) -> None:
+    """Send one image as a photo; if Telegram refuses it as one, send the file as a document.
+
+    Telegram rejects some photos by size, dimensions or aspect ratio, whatever the file size.
+    A document carries the same image without that limit.
+    """
+    try:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=image_input(data, name),
+            caption=caption,
+            parse_mode=parse_mode,
+        )
+    except Exception as exc:
+        logger.info("Photo refused, sending as a document: %s", failure_reason(exc))
+        await bot.send_document(
+            chat_id=chat_id,
+            document=image_input(data, name),
+            caption=caption,
+            parse_mode=parse_mode,
+        )
 
 
 def _media(value: Any) -> Any:

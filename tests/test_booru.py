@@ -123,5 +123,55 @@ class TestBooruGuard(unittest.TestCase):
         download.assert_not_called()
 
 
+class TestBooruFallbacks(unittest.IsolatedAsyncioTestCase):
+    def _update(self):
+        update = MagicMock()
+        update.message.text = "https://yande.re/post/show/5"
+        update.message.chat_id = 42
+        update.message.reply_text = AsyncMock()
+        update.message.delete = AsyncMock()
+        update.message.reply_to_message = None
+        update.message.is_topic_message = False
+        update.effective_user = None
+        context = MagicMock()
+        context.bot.send_media_group = AsyncMock()
+        context.bot.send_photo = AsyncMock(side_effect=Exception("dimensions"))
+        context.bot.send_document = AsyncMock()
+        return update, context
+
+    async def test_a_refused_photo_is_sent_as_a_document(self):
+        update, context = self._update()
+        with (
+            patch("daphne.booru._download_images", return_value=[(b"p" * 5, "5.png")]),
+            patch("daphne.bot.download_slot", return_value=_Slot()),
+            patch("daphne.bot.set_reaction", new=AsyncMock()),
+        ):
+            await handle_booru_links(update, context)
+        context.bot.send_document.assert_awaited_once()
+        update.message.delete.assert_awaited_once()
+
+    async def test_a_refused_media_group_falls_back_to_one_by_one(self):
+        update, context = self._update()
+        context.bot.send_media_group = AsyncMock(side_effect=Exception("aspect"))
+        images = [(b"a" * 5, "1.png"), (b"b" * 5, "2.png")]
+        with (
+            patch("daphne.booru._download_images", return_value=images),
+            patch("daphne.bot.download_slot", return_value=_Slot()),
+            patch("daphne.bot.set_reaction", new=AsyncMock()),
+        ):
+            await handle_booru_links(update, context)
+        self.assertEqual(context.bot.send_document.await_count, 2)
+        first_caption = context.bot.send_document.call_args_list[0].kwargs["caption"]
+        self.assertIn("Source (Yande)", first_caption)
+        self.assertIsNone(context.bot.send_document.call_args_list[1].kwargs["caption"])
+
+    def test_a_schemeless_post_link_reaches_the_router_as_a_booru_link(self):
+        from daphne.bot import preprocess_text_links
+
+        self.assertTrue(
+            contains_booru_link(preprocess_text_links("see yande.re/post/show/12"))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

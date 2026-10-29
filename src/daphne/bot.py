@@ -146,6 +146,7 @@ LINK_RE = re.compile(
     r"\b(?<!@)(?:https?://)?(?:www\.|vm\.|vt\.)?(?:"
     r"bilibili\.com|b23\.tv|"
     r"youtube\.com|youtu\.be|"
+    r"yande\.re|konachan\.(?:com|net)|lolibooru\.moe|danbooru\.donmai\.us|"
     r"twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com|"
     r"pixiv\.net|"
     r"bsky\.app|"

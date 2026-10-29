@@ -87,7 +87,7 @@ def run_init(local: bool = False) -> None:
 [app]
 # telegram_api_url = "http://localhost:8081"
 video_upload_limit_mb = 256
-# Heavy-download concurrency guard (yt-dlp, you-get, lux, yutto):
+# Heavy-download concurrency guard (yt-dlp, you-get, lux, yutto, gallery-dl):
 # max_concurrent_downloads = 3        # across the whole bot
 # max_user_concurrent_downloads = 1   # per user
 

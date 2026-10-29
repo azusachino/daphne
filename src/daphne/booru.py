@@ -5,7 +5,6 @@ accepted: a tag or search page would make gallery-dl download a whole result set
 """
 
 import asyncio
-import io
 import logging
 import re
 import tempfile
@@ -15,10 +14,11 @@ from typing import Optional
 from daphne.gallery import MEDIA_GROUP_LIMIT, download_gallery
 from daphne.messages import HtmlMessage, sender_attribution
 from daphne.tg import (
+    image_input,
+    send_photo_or_document,
     InputMediaPhoto,
     TelegramContext,
     TelegramUpdate,
-    as_input_file,
     failure_reason,
 )
 from daphne.twitter import try_delete_message
@@ -66,12 +66,6 @@ def _download_images(url: str) -> list[tuple[bytes, str]]:
     return images
 
 
-def _file(data: bytes, name: str):
-    bio = io.BytesIO(data)
-    bio.name = name
-    return as_input_file(bio)
-
-
 async def handle_booru_links(update: TelegramUpdate, context: TelegramContext) -> None:
     from daphne.bot import REACTION_FAILED, download_slot, set_reaction
 
@@ -108,46 +102,45 @@ async def handle_booru_links(update: TelegramUpdate, context: TelegramContext) -
         HtmlMessage(sender=sender).link(url, f"🔗 Source ({_site_label(url)})").render()
     )
     captioned = False
-
-    def caption_for_next() -> tuple[Optional[str], Optional[str]]:
-        nonlocal captioned
-        if captioned:
-            return None, None
-        captioned = True
-        return caption, PARSE_MODE_HTML
-
+    chat_id = message.chat_id
     try:
         for start in range(0, len(images), MEDIA_GROUP_LIMIT):
             batch = images[start : start + MEDIA_GROUP_LIMIT]
-            photos = [(d, n) for d, n in batch if len(d) <= PHOTO_LIMIT_BYTES]
-            documents = [(d, n) for d, n in batch if len(d) > PHOTO_LIMIT_BYTES]
-            if len(photos) > 1:
-                media = []
-                for data, name in photos:
-                    text, mode = caption_for_next()
-                    media.append(
-                        InputMediaPhoto(
-                            media=_file(data, name), caption=text, parse_mode=mode
-                        )
+            if len(batch) > 1 and all(len(d) <= PHOTO_LIMIT_BYTES for d, _ in batch):
+                media = [
+                    InputMediaPhoto(
+                        media=image_input(data, name),
+                        caption=caption if index == 0 and not captioned else None,
+                        parse_mode=PARSE_MODE_HTML
+                        if index == 0 and not captioned
+                        else None,
                     )
-                await context.bot.send_media_group(chat_id=message.chat_id, media=media)
-            elif photos:
-                data, name = photos[0]
-                text, mode = caption_for_next()
-                await context.bot.send_photo(
-                    chat_id=message.chat_id,
-                    photo=_file(data, name),
-                    caption=text,
-                    parse_mode=mode,
-                )
-            for data, name in documents:
-                text, mode = caption_for_next()
-                await context.bot.send_document(
-                    chat_id=message.chat_id,
-                    document=_file(data, name),
-                    caption=text,
-                    parse_mode=mode,
-                )
+                    for index, (data, name) in enumerate(batch)
+                ]
+                try:
+                    await context.bot.send_media_group(chat_id=chat_id, media=media)
+                    captioned = True
+                    continue
+                except Exception as exc:
+                    logger.info(
+                        "Media group refused, sending one by one: %s",
+                        failure_reason(exc),
+                    )
+            for data, name in batch:
+                text = None if captioned else caption
+                mode = None if captioned else PARSE_MODE_HTML
+                captioned = True
+                if len(data) > PHOTO_LIMIT_BYTES:
+                    await context.bot.send_document(
+                        chat_id=chat_id,
+                        document=image_input(data, name),
+                        caption=text,
+                        parse_mode=mode,
+                    )
+                else:
+                    await send_photo_or_document(
+                        context.bot, chat_id, data, name, text, mode
+                    )
     except Exception as exc:
         logger.warning("Booru upload failed: %s", failure_reason(exc))
         await set_reaction(message, REACTION_FAILED)

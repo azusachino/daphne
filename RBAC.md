@@ -89,7 +89,7 @@ permissions = ["convert_link", "preview_video", "fetch_metadata", "download_vide
 | Command | Permission Name | Description |
 | :--- | :--- | :--- |
 | `help` | `help` | Outputs the bot help instructions and usage limits. |
-| (Link detection) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram) into native Telegram media. |
+| (Link detection) | `convert_link` | Converts social media links (Twitter, Pixiv, Bluesky, TikTok, Instagram) and single booru post links into native Telegram media. |
 | (Video callback query) | `download_video` | Downloads and converts generic video links (YouTube, Bilibili) on-demand. |
 | (Video auto-preview) | `preview_video` | Automatically downloads and uploads video natively if under size limit. |
 | (Video link detection) | `fetch_metadata` | Fetches metadata for video links and generates a preview info card with a download button. |

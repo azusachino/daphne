@@ -328,6 +328,7 @@ class TestPixivFallbacks(unittest.IsolatedAsyncioTestCase):
                 return_value=[(b"png-bytes", "123_p0.png")],
             ),
             patch("daphne.bot.set_reaction", new=AsyncMock()),
+            patch.dict("os.environ", {"DAPHNE_PIXIV_REFRESH_TOKEN": "t"}),
         ):
             await handle_pixiv_links(update, context)
         context.bot.send_photo.assert_awaited_once()
@@ -367,6 +368,91 @@ class TestPixivFallbacks(unittest.IsolatedAsyncioTestCase):
             sorted(paths, key=pixiv._page_index),
             ["/x/1_p0.jpg", "/x/1_p2.jpg", "/x/1_p10.jpg"],
         )
+
+
+class TestPixivRestrictedRouting(unittest.IsolatedAsyncioTestCase):
+    def _update(self):
+        update = MagicMock()
+        update.message.text = "https://www.pixiv.net/artworks/123"
+        update.message.chat_id = 42
+        update.message.reply_to_message = None
+        update.message.is_topic_message = False
+        update.message.delete = AsyncMock()
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.bot.send_chat_action = AsyncMock()
+        context.bot.send_photo = AsyncMock()
+        return update, context
+
+    async def test_restricted_work_with_a_login_goes_to_the_login_route(self):
+        update, context = self._update()
+        restricted = PixivInfo(
+            title="t", author_name="a", tags=[], image_urls=None, restricted=True
+        )
+        primary = AsyncMock()
+        with (
+            patch(
+                "daphne.pixiv.fetch_artwork_info",
+                new=AsyncMock(return_value=restricted),
+            ),
+            patch("daphne.pixiv._fetch_primary", new=primary),
+            patch(
+                "daphne.pixiv._gallery_fallback_sync",
+                return_value=[(b"img", "123_p0.png")],
+            ),
+            patch("daphne.bot.download_slot", return_value=_NoSlot()),
+            patch("daphne.bot.set_reaction", new=AsyncMock()),
+            patch.dict("os.environ", {"DAPHNE_PIXIV_REFRESH_TOKEN": "t"}),
+        ):
+            await handle_pixiv_links(update, context)
+        primary.assert_not_called()
+        context.bot.send_photo.assert_awaited_once()
+        update.message.reply_text.assert_not_called()
+
+    async def test_restricted_work_without_a_login_says_so(self):
+        update, context = self._update()
+        restricted = PixivInfo(
+            title="t", author_name="a", tags=[], image_urls=None, restricted=True
+        )
+        with (
+            patch(
+                "daphne.pixiv.fetch_artwork_info",
+                new=AsyncMock(return_value=restricted),
+            ),
+            patch("daphne.pixiv._gallery_fallback_sync") as login,
+            patch("daphne.bot.set_reaction", new=AsyncMock()),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            await handle_pixiv_links(update, context)
+        login.assert_not_called()
+        sent = update.message.reply_text.call_args[0][0]
+        self.assertIn("age-restricted", sent)
+
+    def test_login_config_keeps_the_cache_in_memory_and_reads_few_pages(self):
+        seen = {}
+
+        def fake_download(url, out_dir, extra_args=()):
+            config = extra_args[extra_args.index("--config") + 1]
+            seen["config"] = json.loads(Path(config).read_text())
+            seen["args"] = list(extra_args)
+            return []
+
+        with (
+            patch.dict("os.environ", {"DAPHNE_PIXIV_REFRESH_TOKEN": "t"}),
+            patch("daphne.pixiv.download_gallery", side_effect=fake_download),
+        ):
+            pixiv._gallery_fallback_sync("123")
+        self.assertEqual(seen["config"]["cache"], {"file": ":memory:"})
+        self.assertIn("--range", seen["args"])
+        self.assertEqual(seen["args"][seen["args"].index("--range") + 1], "1-3")
+
+
+class _NoSlot:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 if __name__ == "__main__":
