@@ -2,15 +2,19 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, "feat/**", "fix/**" ]
+    branches: [ main, master ]
   pull_request:
+    # No required status checks are configured; revisit this filter if that changes.
+    paths-ignore:
+      - README.md
+      - 'docs/**'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
