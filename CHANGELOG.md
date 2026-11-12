@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-13
+
+### Changed
+
+- **Every delivery goes through one gate**: `decide_delivery` is the only road to an upload — preview RBAC and the size policy decide before any byte moves, so TikTok (TikWM), Instagram (single and carousel) and Bluesky no longer stream first and discover the limit mid-download. An unpriced or over-limit video cards; the card's Download button runs the full pipeline on demand.
+- **The preview charge equals delivered media**: the quota is charged once per successful Telegram send (video, album, or single item after a refused album), never for a download that fails.
+- **No second resolve+download cycle**: a priced-and-approved video that fails mid-stream cards instead of silently retrying through the generic pipeline.
+- **Carousel delivery is atomic**: every video item is priced and gated, all video bytes land on disk before anything is sent, photos ride along after the videos, and a mid-stream refusal cards the whole video set — no half-delivered groups.
+- **Bilibili playurl is cid-authoritative**: matcha is pinned at `v0.3.0`, `playurl` is asked with the selected part's `cid` from `MediaInfo.cid`, and the old parameter surgery is gone. A `?p=` on a body that publishes no parts stays unpriced instead of guessing part 1, and an out-of-range `?p=` still reads "This video has N parts, not P" — now also in the chat, not only in the log.
+- **One upload cap source**: `upload_cap_bytes()` in `daphne.config` feeds the gate and every stream limit, Twitter included.
+
+### Fixed
+
+- A non-public CDN URL prices as `None` and cards instead of raising through the handler.
+- An unset delivery policy is a card (`MatchaError` is caught at the gate), not an unhandled exception.
+
 ## [0.5.2] - 2026-11-12
 
 ### Changed
