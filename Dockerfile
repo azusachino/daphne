@@ -5,30 +5,28 @@
 # EJS challenges.
 ARG PYTHON_IMAGE=docker.io/library/python:3.14.10-alpine@sha256:cfe4b5079e5852da965ae14f74a6e2b137ece05b918d27c575fb70de3c85db2b
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0
+# lux is built from source: upstream's release binaries are compiled with an old
+# Go toolchain and carry dozens of stdlib CVEs into the image (2026-11-13 image
+# audit). Building the pinned tag with a current pinned Go removes them all.
+ARG LUX_VERSION=v0.24.1
+ARG GO_IMAGE=docker.io/library/golang:1.27-alpine@sha256:ea30e25680a5470bac02b08bb0e0a735fb75bd0ab7d431b9b95ee0abef362586
 
 FROM ${UV_IMAGE} AS uv
+
+FROM ${GO_IMAGE} AS lux-builder
+ARG LUX_VERSION
+RUN apk add --no-cache ca-certificates \
+    && mkdir /src && cd /src \
+    && go mod init luxbuild \
+    && go get "github.com/iawia002/lux@${LUX_VERSION}" \
+    && go get golang.org/x/net@latest golang.org/x/text@latest \
+           github.com/buger/jsonparser@latest github.com/antchfx/xpath@latest \
+    && go build -o /out/lux github.com/iawia002/lux
+
 FROM ${PYTHON_IMAGE} AS base
 
-RUN apk add --no-cache ca-certificates curl deno ffmpeg tar tini tzdata
-
-# lux is a Go binary with no apk package. Each build takes the latest GitHub release and
-# checks the tarball against the release's own checksums file before it is installed.
-ARG TARGETARCH
-RUN LUX_VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/iawia002/lux/releases/latest | sed 's#.*/v##')" \
-    && case "${TARGETARCH}" in \
-      amd64) LUX_ARCH=x86_64 ;; \
-      arm64) LUX_ARCH=arm64 ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && LUX_TAR="lux_${LUX_VERSION}_Linux_${LUX_ARCH}.tar.gz" \
-    && BASE="https://github.com/iawia002/lux/releases/download/v${LUX_VERSION}" \
-    && cd /tmp \
-    && curl -fsSLO "${BASE}/${LUX_TAR}" \
-    && curl -fsSLO "${BASE}/lux_${LUX_VERSION}_checksums.txt" \
-    && grep " ${LUX_TAR}\$" "lux_${LUX_VERSION}_checksums.txt" | sha256sum -c - \
-    && tar -xzf "${LUX_TAR}" lux \
-    && install -m 0755 /tmp/lux /usr/local/bin/lux \
-    && rm -f /tmp/lux "/tmp/${LUX_TAR}" "/tmp/lux_${LUX_VERSION}_checksums.txt"
+RUN apk add --no-cache ca-certificates curl deno ffmpeg libexpat tar tini tzdata
+COPY --from=lux-builder /out/lux /usr/local/bin/lux
 
 FROM base AS builder
 

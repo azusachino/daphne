@@ -38,8 +38,8 @@ image-push: image-build
 	$(CONTAINER_TOOL) tag daphne:latest $(IMAGE):$(VERSION)
 	$(CONTAINER_TOOL) push $(IMAGE):$(VERSION)
 
-image-local: ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node)
-	$(CONTAINER_TOOL) build -t $(LOCAL_IMAGE):$(VERSION) .
+image-local: ## Build and import straight into k3s containerd (bypasses registry push; run on the k3s node; REFRESH=1 bypasses cache)
+	$(CONTAINER_TOOL) build $(if $(REFRESH),--no-cache,) -t $(LOCAL_IMAGE):$(VERSION) .
 	$(CONTAINER_TOOL) save $(LOCAL_IMAGE):$(VERSION) | sudo k3s ctr images import -
 
 verify: image-build
