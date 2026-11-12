@@ -78,8 +78,6 @@ async def send_carousel_media(bot, chat_id, videos, caption, update, photos=()):
                     raise CarouselItemTooLarge(video) from None
                 paths.append(path)
         video_caption = "" if photos else caption
-        if photos:
-            await send_photos(bot, chat_id, photos, caption, PARSE_MODE_HTML)
         for start in range(0, len(paths), 10):
             batch = paths[start : start + 10]
             batch_caption = video_caption if start == 0 else ""
@@ -108,6 +106,10 @@ async def send_carousel_media(bot, chat_id, videos, caption, update, photos=()):
                     supports_streaming=True,
                 )
                 await _charge_preview(update)
+        # Photos go out last: a transport failure before this point leaves
+        # them unsent, which is what the failure note promises.
+        if photos:
+            await send_photos(bot, chat_id, photos, caption, PARSE_MODE_HTML)
 
 
 async def handle_instagram_links(
@@ -289,9 +291,11 @@ async def handle_instagram_links(
                         photos,
                     )
                 except CarouselItemTooLarge as too_large:
-                    # The real bytes crossed the cap after the gate approved the
-                    # price: card that item. Nothing was sent yet, so the photos
-                    # still go out and nothing is half-delivered.
+                    # The real bytes crossed the cap after the gate approved
+                    # the price. Nothing was sent yet, so the photos still go
+                    # out — and every video in the set gets a card, because a
+                    # half-delivered group is worse than cards. The refused
+                    # item says why; the rest just offer the button.
                     from daphne.bot import _size_reason, send_video_card
 
                     if photos:
@@ -304,6 +308,10 @@ async def handle_instagram_links(
                         sender,
                         _size_reason(too_large.video.estimated_bytes or 0),
                     )
+                    for video in priced:
+                        if video is too_large.video:
+                            continue
+                        await send_video_card(update, video, sender, "Video Details")
                     return
         except Exception:
             logger.exception("Instagram carousel delivery failed")
@@ -443,7 +451,6 @@ async def handle_instagram_links(
                         sender,
                         "Direct download failed — use Download for the full pipeline",
                     )
-                    return
                     return
 
                 width, height, duration = probe_video_dimensions(video_path)

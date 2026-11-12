@@ -225,13 +225,14 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
     @patch("daphne.bot.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
-    async def test_a_carousel_stream_over_the_cap_cards_that_item(
+    async def test_a_carousel_stream_over_the_cap_cards_the_whole_video_set(
         self, extract, _limit, rbac, card, stream, photos, delete
     ):
         # The gate approved a price under the cap, but the second item's real
-        # bytes crossed it mid-stream: card that item. Nothing was sent before
-        # the failure -- no partial group, no failure note -- and the photos
-        # still go out. The original message is kept.
+        # bytes crossed it mid-stream: every video in the set gets a card --
+        # the refused one with the size reason, the fetched ones with a plain
+        # card -- so nothing is silently dropped. No partial group, no failure
+        # note; the photos still go out. The original message is kept.
         from daphne.media_http import MediaTooLarge
 
         self.context.bot.send_media_group = AsyncMock()
@@ -256,11 +257,52 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         }
         await handle_instagram_links(self.update, self.context)
         self.context.bot.send_media_group.assert_not_awaited()
-        card.assert_awaited_once()
-        _update, video, _sender, reason = card.await_args.args
-        self.assertEqual(video.fetch_url, "https://cdn.test/2.mp4")
-        self.assertEqual(reason, "Video is over 1 MB")
+        self.assertEqual(card.await_count, 2)
+        carded = {call.args[1].fetch_url: call.args[3] for call in card.await_args_list}
+        self.assertEqual(
+            carded,
+            {
+                "https://cdn.test/1.mp4": "Video Details",
+                "https://cdn.test/2.mp4": "Video is over 1 MB",
+            },
+        )
         photos.assert_awaited_once()
+        delete.assert_not_awaited()
+
+    @patch("daphne.instagram.try_delete_message", autospec=True)
+    @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
+    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_a_transport_failure_before_photos_leaves_them_unsent(
+        self, extract, _limit, rbac, stream, photos, delete
+    ):
+        # Photos ride along AFTER the video sends: a transport error on the
+        # album means no video and no photos went out, which is exactly what
+        # the failure note claims (no half-delivery in either direction).
+        self.context.bot.send_media_group = AsyncMock(side_effect=RuntimeError("net"))
+        self.context.bot.send_video = AsyncMock(side_effect=RuntimeError("net"))
+        allowed = MagicMock()
+        allowed.is_allowed.return_value = True
+        rbac.check_access.return_value = allowed
+
+        async def stream_side_effect(client, url, output, limit, **kwargs):
+            output.write(b"video")
+
+        stream.side_effect = stream_side_effect
+        extract.return_value = {
+            "id": "ABC",
+            "type": "carousel",
+            "entries": [
+                {"kind": "image", "formats": [{"url": "https://cdn.test/1.jpg"}]},
+                {"kind": "video", "formats": [{"url": "https://cdn.test/1.mp4"}]},
+            ],
+        }
+        await handle_instagram_links(self.update, self.context)
+        photos.assert_not_awaited()
+        self.context.bot.send_message.assert_awaited_once()
         delete.assert_not_awaited()
 
     @patch("daphne.instagram.try_delete_message", autospec=True)
