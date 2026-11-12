@@ -41,9 +41,23 @@ async def content_length(
 
 
 async def stream_media(
-    client, url, sink, limit: int, *, headers=None, timeout=30.0
+    client,
+    url,
+    sink,
+    limit: int,
+    *,
+    headers=None,
+    timeout=30.0,
+    verify_public: bool = True,
 ) -> None:
-    await asyncio.to_thread(check_public_url, url)
+    """Stream ``url`` to ``sink``, aborting past ``limit`` bytes.
+
+    ``verify_public=False`` skips the DNS check when the caller already ran
+    :func:`content_length` (which verifies) on the same URL, so a priced
+    download costs one lookup instead of two.
+    """
+    if verify_public:
+        await asyncio.to_thread(check_public_url, url)
     size = 0
     async with client.stream("GET", url, headers=headers, timeout=timeout) as response:
         response.raise_for_status()

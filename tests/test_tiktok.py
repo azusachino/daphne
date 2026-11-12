@@ -99,6 +99,40 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "Video is over 1 MB")
         self.update.message.delete.assert_not_awaited()
 
+    async def test_a_priced_stream_failure_cards_instead_of_a_second_cycle(self):
+        # TikWM priced the video and the gate approved it, but the stream or
+        # send failed: the card's Download button runs the full pipeline on
+        # demand. No silent second resolve+download cycle.
+        api = MagicMock(status_code=200)
+        api.json.return_value = {
+            "code": 0,
+            "data": {
+                "id": "123",
+                "play": "https://cdn.example/a.mp4",
+                "size": 512 * 1024,
+            },
+        }
+        with (
+            self._client(api),
+            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch(
+                "daphne.tiktok.stream_media", new=AsyncMock(side_effect=RuntimeError())
+            ),
+            patch("daphne.bot.rbac_service") as rbac,
+            patch("daphne.bot.send_video_card", autospec=True) as card,
+            patch("daphne.bot.handle_video_url", autospec=True) as fallback,
+        ):
+            access = MagicMock()
+            access.is_allowed.return_value = True
+            rbac.check_access.return_value = access
+            await handle_tiktok_links(self.update, self.context)
+        fallback.assert_not_called()
+        card.assert_awaited_once()
+        _update, video, _sender, reason = card.await_args.args
+        self.assertEqual(video.estimated_bytes, 512 * 1024)
+        self.assertIn("TikWM download failed", reason)
+        self.update.message.delete.assert_not_awaited()
+
     async def test_an_upload_charges_the_preview_quota(self):
         api = MagicMock(status_code=200)
         api.json.return_value = {

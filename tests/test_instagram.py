@@ -6,7 +6,7 @@ from daphne.instagram import (
     contains_instagram_link,
     extract_instagram_link,
     handle_instagram_links,
-    send_carousel_videos,
+    send_carousel_media,
 )
 from daphne.video import from_metadata
 
@@ -60,7 +60,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_message.assert_awaited_once()
 
     async def test_carousel_videos_are_streamed_before_grouping(self):
-        async def stream(client, url, output, limit):
+        async def stream(client, url, output, limit, **kwargs):
             output.write(b"video")
 
         self.context.bot.send_media_group = AsyncMock()
@@ -74,7 +74,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
             ) as download,
             patch("daphne.bot._charge_preview", autospec=True) as charge,
         ):
-            await send_carousel_videos(
+            await send_carousel_media(
                 self.context.bot, 7, videos, "caption", self.update
             )
         self.assertEqual(download.await_count, 2)
@@ -84,8 +84,34 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         # The group delivered: one charge, at send time.
         charge.assert_awaited_once_with(self.update)
 
+    async def test_a_refused_album_charges_per_single_send(self):
+        # Telegram refused the album: the items go out one by one, and each
+        # successful send charges the preview quota once.
+        from aiogram.exceptions import TelegramBadRequest
+
+        self.context.bot.send_media_group = AsyncMock(
+            side_effect=TelegramBadRequest(method="sendMediaGroup", message="refused")
+        )
+        self.context.bot.send_video = AsyncMock()
+        videos = [
+            from_metadata(u, {"webpage_url": PAGE, "size": 1024}, platform="instagram")
+            for u in ("https://cdn.test/one", "https://cdn.test/two")
+        ]
+
+        async def stream(client, url, output, limit, **kwargs):
+            output.write(b"video")
+
+        with (
+            patch("daphne.instagram.stream_media", new=AsyncMock(side_effect=stream)),
+            patch("daphne.bot._charge_preview", autospec=True) as charge,
+        ):
+            await send_carousel_media(self.context.bot, 7, videos, "", self.update)
+        self.assertEqual(self.context.bot.send_video.await_count, 2)
+        charge.assert_awaited_with(self.update)
+        self.assertEqual(charge.await_count, 2)
+
     @patch("daphne.instagram.try_delete_message", new_callable=AsyncMock)
-    @patch("daphne.instagram.send_carousel_videos", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_carousel_media", new_callable=AsyncMock)
     @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
@@ -114,7 +140,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch("daphne.instagram.try_delete_message", new_callable=AsyncMock)
-    @patch("daphne.instagram.send_carousel_videos", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_carousel_media", new_callable=AsyncMock)
     @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
@@ -142,8 +168,10 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
             ],
         }
         await handle_instagram_links(self.update, self.context)
-        self.assertEqual(photos.await_args.args[2], ["https://cdn.test/1.jpg"])
         delivered = videos.await_args.args[2]
+        # The photos ride along with the video delivery now: nothing is sent
+        # before every video byte is on disk.
+        self.assertEqual(videos.await_args.args[5], ["https://cdn.test/1.jpg"])
         self.assertEqual(
             [v.fetch_url for v in delivered],
             ["https://cdn.test/1.mp4", "https://cdn.test/2.mp4"],
@@ -154,7 +182,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         delete.assert_awaited_once()
 
     @patch("daphne.instagram.try_delete_message", new_callable=AsyncMock)
-    @patch("daphne.instagram.send_carousel_videos", new_callable=AsyncMock)
+    @patch("daphne.instagram.send_carousel_media", new_callable=AsyncMock)
     @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
     @patch("daphne.bot.send_video_card", autospec=True)
     @patch("daphne.bot.rbac_service")
@@ -187,6 +215,52 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         _update, video, _sender, reason = card.await_args.args
         self.assertEqual(video.fetch_url, "https://cdn.test/1.mp4")
         self.assertEqual(reason, "Video is over 1 MB")
+        delete.assert_not_awaited()
+
+    @patch("daphne.instagram.try_delete_message", autospec=True)
+    @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.bot.send_video_card", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
+    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_a_carousel_stream_over_the_cap_cards_that_item(
+        self, extract, _limit, rbac, card, stream, photos, delete
+    ):
+        # The gate approved a price under the cap, but the second item's real
+        # bytes crossed it mid-stream: card that item. Nothing was sent before
+        # the failure -- no partial group, no failure note -- and the photos
+        # still go out. The original message is kept.
+        from daphne.media_http import MediaTooLarge
+
+        self.context.bot.send_media_group = AsyncMock()
+        allowed = MagicMock()
+        allowed.is_allowed.return_value = True
+        rbac.check_access.return_value = allowed
+
+        async def stream_side_effect(client, url, output, limit, **kwargs):
+            if url.endswith("2.mp4"):
+                raise MediaTooLarge("over")
+            output.write(b"video")
+
+        stream.side_effect = stream_side_effect
+        extract.return_value = {
+            "id": "ABC",
+            "type": "carousel",
+            "entries": [
+                {"kind": "image", "formats": [{"url": "https://cdn.test/1.jpg"}]},
+                {"kind": "video", "formats": [{"url": "https://cdn.test/1.mp4"}]},
+                {"kind": "video", "formats": [{"url": "https://cdn.test/2.mp4"}]},
+            ],
+        }
+        await handle_instagram_links(self.update, self.context)
+        self.context.bot.send_media_group.assert_not_awaited()
+        card.assert_awaited_once()
+        _update, video, _sender, reason = card.await_args.args
+        self.assertEqual(video.fetch_url, "https://cdn.test/2.mp4")
+        self.assertEqual(reason, "Video is over 1 MB")
+        photos.assert_awaited_once()
         delete.assert_not_awaited()
 
     @patch("daphne.instagram.try_delete_message", autospec=True)
@@ -286,35 +360,60 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reason, "Video is over 1 MB")
         fallback.assert_not_called()
 
-    @patch("daphne.bot.handle_video_url", autospec=True)
+    @patch("daphne.bot.send_video_card", autospec=True)
     @patch("daphne.instagram.stream_media", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
     @patch("daphne.bot.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
-    async def test_direct_download_failure_falls_back_to_the_video_pipeline(
-        self, extract, _limit, rbac, stream, fallback
+    async def test_direct_download_failure_cards_instead_of_a_second_cycle(
+        self, extract, _limit, rbac, stream, card
     ):
-        # The gate approved the price, but the CDN stream died: the generic
-        # pipeline gets one shot at the post before giving up.
+        # The gate approved the price, but the CDN stream died. The card's
+        # Download button runs the full pipeline on demand; there is no silent
+        # second resolve+download cycle anymore.
+        with patch("daphne.bot.handle_video_url", autospec=True) as fallback:
+            allowed = MagicMock()
+            allowed.is_allowed.return_value = True
+            rbac.check_access.return_value = allowed
+            stream.side_effect = RuntimeError("boom")
+            extract.return_value = {
+                "id": "ABC",
+                "type": "video",
+                "title": "Video by someone",
+                "uploader": "someone",
+                "formats": [{"url": "https://cdn.test/1.mp4"}],
+            }
+            await handle_instagram_links(self.update, self.context)
+        fallback.assert_not_called()
+        card.assert_awaited_once()
+        _update, video, _sender, reason = card.await_args.args
+        self.assertEqual(video.estimated_bytes, 512 * 1024)
+        self.assertIn("Direct download failed", reason)
+
+    @patch("daphne.bot.send_video_card", autospec=True)
+    @patch("daphne.bot.handle_video_url", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_a_non_public_cdn_url_cards_instead_of_raising(
+        self, extract, rbac, fallback, card
+    ):
+        # check_public_url rejects the URL; pricing must come back None (not an
+        # exception), so the gate cards NO_PLAN and nothing retries.
         allowed = MagicMock()
         allowed.is_allowed.return_value = True
         rbac.check_access.return_value = allowed
-        stream.side_effect = RuntimeError("boom")
         extract.return_value = {
             "id": "ABC",
             "type": "video",
             "title": "Video by someone",
             "uploader": "someone",
-            "formats": [{"url": "https://cdn.test/1.mp4"}],
+            "formats": [{"url": "http://127.0.0.1/1.mp4"}],
         }
         await handle_instagram_links(self.update, self.context)
-        fallback.assert_awaited_once_with(
-            self.update,
-            self.context,
-            "https://www.instagram.com/p/DRZSlC7D3OT",
-            "instagram",
-        )
+        fallback.assert_not_called()
+        card.assert_awaited_once()
+        self.assertEqual(card.await_args.args[3], "Video Details")
 
     @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("daphne.downloader.fetch_instagram_fallback_media", return_value=None)

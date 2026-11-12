@@ -39,11 +39,22 @@ def extract_instagram_link(text: str) -> str | None:
     return None
 
 
-async def send_carousel_videos(bot, chat_id, videos, caption, update):
-    """Stream every priced item to disk under the cap, then group videos.
+class CarouselItemTooLarge(Exception):
+    """A carousel video's real bytes crossed the cap the gate approved."""
 
-    The gate already approved each item; this only fetches bytes and sends. The
-    preview quota charges once per successfully delivered group.
+    def __init__(self, video):
+        super().__init__("carousel video exceeded the upload cap")
+        self.video = video
+
+
+async def send_carousel_media(bot, chat_id, videos, caption, update, photos=()):
+    """Deliver a gated carousel: fetch every video, then photos, then groups.
+
+    The gate already approved each item; this only fetches bytes and sends.
+    All video bytes land on disk before anything is sent, so a mid-download
+    failure (:class:`CarouselItemTooLarge`) leaves nothing half-delivered.
+    The preview quota charges after each successful send: once per album,
+    once per single video when the album is refused.
     """
     # Local import: bot.py imports this module's handler, resolved at call time.
     from daphne.bot import _charge_preview, upload_cap_bytes
@@ -53,14 +64,25 @@ async def send_carousel_videos(bot, chat_id, videos, caption, update):
         async with httpx.AsyncClient() as client:
             for index, video in enumerate(videos):
                 path = os.path.join(directory, f"{index}.mp4")
-                with open(path, "wb") as output:
-                    await stream_media(
-                        client, video.fetch_url, output, upload_cap_bytes()
-                    )
+                try:
+                    with open(path, "wb") as output:
+                        # Already verified public by the pricing HEAD.
+                        await stream_media(
+                            client,
+                            video.fetch_url,
+                            output,
+                            upload_cap_bytes(),
+                            verify_public=False,
+                        )
+                except MediaTooLarge:
+                    raise CarouselItemTooLarge(video) from None
                 paths.append(path)
+        video_caption = "" if photos else caption
+        if photos:
+            await send_photos(bot, chat_id, photos, caption, PARSE_MODE_HTML)
         for start in range(0, len(paths), 10):
             batch = paths[start : start + 10]
-            batch_caption = caption if start == 0 else ""
+            batch_caption = video_caption if start == 0 else ""
             if len(batch) >= 2:
                 media = [
                     InputMediaVideo(
@@ -85,7 +107,7 @@ async def send_carousel_videos(bot, chat_id, videos, caption, update):
                     parse_mode=PARSE_MODE_HTML,
                     supports_streaming=True,
                 )
-            await _charge_preview(update)
+                await _charge_preview(update)
 
 
 async def handle_instagram_links(
@@ -257,18 +279,32 @@ async def handle_instagram_links(
                     return
             user_id = update.effective_user.id if update.effective_user else 0
             async with download_slot(user_id):
-                if photos:
-                    await send_photos(
-                        context.bot, chat_id, photos, caption, PARSE_MODE_HTML
-                    )
-                if priced:
-                    await send_carousel_videos(
+                try:
+                    await send_carousel_media(
                         context.bot,
                         chat_id,
                         priced,
-                        "" if photos else caption,
+                        caption,
                         update,
+                        photos,
                     )
+                except CarouselItemTooLarge as too_large:
+                    # The real bytes crossed the cap after the gate approved the
+                    # price: card that item. Nothing was sent yet, so the photos
+                    # still go out and nothing is half-delivered.
+                    from daphne.bot import _size_reason, send_video_card
+
+                    if photos:
+                        await send_photos(
+                            context.bot, chat_id, photos, caption, PARSE_MODE_HTML
+                        )
+                    await send_video_card(
+                        update,
+                        too_large.video,
+                        sender,
+                        _size_reason(too_large.video.estimated_bytes or 0),
+                    )
+                    return
         except Exception:
             logger.exception("Instagram carousel delivery failed")
             await set_reaction(message, REACTION_FAILED)
@@ -368,11 +404,13 @@ async def handle_instagram_links(
                     async with download_slot(user_id):
                         async with httpx.AsyncClient() as client:
                             with open(video_path, "wb") as f:
+                                # Already verified public by the pricing HEAD.
                                 await stream_media(
                                     client,
                                     video_url,
                                     f,
                                     upload_cap_bytes(),
+                                    verify_public=False,
                                 )
                     logger.info(
                         "Instagram handler: video download completed. File size: %d bytes",
@@ -394,10 +432,18 @@ async def handle_instagram_links(
                     logger.exception(
                         "Failed to download Instagram video from direct URL: %s", exc
                     )
-                    # The direct file failed; the chain may still read the page.
-                    from daphne.bot import handle_video_url
+                    # The gate already approved this priced video; the direct bytes
+                    # failed. Card it -- the Download button runs the full pipeline
+                    # on demand -- instead of a second silent resolve+download cycle.
+                    from daphne.bot import send_video_card
 
-                    await handle_video_url(update, context, url, "instagram")
+                    await send_video_card(
+                        update,
+                        video,
+                        sender,
+                        "Direct download failed — use Download for the full pipeline",
+                    )
+                    return
                     return
 
                 width, height, duration = probe_video_dimensions(video_path)

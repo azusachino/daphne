@@ -64,6 +64,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
     }
 
     success = False
+    video = None  # set once TikWM data is priced; a failure past that point cards
     try:
         logger.info("TikTok handler: querying TikWM API for URL: %s", url)
         async with httpx.AsyncClient() as client:
@@ -200,10 +201,25 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
     except Exception as e:
         logger.exception("Failed to fetch TikTok video from TikWM: %s", e)
 
-    # Fallback to standard yt-dlp downloader if TikWM fails
+    # TikWM failed somewhere. If the video was already priced and approved by
+    # the gate, its bytes (or the upload) failed: card it -- the Download button
+    # runs the full pipeline on demand -- never a second silent resolve+download
+    # cycle. If nothing was fetched at all, the generic pipeline is the one and
+    # only cycle.
     if not success:
+        if video is not None:
+            from daphne.bot import send_video_card
+
+            await send_video_card(
+                update,
+                video,
+                sender,
+                "TikWM download failed — use Download for the full pipeline",
+            )
+            return
         logger.info(
-            "TikTok handler: falling back to standard yt-dlp downloader for URL: %s",
+            "TikTok handler: TikWM produced nothing; running the generic pipeline "
+            "for URL: %s",
             url,
         )
         from daphne.bot import handle_video_url

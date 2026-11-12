@@ -400,7 +400,7 @@ async def _upload_resolved_video(
 
     # The gate already decided upload; the real bytes are still checked after the
     # download, where they are actually known.
-    max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
+    max_upload_bytes = upload_cap_bytes()
 
     with tempfile.TemporaryDirectory() as out_dir:
         try:
