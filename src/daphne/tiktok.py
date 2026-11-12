@@ -8,7 +8,6 @@ from daphne.tg import TelegramContext, TelegramUpdate, failure_reason
 from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
 from daphne.downloader import probe_video_dimensions, format_video_caption
-from daphne.config import video_upload_limit_mb
 from daphne.media_http import MediaTooLarge, stream_media
 
 logger = logging.getLogger(__name__)
@@ -65,6 +64,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
     }
 
     success = False
+    video = None  # set once TikWM data is priced; a failure past that point cards
     try:
         logger.info("TikTok handler: querying TikWM API for URL: %s", url)
         async with httpx.AsyncClient() as client:
@@ -98,6 +98,39 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
 
                     # Download video file
                     if video_url:
+                        # Local imports: bot.py imports this module's handler, so the
+                        # dependency is resolved at call time to avoid a cycle.
+                        from daphne.bot import (
+                            _charge_preview,
+                            _size_reason,
+                            decide_delivery,
+                            download_slot,
+                            send_video_card,
+                            upload_cap_bytes,
+                        )
+                        from daphne.video import from_metadata
+                        from matcha import Upload
+
+                        # TikWM reports the file size, so the delivery gate decides
+                        # before any media byte streams: over-limit or preview-denied
+                        # cards without the download today's path performed first.
+                        video = from_metadata(
+                            url,
+                            {
+                                "title": title,
+                                "uploader": uploader,
+                                "duration": duration_secs,
+                                "webpage_url": url,
+                                "size": data.get("size"),
+                            },
+                            platform="tiktok",
+                        )
+                        decision = await decide_delivery(update, video, sender)
+                        if not isinstance(decision, Upload):
+                            # The gate rendered the card; that is a delivered outcome,
+                            # not a failure the yt-dlp fallback should retry.
+                            return
+
                         with tempfile.TemporaryDirectory() as out_dir:
                             video_path = os.path.join(
                                 out_dir, f"{data.get('id', 'tiktok_video')}.mp4"
@@ -106,10 +139,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                 "TikTok handler: downloading video bytes from direct URL %s",
                                 video_url,
                             )
-                            from daphne.bot import download_slot, send_video_card
-                            from daphne.video import from_metadata
-
-                            max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
+                            max_upload_bytes = upload_cap_bytes()
                             user_id = (
                                 update.effective_user.id if update.effective_user else 0
                             )
@@ -124,20 +154,13 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                             headers=headers,
                                         )
                             except MediaTooLarge:
+                                # TikWM's price was wrong: the real bytes passed the
+                                # cap the gate already approved. Card the priced video.
                                 await send_video_card(
                                     update,
-                                    from_metadata(
-                                        url,
-                                        {
-                                            "title": title,
-                                            "uploader": uploader,
-                                            "duration": duration_secs,
-                                            "webpage_url": url,
-                                        },
-                                        platform="tiktok",
-                                    ),
+                                    video,
                                     sender,
-                                    f"Video is over {video_upload_limit_mb()} MB",
+                                    _size_reason(video.estimated_bytes or 0),
                                 )
                                 return
 
@@ -165,6 +188,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
 
                             with open(video_path, "rb") as video_file:
                                 await context.bot.send_video(video=video_file, **kwargs)
+                            await _charge_preview(update)
                             success = True
                 else:
                     logger.warning(
@@ -177,10 +201,25 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
     except Exception as e:
         logger.exception("Failed to fetch TikTok video from TikWM: %s", e)
 
-    # Fallback to standard yt-dlp downloader if TikWM fails
+    # TikWM failed somewhere. If the video was already priced and approved by
+    # the gate, its bytes (or the upload) failed: card it -- the Download button
+    # runs the full pipeline on demand -- never a second silent resolve+download
+    # cycle. If nothing was fetched at all, the generic pipeline is the one and
+    # only cycle.
     if not success:
+        if video is not None:
+            from daphne.bot import send_video_card
+
+            await send_video_card(
+                update,
+                video,
+                sender,
+                "TikWM download failed — use Download for the full pipeline",
+            )
+            return
         logger.info(
-            "TikTok handler: falling back to standard yt-dlp downloader for URL: %s",
+            "TikTok handler: TikWM produced nothing; running the generic pipeline "
+            "for URL: %s",
             url,
         )
         from daphne.bot import handle_video_url

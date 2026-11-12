@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from daphne import bot as bot_module
 from daphne.bot import (
+    _upload_resolved_video,
     extract_video_url,
     help_command,
     start_command,
-    handle_video_link,
     log_update,
     log_handler,
 )
@@ -26,7 +26,7 @@ BILI = "https://www.bilibili.com/video/BV1abc"
 
 
 def _video(size=None, *, title="Video", uploader="Uploader", duration=90, url=BILI):
-    """A resolved video, the shape `handle_video_link` now receives."""
+    """A resolved video, the shape `_upload_resolved_video` now receives."""
     plan = (
         None
         if size is None
@@ -302,12 +302,12 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=513 * 1024 * 1024)
-    async def test_handle_video_link_cards_the_real_bytes_after_download(
+    async def test__upload_resolved_video_cards_the_real_bytes_after_download(
         self, mock_getsize, mock_download, mock_limit
     ):
         # The upload-or-card decision already happened before this ran, so the only size
         # check left is the real file: a download that grew past the limit still cards.
-        await handle_video_link(
+        await _upload_resolved_video(
             self.update,
             self.context,
             _video(size=10 * 1024 * 1024, title="Huge Video", duration=120),
@@ -332,11 +332,11 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=1024 * 1024)
-    async def test_handle_video_link_unknown_size_downloads_and_sends_video(
+    async def test__upload_resolved_video_unknown_size_downloads_and_sends_video(
         self, mock_getsize, mock_download, mock_probe, mock_limit
     ):
         with patch("builtins.open", unittest.mock.mock_open()):
-            await handle_video_link(
+            await _upload_resolved_video(
                 self.update, self.context, _video(title="Unknown Size Video")
             )
 
@@ -355,22 +355,28 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "failed https://api.telegram.org/bot123456:ABCDEF1234567890abcdef/getMe?token=secret123"
         ),
     )
-    async def test_handle_video_link_redacts_exception_text(
+    async def test__upload_resolved_video_redacts_exception_text(
         self, mock_download, mock_limit
     ):
-        await handle_video_link(self.update, self.context, _video())
+        await _upload_resolved_video(self.update, self.context, _video())
         edited_text = self.status.edit_text.call_args_list[-1][0][0]
         self.assertIn("Video download failed:", edited_text)
         self.assertNotIn("ABCDEF1234567890abcdef", edited_text)
         self.assertNotIn("secret123", edited_text)
 
-    @patch("daphne.bot.handle_video_link", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.bot._upload_resolved_video", autospec=True)
     @patch("daphne.bot.resolve_or_blank")
     async def test_handle_video_url_resolves_then_takes_the_upload_path(
-        self, mock_resolve, mock_handle_video
+        self, mock_resolve, mock_handle_video, mock_limit, mock_rbac
     ):
-        # The seam TikTok and Instagram reach after their own extractor failed.
-        resolved = _video(title="Resolved")
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+        # The seam TikTok and Instagram reach after their own extractor failed. A
+        # priced link rides the gate to an upload; an unpriced one would card.
+        resolved = _video(size=10 * 1024 * 1024, title="Resolved")
         mock_resolve.return_value = resolved
 
         await bot_module.handle_video_url(
@@ -549,7 +555,7 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.bot.rbac_service")
     @patch("daphne.bot.resolve_video")
-    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot._upload_resolved_video")
     @patch("daphne.bot.send_video_card")
     async def test_media_message_handler_preview_path(
         self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
@@ -569,14 +575,15 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         mock_rbac.check_access.assert_any_call(
             12345, -1002058191932, "preview_video", dry_run=True
         )
-        mock_rbac.check_access.assert_any_call(12345, -1002058191932, "preview_video")
+        # The quota charge lands in _upload_resolved_video after the send
+        # succeeds -- not here, where only the decision was made.
 
         mock_handle_video.assert_called_once_with(self.update, self.context, resolved)
         mock_send_card.assert_not_called()
 
     @patch("daphne.bot.rbac_service")
     @patch("daphne.bot.resolve_video")
-    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot._upload_resolved_video")
     @patch("daphne.bot.send_video_card")
     async def test_media_message_handler_card_path(
         self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
@@ -614,7 +621,7 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
             self.update,
             resolved,
             bot_module.sender_attribution(self.update.effective_user),
-            "Video Details",
+            "Preview Not Allowed (direct download only)",
         )
 
     @patch("daphne.bot.rbac_service")
@@ -640,7 +647,7 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.bot.rbac_service")
     @patch("daphne.bot.resolve_video")
-    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot._upload_resolved_video")
     @patch("daphne.bot.send_video_card")
     async def test_a_priced_video_over_the_telegram_limit_becomes_a_card(
         self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
@@ -665,7 +672,7 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.bot.rbac_service")
     @patch("daphne.bot.resolve_video")
-    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot._upload_resolved_video")
     @patch("daphne.bot.send_video_card")
     async def test_a_video_with_no_size_becomes_a_card(
         self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac

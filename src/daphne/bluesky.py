@@ -215,22 +215,13 @@ async def handle_bluesky_links(
             logger.warning("Bluesky photo send failed: %s", failure_reason(exc))
             await _report_failure(message, context, chat_id, sender, "send")
     elif video_url:
-        # Import here to avoid circular imports
-        from daphne.bot import handle_video_link
-        from daphne.video import from_metadata
+        # The gate owns upload-or-card, so the video rides the generic chain: yt-dlp
+        # resolves the post (title, author, duration, a price when it can compute one)
+        # and matcha decides. An unpriceable video cards with a Download button.
+        # Imported here to avoid circular imports.
+        from daphne.bot import handle_video_url
 
-        custom_metadata = {
-            "title": post_text[:100] if post_text else "Bluesky Video",
-            "uploader": f"{author_name} (@{author_handle})",
-            "duration": None,
-            "webpage_url": original_url,
-        }
-        # The file is the CDN video; the link the user sees is the post.
-        await handle_video_link(
-            update,
-            context,
-            from_metadata(video_url, custom_metadata, platform="bluesky"),
-        )
+        await handle_video_url(update, context, original_url, "bluesky")
         return
     else:
         # No media to send: say so and keep the original message, without a link fallback.
