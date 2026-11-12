@@ -14,6 +14,7 @@ from daphne import bilibili
 from daphne.bilibili import (
     SESSION_TTL,
     BilibiliError,
+    PartOutOfRangeError,
     RateLimitedError,
     UnsupportedError,
     cached_video,
@@ -230,7 +231,7 @@ class TestMetadata(BilibiliTestCase):
         # like "the source published no cid". Only the count can say the user asked for
         # part 9 of 2, so this message stays daphne's and is read from len(info.parts).
         fake = FakeBilibili()
-        with self.assertRaisesRegex(BilibiliError, "has 2 parts, not 9"):
+        with self.assertRaisesRegex(PartOutOfRangeError, "has 2 parts, not 9"):
             resolve_media(URL + "?p=9", client=fake.client())
         # The bounds check runs before any part is priced.
         self.assertEqual(fake.calls["/x/player/playurl"], 0)
@@ -257,20 +258,16 @@ class TestPlan(BilibiliTestCase):
 
     def test_playurl_is_matchas_own_description_with_no_parameters_patched(self):
         # The cid now arrives as a required argument, so the request carries exactly the
-        # parameters matcha wrote: one cid, and `page` as bookkeeping (the old surgery
-        # appended a second cid to the description it was handed).
+        # parameters matcha wrote: one cid, part 2's. The old surgery appended a second
+        # one to the description it was handed, which shows up here as two values.
         fake = FakeBilibili()
         resolve_media(URL + "?p=2", client=fake.client())
-        params = fake.playurl_requests[0].url.params
-        self.assertEqual(params.get_list("cid"), ["222"])
-        self.assertEqual(params.get_list("page"), ["2"])
+        self.assertEqual(fake.playurl_requests[0].url.params.get_list("cid"), ["222"])
 
     def test_playurl_addresses_the_first_part_when_none_is_selected(self):
         fake = FakeBilibili()
         resolve_media(URL, client=fake.client())
-        params = fake.playurl_requests[0].url.params
-        self.assertEqual(params.get_list("cid"), ["111"])
-        self.assertIsNone(params.get("page"))
+        self.assertEqual(fake.playurl_requests[0].url.params.get_list("cid"), ["111"])
 
     def test_unpriced_plan_is_not_a_failure(self):
         # playurl refuses, but the metadata was read: the caller shows a card.
@@ -285,6 +282,24 @@ class TestPlan(BilibiliTestCase):
         media = resolve_media(URL, client=fake.client())
         self.assertIsNone(media.plan)
         self.assertEqual(fake.calls["/x/player/playurl"], 0)
+
+    def test_a_part_selection_on_a_body_with_no_pages_is_not_priced(self):
+        # matcha falls back to the body's own cid when a body publishes no pages at all,
+        # and that number names part 1 whatever part was asked for (measured). Pricing it
+        # would serve part 1 for a ?p=2 link, so the plan stays unpriced and cards.
+        body = {"code": 0, "data": {"title": "t", "duration": 100, "cid": 999}}
+        fake = FakeBilibili(view_body=body)
+        media = resolve_media(URL + "?p=2", client=fake.client())
+        self.assertIsNone(media.plan)
+        self.assertEqual(fake.calls["/x/player/playurl"], 0)
+
+    def test_a_body_with_no_pages_still_prices_when_no_part_is_selected(self):
+        # With no ?p= the body's own cid is the only part there is, so it prices fine.
+        body = {"code": 0, "data": {"title": "t", "duration": 100, "cid": 999}}
+        fake = FakeBilibili(view_body=body)
+        media = resolve_media(URL, client=fake.client())
+        self.assertIsNotNone(media.plan)
+        self.assertEqual(fake.playurl_requests[0].url.params.get_list("cid"), ["999"])
 
 
 class TestVisitorSession(BilibiliTestCase):

@@ -61,7 +61,14 @@ request is patched after the fact. A plan that cannot be priced is not an error:
 
 One check stays here: matcha reports a `?p=` the body does not publish as `cid is None`,
 which reads like "the source published no cid". Comparing the paste against
-`len(info.parts)` keeps the user-facing "This video has N parts, not P".
+`len(info.parts)` raises `PartOutOfRangeError`, and that message -- "This video has N
+parts, not P" -- is the one failure the bot shows verbatim instead of reducing to a shared
+`Reason`, so the chain stops there and does not retry yt-dlp for it.
+
+A `?p=` on a body that publishes no pages at all is left unpriced on purpose: matcha's
+fallback cid is the body's own, which names part 1 whatever part was asked for (measured),
+and serving part 1 for a part-2 link is worse than a card. With no `?p=`, that same cid is
+the only part there is, so it prices normally.
 
 ### Delivery
 

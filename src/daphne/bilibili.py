@@ -82,6 +82,15 @@ class UnsupportedError(BilibiliError):
     """A Bilibili work the native path refuses: bangumi episodes and paid content."""
 
 
+class PartOutOfRangeError(BilibiliError):
+    """A ``?p=`` the body does not publish. The message names the real part count.
+
+    It is its own type because the message *is* the instruction, so the caller that shows
+    failures to the user has to let it through instead of replacing it with a generic
+    reason or retrying the link with the next engine.
+    """
+
+
 @dataclass(frozen=True)
 class Media:
     """What one link resolved to: identity, what the source published, and its price."""
@@ -283,10 +292,27 @@ def _check_part(ref: WorkRef, info: MediaInfo) -> None:
 
     matcha answers a part the body does not publish with ``cid is None``, which reads the
     same as "the source published no cid". Only the part count can tell the two apart, so
-    the count is what the user is told -- the one bounds check daphne still owns.
+    the count is what the user is told -- the one bounds check daphne still owns, and the
+    one failure whose text is the instruction.
     """
     if ref.part is not None and info.parts and not 1 <= ref.part <= len(info.parts):
-        raise BilibiliError(f"This video has {len(info.parts)} parts, not {ref.part}")
+        raise PartOutOfRangeError(
+            f"This video has {len(info.parts)} parts, not {ref.part}"
+        )
+
+
+def _part_cid(ref: WorkRef, info: MediaInfo) -> Optional[int]:
+    """The cid worth pricing, or ``None`` when daphne must not price this selection.
+
+    ``MediaInfo.cid`` falls back to the body's own top-level cid only when the body
+    published no pages at all, and that number names part 1 whatever part was asked for
+    (measured). A ``?p=`` on such a body therefore has no cid that can be trusted: pricing
+    it would serve part 1 for a part-2 link, which is worse than an unpriced card, because
+    daphne cannot claim a part count it never read.
+    """
+    if ref.part is not None and not info.parts:
+        return None
+    return info.cid
 
 
 def _view(client: httpx.Client, ref: WorkRef) -> MediaInfo:
@@ -303,9 +329,10 @@ def _plan(client: httpx.Client, ref: WorkRef, info: MediaInfo) -> StreamPlan:
     The cid is authoritative and comes from ``MediaInfo.cid``: matcha's description sends
     it as a required parameter, so nothing here edits the request it returned.
     """
-    if info.cid is None:
+    cid = _part_cid(ref, info)
+    if cid is None:
         raise BilibiliError("Bilibili returned no cid for this part")
-    request = api.playurl_request(ref, Session(_cookies()), cid=info.cid, qn=MAX_QN)
+    request = api.playurl_request(ref, Session(_cookies()), cid=cid, qn=MAX_QN)
     body = _perform(client, request, session=True)
     return api.parse_playurl(body, duration_s=info.duration_s)
 
@@ -321,8 +348,8 @@ def resolve_media(url: str, client: Optional[httpx.Client] = None) -> Media:
         _ensure_visitor_session(open_client)
         info = _view(open_client, ref)
         plan = None
-        if info.cid is None:
-            logger.info("Bilibili view carried no cid; the plan is unpriced.")
+        if _part_cid(ref, info) is None:
+            logger.info("Bilibili view carried no cid this link can trust; unpriced.")
         else:
             try:
                 plan = _plan(open_client, ref, info)
