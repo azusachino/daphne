@@ -53,6 +53,10 @@ class Video:
 
     ``plan`` is the priced fetch. For Bilibili it carries the actual DASH streams; for a
     yt-dlp read it carries only the price, because yt-dlp chooses its own formats.
+
+    ``canonical_url`` is the only URL that may be printed. ``media_url`` exists for the
+    handlers that resolve a media file themselves, where the file lives somewhere other
+    than the post (Bluesky's CDN): it is fetched and never printed.
     """
 
     ref: Optional[WorkRef]
@@ -60,6 +64,7 @@ class Video:
     info: MediaInfo
     plan: Optional[StreamPlan] = None
     engine: str = ""
+    media_url: str = ""
 
     @property
     def platform(self) -> str:
@@ -72,6 +77,11 @@ class Video:
     @property
     def estimated_bytes(self) -> Optional[int]:
         return None if self.plan is None else self.plan.estimated_bytes
+
+    @property
+    def fetch_url(self) -> str:
+        """The URL a downloader is given: the canonical one unless a source file is known."""
+        return self.media_url or self.canonical_url
 
     def delivery(self, caps: Capabilities) -> Delivery:
         """Upload or card, decided by policy and capability, never by convenience."""
@@ -92,7 +102,7 @@ def canonical_link(url: str) -> str:
     Identity and the canonical form come from matcha. A b23.tv share link is opaque, so
     it keeps a tracking-free form here and `resolve` expands it in a worker: no handler
     performs a request while formatting a message. A link matcha has no grammar for keeps
-    its generic form, because it is the only one available.
+    a tracking-free form too, because printing the paste would echo its parameters.
     """
     ref = video_ref(url)
     if ref is not None:
@@ -100,9 +110,13 @@ def canonical_link(url: str) -> str:
             return strip_tracking(url)
         try:
             return canonical_url(ref)
-        except ValueError:
+        except NeedsExpansionError, ValueError:
             pass
-    return downloader.sanitize_video_url(url)
+    if downloader.is_bilibili_url(url) or downloader.is_youtube_url(url):
+        # matcha has no grammar for this paste (an id outside the spec), but the host is
+        # still worth normalising, and a part selection is worth keeping.
+        return downloader.sanitize_video_url(url)
+    return strip_tracking(url)
 
 
 def resolve(url: str) -> Video:
@@ -116,6 +130,69 @@ def resolve(url: str) -> Video:
     if ref is not None and ref.platform == "bilibili":
         return _resolve_bilibili(url)
     return _resolve_with_ytdlp(url)
+
+
+def resolve_or_blank(url: str, *, platform: str) -> Video:
+    """Resolve a page URL, or describe it as blank when no engine can read it.
+
+    A platform handler reaches this after its own extractor gave up: the metadata chain
+    still gets a chance to describe the link, and a link nothing can describe still
+    downloads (with no title, uploader or size) instead of failing outright.
+    """
+    try:
+        return resolve(url)
+    except (Unreadable, bilibili.RateLimitedError) as exc:
+        logger.info("Resolving %s as a blank video: %s", platform, exc)
+        return from_metadata(url, {}, platform=platform)
+
+
+def from_metadata(
+    url: str, metadata: dict, *, platform: str, source_url: Optional[str] = None
+) -> Video:
+    """Wrap a handler's own reading in the one Video shape the bot renders.
+
+    Bluesky, TikTok and Instagram read their posts themselves and know the title, uploader
+    and size. This puts that reading in the same shape the upload path, the card and the
+    caption already understand, so none of those forks per platform. The URL that gets
+    printed is the post; ``url`` is fetched only when it is not that post.
+    """
+    printable = canonical_link(source_url or str(metadata.get("webpage_url") or url))
+    ref = video_ref(printable)
+    width, height = metadata.get("width"), metadata.get("height")
+    info = MediaInfo(
+        platform=platform,
+        kind=ref.kind if ref else "video",
+        work_id=ref.work_id if ref else "",
+        title=str(metadata.get("title") or ""),
+        part=ref.part if ref else None,
+        creator=_text(metadata.get("uploader")),
+        duration_s=_seconds(metadata.get("duration")),
+        width=width if isinstance(width, int) else None,
+        height=height if isinstance(height, int) else None,
+        thumbnail_url=_http_url(metadata.get("thumbnail")),
+        canonical_url=printable,
+    )
+    size = _size(metadata)
+    plan = (
+        None
+        if size is None
+        else StreamPlan(
+            video=None,
+            audio=None,
+            estimated_bytes=size,
+            quality="",
+            needs_merge=False,
+        )
+    )
+    fetch = url
+    return Video(
+        ref=ref,
+        canonical_url=printable,
+        info=info,
+        plan=plan,
+        engine="platform",
+        media_url="" if strip_tracking(fetch) == strip_tracking(printable) else fetch,
+    )
 
 
 def _resolve_bilibili(url: str) -> Video:

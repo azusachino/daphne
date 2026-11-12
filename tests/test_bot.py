@@ -300,13 +300,20 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
-    async def test_handle_video_link_over_configured_limit_sends_card(self, mock_limit):
+    @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
+    @patch("os.path.getsize", return_value=513 * 1024 * 1024)
+    async def test_handle_video_link_cards_the_real_bytes_after_download(
+        self, mock_getsize, mock_download, mock_limit
+    ):
+        # The upload-or-card decision already happened before this ran, so the only size
+        # check left is the real file: a download that grew past the limit still cards.
         await handle_video_link(
             self.update,
             self.context,
-            _video(size=513 * 1024 * 1024, title="Huge Video", duration=120),
+            _video(size=10 * 1024 * 1024, title="Huge Video", duration=120),
         )
 
+        mock_download.assert_called_once()
         self.context.bot.send_video.assert_not_called()
         self.assertEqual(self.update.message.reply_text.call_count, 2)
         text = self.update.message.reply_text.call_args_list[-1][0][0]
@@ -356,6 +363,22 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Video download failed:", edited_text)
         self.assertNotIn("ABCDEF1234567890abcdef", edited_text)
         self.assertNotIn("secret123", edited_text)
+
+    @patch("daphne.bot.handle_video_link", autospec=True)
+    @patch("daphne.bot.resolve_or_blank")
+    async def test_handle_video_url_resolves_then_takes_the_upload_path(
+        self, mock_resolve, mock_handle_video
+    ):
+        # The seam TikTok and Instagram reach after their own extractor failed.
+        resolved = _video(title="Resolved")
+        mock_resolve.return_value = resolved
+
+        await bot_module.handle_video_url(
+            self.update, self.context, BILI, platform="tiktok"
+        )
+
+        mock_resolve.assert_called_once_with(BILI, platform="tiktok")
+        mock_handle_video.assert_awaited_once_with(self.update, self.context, resolved)
 
     def test_preprocess_text_links(self):
         from daphne.bot import preprocess_text_links

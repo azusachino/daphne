@@ -107,6 +107,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                 video_url,
                             )
                             from daphne.bot import download_slot, send_video_card
+                            from daphne.video import from_metadata
 
                             max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
                             user_id = (
@@ -125,13 +126,16 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                             except MediaTooLarge:
                                 await send_video_card(
                                     update,
-                                    url,
-                                    {
-                                        "title": title,
-                                        "uploader": uploader,
-                                        "duration": duration_secs,
-                                        "webpage_url": url,
-                                    },
+                                    from_metadata(
+                                        url,
+                                        {
+                                            "title": title,
+                                            "uploader": uploader,
+                                            "duration": duration_secs,
+                                            "webpage_url": url,
+                                        },
+                                        platform="tiktok",
+                                    ),
                                     sender,
                                     f"Video is over {video_upload_limit_mb()} MB",
                                 )
@@ -179,9 +183,9 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
             "TikTok handler: falling back to standard yt-dlp downloader for URL: %s",
             url,
         )
-        from daphne.bot import handle_video_link
+        from daphne.bot import handle_video_url
 
-        await handle_video_link(update, context, url)
+        await handle_video_url(update, context, url, "tiktok")
         return
 
     if success:

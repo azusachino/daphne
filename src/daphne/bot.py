@@ -45,7 +45,13 @@ from daphne.messages import (
 )
 from daphne.rbac import RbacService
 from daphne.redact import redact
-from daphne.video import Unreadable, Video, canonical_link, resolve as resolve_video
+from daphne.video import (
+    Unreadable,
+    Video,
+    canonical_link,
+    resolve as resolve_video,
+    resolve_or_blank,
+)
 from daphne.tg import (
     TelegramBot,
     TelegramContext,
@@ -368,12 +374,9 @@ async def handle_video_link(
     except Exception as exc:
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
+    # No size check here: the upload-or-card decision was already made before this ran.
+    # The real bytes are checked after the download, where they are actually known.
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-    size = video.estimated_bytes
-    if size is not None and size > max_upload_bytes:
-        await status_msg.delete()
-        await send_video_card(update, video, sender, _size_reason(size))
-        return
 
     with tempfile.TemporaryDirectory() as out_dir:
         try:
@@ -395,7 +398,7 @@ async def handle_video_link(
                 video_path = await loop.run_in_executor(
                     None,
                     download_video,
-                    video.canonical_url,
+                    video.fetch_url,
                     out_dir,
                     video.expected_duration,
                 )
@@ -460,6 +463,25 @@ async def handle_video_link(
 
     await status_msg.delete()
     await delete_original_message(update)
+
+
+async def handle_video_url(
+    update: TelegramUpdate,
+    context: TelegramContext,
+    url: str,
+    platform: str,
+) -> None:
+    """Resolve a page URL in a worker, then take the normal upload path.
+
+    A platform handler reaches this after its own extractor gave up. The metadata chain
+    still gets its chance to describe the link, and a link no engine can describe still
+    downloads with a blank description rather than failing outright.
+    """
+    loop = asyncio.get_running_loop()
+    video = await loop.run_in_executor(
+        None, functools.partial(resolve_or_blank, url, platform=platform)
+    )
+    await handle_video_link(update, context, video)
 
 
 async def media_message_handler(
@@ -724,7 +746,7 @@ async def _run_card_download(
                 video_path = await loop.run_in_executor(
                     None,
                     download_video,
-                    video.canonical_url,
+                    video.fetch_url,
                     out_dir,
                     video.expected_duration,
                 )

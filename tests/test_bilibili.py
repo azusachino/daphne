@@ -24,6 +24,7 @@ from daphne.bilibili import (
     store_video,
 )
 from matcha import ApiError, Reason
+from matcha.errors import NeedsExpansionError
 
 SPI = {"code": 0, "data": {"b_3": "buvid3-test", "b_4": "buvid4-test", "b_nut": "1"}}
 TICKET = {"code": 0, "data": {"ticket": "ticket-test"}}
@@ -334,6 +335,7 @@ class TestReasonVocabulary(unittest.TestCase):
         self.assertIs(reason_for(RateLimitedError("x")), Reason.RATE_LIMITED)
         self.assertIs(reason_for(UnsupportedError("x")), Reason.AUTH_REQUIRED)
         self.assertIs(reason_for(BilibiliError("x")), Reason.EXTRACTOR_FAILED)
+        self.assertIs(reason_for(NeedsExpansionError("x")), Reason.EXTRACTOR_FAILED)
         self.assertIs(reason_for(httpx.ConnectError("x")), Reason.NETWORK)
 
 
@@ -522,6 +524,17 @@ class TestLimitsAndCacheRules(BilibiliTestCase):
         with patch.object(bilibili.os, "getuid", return_value=os.getuid() + 1):
             self.assertIsNone(cached_video(URL, out_dir))
         self.assertIsNotNone(cached_video(URL, out_dir))
+
+    def test_a_link_layer_that_cannot_name_the_work_never_fails_a_store(self):
+        # store_video runs after a download already succeeded: a link matcha cannot
+        # canonicalise may be logged, never raised.
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = os.path.join(out_dir, "x.mp4")
+        Path(path).write_bytes(b"video")
+        with patch.object(bilibili, "_ref", side_effect=NeedsExpansionError("opaque")):
+            store_video(URL, path)
+            self.assertIsNone(cached_video(URL, out_dir))
 
     def test_stream_over_the_size_cap_is_refused(self):
         out_dir = tempfile.mkdtemp(prefix="bili-out-")

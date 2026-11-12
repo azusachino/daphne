@@ -16,7 +16,14 @@ from matcha import (
 
 from daphne import bilibili, video
 from daphne.messages import reason_text
-from daphne.video import Unreadable, Video, canonical_link, resolve
+from daphne.video import (
+    Unreadable,
+    Video,
+    canonical_link,
+    from_metadata,
+    resolve,
+    resolve_or_blank,
+)
 
 BILI = "https://www.bilibili.com/video/BV1aMEj62EdA"
 BV = "BV1aMEj62EdA"
@@ -184,6 +191,66 @@ class TestResolveChain(unittest.TestCase):
             )
         self.assertIsNone(result.plan)
         self.assertIsNone(result.estimated_bytes)
+
+
+class TestHandlerAdapter(unittest.TestCase):
+    """Handlers that read their own post hand the bot the same Video as matcha does."""
+
+    def test_a_cdn_file_is_fetched_and_the_post_is_printed(self):
+        resolved = from_metadata(
+            "https://video.example/a.mp4",
+            {
+                "title": "A post",
+                "uploader": "alice",
+                "duration": 12,
+                "webpage_url": "https://bsky.app/profile/alice.test/post/3kabc",
+            },
+            platform="bluesky",
+        )
+        self.assertEqual(
+            resolved.canonical_url, "https://bsky.app/profile/alice.test/post/3kabc"
+        )
+        self.assertEqual(resolved.fetch_url, "https://video.example/a.mp4")
+        self.assertEqual(resolved.platform, "bluesky")
+        self.assertEqual(resolved.info.creator, "alice")
+        self.assertEqual(resolved.expected_duration, 12.0)
+
+    def test_a_page_link_is_printed_and_fetched(self):
+        resolved = from_metadata(
+            "https://www.tiktok.com/@user/video/123?is_from_webapp=1",
+            {"title": "t", "filesize": 2048},
+            platform="tiktok",
+        )
+        self.assertEqual(resolved.canonical_url, resolved.fetch_url)
+        self.assertEqual(
+            resolved.canonical_url, "https://www.tiktok.com/@user/video/123"
+        )
+        self.assertEqual(resolved.estimated_bytes, 2048)
+
+    def test_a_signed_cdn_url_is_fetched_verbatim(self):
+        # A fetch URL is never rewritten: its own signature or index may matter.
+        resolved = from_metadata(
+            "https://video.example/a.mp4?sig=abc",
+            {"webpage_url": "https://bsky.app/profile/alice.test/post/1?x=1"},
+            platform="bluesky",
+        )
+        self.assertEqual(
+            resolved.canonical_url, "https://bsky.app/profile/alice.test/post/1"
+        )
+        self.assertEqual(resolved.fetch_url, "https://video.example/a.mp4?sig=abc")
+
+    def test_a_link_nothing_can_describe_still_downloads(self):
+        with (
+            patch(
+                "daphne.bilibili.resolve_media",
+                side_effect=bilibili.BilibiliError("view failed"),
+            ),
+            patch("daphne.downloader.fetch_ytdlp_metadata", return_value={}),
+        ):
+            resolved = resolve_or_blank(BILI, platform="bilibili")
+        self.assertIsNone(resolved.plan)
+        self.assertEqual(resolved.info.title, "")
+        self.assertEqual(resolved.fetch_url, BILI)
 
 
 class TestDelivery(unittest.TestCase):

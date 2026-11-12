@@ -39,6 +39,7 @@ import httpx
 
 from matcha import ApiError, Reason, Request, Session, Stream, StreamPlan, WorkRef
 from matcha import bilibili as api
+from matcha.errors import MatchaError, NeedsExpansionError
 from matcha.link import cache_key, canonical_url as _canonical_url
 from matcha.link import parse as _parse
 from matcha.link import with_expanded
@@ -109,6 +110,12 @@ def reason_for(exc: BaseException) -> Reason:
         return Reason.RATE_LIMITED
     if isinstance(exc, UnsupportedError):
         return Reason.AUTH_REQUIRED
+    if isinstance(exc, ApiError):
+        # The platform's own code decides, exactly as the parser reported it.
+        return api.describe_error(exc)
+    if isinstance(exc, MatchaError):
+        # A link matcha itself cannot canonicalise is unreadable, not a network problem.
+        return Reason.EXTRACTOR_FAILED
     if isinstance(exc, BilibiliError):
         return Reason.EXTRACTOR_FAILED
     return api.describe_error(exc)
@@ -240,7 +247,7 @@ def _expand_short_link(client: httpx.Client, ref: WorkRef) -> WorkRef:
             raise BilibiliError("b23.tv link did not resolve to bilibili.com")
         try:
             current = with_expanded(current, target)
-        except ValueError as exc:
+        except (NeedsExpansionError, ValueError) as exc:
             raise BilibiliError("Could not expand the b23.tv link") from exc
         if current.kind != "short_link":
             return current
@@ -267,7 +274,7 @@ def _ref(client: Optional[httpx.Client], url: str) -> WorkRef:
 def _canonical(ref: WorkRef) -> str:
     try:
         return _canonical_url(ref)
-    except ValueError as exc:
+    except (NeedsExpansionError, ValueError) as exc:
         raise BilibiliError("This Bilibili link has no canonical form") from exc
 
 
@@ -324,14 +331,16 @@ def resolve_media(url: str, client: Optional[httpx.Client] = None) -> Media:
         else:
             try:
                 plan = _plan(open_client, ref, cid, info)
-            except (
-                ApiError,
-                BilibiliError,
-                httpx.HTTPError,
-                ValueError,
-                KeyError,
-            ) as exc:
+            except (ApiError, BilibiliError, httpx.HTTPError) as exc:
+                # A refused or unreachable plan is a card, not a failure.
                 logger.info("Bilibili plan unavailable: %s", describe_error(exc))
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                # A payload the parser could not read is a regression worth seeing.
+                logger.warning(
+                    "Bilibili plan payload could not be read: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
     return Media(ref=ref, canonical_url=_canonical(ref), info=info, plan=plan)
 
 
@@ -523,11 +532,20 @@ def _evict_cache(keep: str) -> None:
         total -= size
 
 
+def _stem(ref: WorkRef) -> str:
+    """The output file stem: the work id, plus the part when one was chosen."""
+    return f"{ref.work_id}-p{ref.part}" if ref.part else ref.work_id
+
+
 def cached_video(url: str, out_dir: str) -> Optional[str]:
     """A finished mp4 for this work and part from the disk cache, copied into ``out_dir``."""
-    ref = _ref(None, url)
+    try:
+        ref = _ref(None, url)
+    except (BilibiliError, MatchaError) as exc:
+        logger.info("Bilibili cache lookup skipped: %s", describe_error(exc))
+        return None
     key = cache_key(ref)
-    cached = _from_cache(key, out_dir, ref.work_id)
+    cached = _from_cache(key, out_dir, _stem(ref))
     if cached:
         logger.info("Bilibili cache hit for %s", key)
     return cached
@@ -537,8 +555,9 @@ def store_video(url: str, path: str) -> None:
     """Cache a finished mp4 for this work and part. The caller only stores accepted files."""
     try:
         key = cache_key(_ref(None, url))
-    except BilibiliError as exc:
-        logger.info("Bilibili cache key unavailable: %s", describe_error(exc))
+    except (BilibiliError, MatchaError) as exc:
+        # A link layer that cannot name the work must never fail a finished download.
+        logger.info("Bilibili cache store skipped: %s", describe_error(exc))
         return
     try:
         _to_cache(path, key)
@@ -562,7 +581,7 @@ def download_native_video(
             audio_path = os.path.join(work, "audio.m4s")
             _download_stream(open_client, plan.video, video_path, headers)
             _download_stream(open_client, plan.audio, audio_path, headers)
-            out_path = os.path.join(out_dir, f"{ref.work_id}.mp4")
+            out_path = os.path.join(out_dir, f"{_stem(ref)}.mp4")
             _ffmpeg(
                 [
                     "-i",

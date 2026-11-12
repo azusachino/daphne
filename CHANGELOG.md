@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Bilibili metadata comes from `x/web-interface/view`** with the visitor session attached, so uploader, cover and per-part durations are real; yt-dlp stays the fallback engine. The pagelist-only path, which reported an empty uploader because `view` was believed to be refused, is gone.
 - **Bilibili downloads are priced before they start**: `playurl` with `fnval=4048` gives the bytes, and `matcha.deliver.decide` turns daphne's policy plus its upload limit into an upload or a card. A small Bilibili video now uploads directly, like YouTube.
 - **Failure reasons are shared vocabulary**: Bilibili codes map onto `matcha` `Reason` values (`not_found`, `premium_only`, `rate_limited`, …) with one phrasing per reason, instead of wording invented at each call site.
+- **One video shape for every handler**: Bluesky, TikTok and Instagram read their own posts and then hand the bot the same resolved `Video` as the matcha platforms — one URL to print, an optional source file to fetch — so the caption, card and upload paths stay single. A handler whose own extractor gave up resolves through the shared metadata chain, and a link nothing can describe still downloads with a blank description.
 
 ### Fixed
 

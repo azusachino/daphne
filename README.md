@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-258%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-258-blue)](tests/)
 
 </div>
 
@@ -32,7 +32,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Daphne turns a pasted link into media in the chat. It uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` and its fallbacks for YouTube, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). Link identity, the canonical URL a caption prints, the Bilibili request/parse layer and the upload-or-card rule come from [`matcha`](../matcha), the pure library daphne shares with suzuran. It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
+Daphne turns a pasted link into media in the chat. It uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` and its fallbacks for YouTube, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). Link identity, the canonical URL a caption prints, the Bilibili request/parse layer and the upload-or-card rule come from [`matcha`](https://github.com/azusachino/matcha), the pure library daphne shares with suzuran. It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
 
 ## Features
 

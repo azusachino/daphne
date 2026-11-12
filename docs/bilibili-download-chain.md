@@ -60,7 +60,7 @@ A plan that cannot be priced is not an error: `plan=None` becomes a card, not a 
 ### Delivery
 
 `matcha.deliver.decide` receives daphne's `Policy(auto_preview=True)` and
-`Capabilities(max_upload_bytes=video_upload_limit_mb, preview_allowed=<RBAC>)`:
+`Capabilities(max_upload_bytes=<configured limit, in bytes>, preview_allowed=<RBAC>)`:
 
 - a priced video that fits the limit is downloaded and uploaded, like YouTube;
 - over the limit, unknown size, no plan, or no preview permission keeps the card, whose
@@ -153,7 +153,8 @@ sequenceDiagram
   GiB, and a stream that breaks either limit is treated as a failed host.
 - **Versions:** yt-dlp, you-get, and yutto run at the latest PyPI release, refreshed at
   bot start. lux is the latest GitHub release, resolved at each image build.
-- **Cache:** lives in `$TMPDIR/daphne-bilibili`. This is the only state Daphne keeps.
+- **Cache:** lives in `$TMPDIR/daphne-bilibili-<uid>` (per local user, fixed parts per
+  work). This is the only state Daphne keeps.
 
 ## Where it lives
 

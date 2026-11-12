@@ -144,10 +144,24 @@ class TestBlueskyFailureReporting(unittest.IsolatedAsyncioTestCase):
                 "daphne.bluesky.extract_media_from_embed",
                 return_value=([], "https://video.example/a.m3u8"),
             ),
-            patch("daphne.bot.handle_video_link", new=AsyncMock()),
+            patch("daphne.bot.handle_video_link", autospec=True) as video_link,
         ):
             await handle_bluesky_links(update, context)
         update.message.delete.assert_not_awaited()
+        # One Video in the one shape the upload path understands: the post is what gets
+        # printed, the CDN file is what gets fetched.
+        video_link.assert_awaited_once()
+        args = video_link.await_args.args
+        self.assertIs(args[0], update)
+        self.assertIs(args[1], context)
+        self.assertEqual(len(args), 3)
+        video = args[2]
+        self.assertEqual(video.platform, "bluesky")
+        self.assertEqual(
+            video.canonical_url, "https://bsky.app/profile/alice.test/post/3kabc"
+        )
+        self.assertEqual(video.fetch_url, "https://video.example/a.m3u8")
+        self.assertNotIn("video.example", video.canonical_url)
 
     async def test_unresolvable_handle_gets_failure_reaction_and_reply(self):
         context = MagicMock()

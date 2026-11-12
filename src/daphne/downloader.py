@@ -410,14 +410,19 @@ def _ytdlp_video_cmd(
 
 
 def _canonical_bilibili(url: str) -> str:
-    """The canonical video link, so every engine in the chain gets the same address."""
+    """The canonical video link, so every engine in the chain gets the same address.
+
+    A link matcha has no grammar for falls back to daphne's tracking-free form rather
+    than to the paste: no engine's argv may receive tracking parameters.
+    """
     try:
         return bilibili.canonical_url(url)
     except Exception as exc:
         logger.warning(
-            "Bilibili link could not be resolved: %s", bilibili.describe_error(exc)
+            "Bilibili link could not be canonicalised; using its tracking-free form: %s",
+            bilibili.describe_error(exc),
         )
-        return url
+        return sanitize_video_url(url)
 
 
 def _run_bilibili_chain(
