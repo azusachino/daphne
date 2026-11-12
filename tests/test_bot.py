@@ -299,7 +299,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "https://www.tiktok.com/@user/video/12345",
         )
 
-    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.config.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=513 * 1024 * 1024)
     async def test__upload_resolved_video_cards_the_real_bytes_after_download(
@@ -328,7 +328,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(button_source.url, "https://www.bilibili.com/video/BV1abc")
         self.update.message.delete.assert_not_called()
 
-    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.config.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=1024 * 1024)
@@ -348,7 +348,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["duration"], 90)
         self.update.message.delete.assert_called_once()
 
-    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.config.video_upload_limit_mb", return_value=512)
     @patch(
         "daphne.bot.download_video",
         side_effect=RuntimeError(
@@ -365,7 +365,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret123", edited_text)
 
     @patch("daphne.bot.rbac_service")
-    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.config.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot._upload_resolved_video", autospec=True)
     @patch("daphne.bot.resolve_or_blank")
     async def test_handle_video_url_resolves_then_takes_the_upload_path(
@@ -388,7 +388,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch("daphne.video.POLICY", Policy(auto_preview=None))
     @patch("daphne.bot.rbac_service")
-    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    @patch("daphne.config.video_upload_limit_mb", return_value=512)
     async def test_decide_delivery_cards_when_the_policy_makes_no_choice(
         self, mock_limit, mock_rbac
     ):
@@ -667,6 +667,28 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
 
         edited = self.status.edit_text.call_args_list[-1][0][0]
         self.assertIn("gone", edited)
+        self.assertIn("original link was kept", edited)
+        self.update.message.delete.assert_not_called()
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.resolve_video")
+    async def test_an_out_of_range_part_tells_the_user_the_real_count(
+        self, mock_resolve, mock_rbac
+    ):
+        # The bounds message is the instruction, so the chat reads it rather than a
+        # generic "extractor failed": the chain stops instead of retrying yt-dlp.
+        from daphne.bilibili import PartOutOfRangeError
+
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+        mock_resolve.side_effect = PartOutOfRangeError("This video has 2 parts, not 9")
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc?p=9"
+        await bot_module.media_message_handler(self.update, self.context)
+
+        edited = self.status.edit_text.call_args_list[-1][0][0]
+        self.assertIn("This video has 2 parts, not 9", edited)
         self.assertIn("original link was kept", edited)
         self.update.message.delete.assert_not_called()
 

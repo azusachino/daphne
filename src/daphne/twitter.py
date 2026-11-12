@@ -15,7 +15,7 @@ from daphne.tg import (
     send_photo_or_document,
 )
 
-from daphne.bot import upload_cap_bytes
+from daphne.config import upload_cap_bytes
 from daphne.media_http import stream_media
 from daphne.messages import (
     HtmlMessage,
