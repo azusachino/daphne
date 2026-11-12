@@ -226,9 +226,14 @@ class TestMetadata(BilibiliTestCase):
         self.assertIsNone(info.duration_s)
 
     def test_part_out_of_range_is_reported(self):
+        # matcha reports a part the body does not publish as `cid is None`, which reads
+        # like "the source published no cid". Only the count can say the user asked for
+        # part 9 of 2, so this message stays daphne's and is read from len(info.parts).
         fake = FakeBilibili()
         with self.assertRaisesRegex(BilibiliError, "has 2 parts, not 9"):
             resolve_media(URL + "?p=9", client=fake.client())
+        # The bounds check runs before any part is priced.
+        self.assertEqual(fake.calls["/x/player/playurl"], 0)
 
 
 class TestPlan(BilibiliTestCase):
@@ -249,6 +254,23 @@ class TestPlan(BilibiliTestCase):
         request = fake.playurl_requests[0]
         self.assertEqual(request.url.params["fnval"], "4048")
         self.assertEqual(request.url.params["cid"], "222")
+
+    def test_playurl_is_matchas_own_description_with_no_parameters_patched(self):
+        # The cid now arrives as a required argument, so the request carries exactly the
+        # parameters matcha wrote: one cid, and `page` as bookkeeping (the old surgery
+        # appended a second cid to the description it was handed).
+        fake = FakeBilibili()
+        resolve_media(URL + "?p=2", client=fake.client())
+        params = fake.playurl_requests[0].url.params
+        self.assertEqual(params.get_list("cid"), ["222"])
+        self.assertEqual(params.get_list("page"), ["2"])
+
+    def test_playurl_addresses_the_first_part_when_none_is_selected(self):
+        fake = FakeBilibili()
+        resolve_media(URL, client=fake.client())
+        params = fake.playurl_requests[0].url.params
+        self.assertEqual(params.get_list("cid"), ["111"])
+        self.assertIsNone(params.get("page"))
 
     def test_unpriced_plan_is_not_a_failure(self):
         # playurl refuses, but the metadata was read: the caller shows a card.
