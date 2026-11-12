@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 
 [options]
@@ -294,6 +294,7 @@ dependencies = [
     { name = "aiogram" },
     { name = "gallery-dl" },
     { name = "httpx" },
+    { name = "matcha" },
     { name = "parth-dl" },
 ]
 
@@ -307,6 +308,7 @@ requires-dist = [
     { name = "aiogram", specifier = ">=3.31.0" },
     { name = "gallery-dl", specifier = ">=1.32.17" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "matcha", git = "https://github.com/azusachino/matcha.git?tag=v0.2.0" },
     { name = "parth-dl", specifier = ">=1.2.1" },
 ]
 
@@ -420,6 +422,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/e6/08/da7c2cc7398cc0376
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cc/75/f620449f0056eff0ec7c1b1e088f71068eb4e47a46eb54f6c065c6ad7675/magic_filter-1.0.12-py3-none-any.whl", hash = "sha256:e5929e544f310c2b1f154318db8c5cdf544dd658efa998172acd2e4ba0f6c6a6", size = 11335, upload-time = "2023-10-01T12:33:17.711Z" },
 ]
+
+[[package]]
+name = "matcha"
+version = "0.2.0"
+source = { git = "https://github.com/azusachino/matcha.git?tag=v0.2.0#ea0741f4363cc5db4dca4c249cf577ef28b58da2" }
 
 [[package]]
 name = "multidict"

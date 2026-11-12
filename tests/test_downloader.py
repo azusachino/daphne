@@ -14,7 +14,7 @@ from daphne.downloader import (
     scan_largest_media_file,
     download_video,
     probe_video_dimensions,
-    fetch_video_metadata,
+    fetch_ytdlp_metadata,
     fetch_instagram_fallback_media,
     format_duration,
     format_video_caption,
@@ -227,7 +227,7 @@ class TestDownloader(unittest.TestCase):
         self.assertIsNone(d)
 
     @patch("subprocess.run")
-    def test_fetch_video_metadata(self, mock_run):
+    def test_fetch_ytdlp_metadata(self, mock_run):
         mock_run.return_value = MagicMock(
             stdout=json.dumps(
                 {
@@ -239,42 +239,15 @@ class TestDownloader(unittest.TestCase):
             ),
             returncode=0,
         )
-        meta = fetch_video_metadata("http://youtube.com/watch?v=123")
+        meta = fetch_ytdlp_metadata("http://youtube.com/watch?v=123")
         self.assertEqual(meta["title"], "My Title")
         self.assertEqual(meta["uploader"], "My Uploader")
         self.assertEqual(meta["duration"], 300)
 
-    @patch(
-        "daphne.bilibili.fetch_bilibili_metadata",
-        side_effect=BilibiliError("native unavailable"),
-    )
-    @patch("subprocess.run")
-    def test_fetch_video_metadata_trims_bilibili_webpage_url(self, mock_run, _native):
-        # yt-dlp returns a Bilibili webpage_url with tracking query params;
-        # the caption link must be trimmed to the canonical video URL.
-        mock_run.return_value = MagicMock(
-            stdout=json.dumps(
-                {
-                    "title": "Cat",
-                    "webpage_url": "https://www.bilibili.com/video/BV1aMEj62EdA/"
-                    "?buvid=ABC&share_source=COPY&p=1",
-                }
-            ),
-            returncode=0,
-        )
-        meta = fetch_video_metadata("https://www.bilibili.com/video/BV1aMEj62EdA")
-        self.assertEqual(
-            meta["webpage_url"], "https://www.bilibili.com/video/BV1aMEj62EdA"
-        )
-
-    @patch(
-        "daphne.bilibili.fetch_bilibili_metadata",
-        side_effect=BilibiliError("native unavailable"),
-    )
     @patch("daphne.downloader.logger.warning")
     @patch("subprocess.run")
-    def test_fetch_video_metadata_bilibili_retries_with_headers(
-        self, mock_run, mock_log_warn, _native
+    def test_fetch_ytdlp_metadata_bilibili_retries_with_headers(
+        self, mock_run, mock_log_warn
     ):
         mock_run.side_effect = [
             Exception("HTTP 412"),
@@ -291,7 +264,7 @@ class TestDownloader(unittest.TestCase):
             ),
         ]
 
-        meta = fetch_video_metadata("https://www.bilibili.com/video/BV1")
+        meta = fetch_ytdlp_metadata("https://www.bilibili.com/video/BV1")
 
         self.assertEqual(meta["title"], "Bili Title")
         self.assertEqual(mock_run.call_count, 2)
@@ -509,7 +482,7 @@ class TestBilibiliChain(unittest.TestCase):
         self.assertEqual(self.native.call_count, 1)
         self.assertEqual(os.path.basename(again), "BV1aMEj62EdA.mp4")
         self.assertTrue(
-            os.path.exists(os.path.join(self.cache_dir, "BV1aMEj62EdA-p1.mp4"))
+            os.path.exists(os.path.join(self.cache_dir, "bilibili-BV1aMEj62EdA.mp4"))
         )
 
     def test_yutto_runs_when_native_fails(self):
@@ -613,28 +586,6 @@ class TestBilibiliChain(unittest.TestCase):
                 download_video(self.BILI, self.test_dir)
         logged = str(warn.call_args_list)
         self.assertNotIn("BV1aMEj62EdA", logged)
-
-    def test_native_metadata_is_used_first(self):
-        with (
-            patch(
-                "daphne.bilibili.fetch_bilibili_metadata",
-                return_value={"title": "Cat"},
-            ),
-            patch("daphne.downloader.run_tool") as run,
-        ):
-            self.assertEqual(fetch_video_metadata(self.BILI), {"title": "Cat"})
-        run.assert_not_called()
-
-    def test_metadata_falls_back_to_yt_dlp_when_native_fails(self):
-        with (
-            patch(
-                "daphne.bilibili.fetch_bilibili_metadata",
-                side_effect=BilibiliError("view failed"),
-            ),
-            patch("daphne.downloader.run_tool", return_value=(1, "", "")) as run,
-        ):
-            self.assertEqual(fetch_video_metadata(self.BILI), {})
-        self.assertEqual(run.call_count, 2)
 
     @patch("daphne.downloader._run_yutto")
     @patch("daphne.downloader._run_cmd", return_value=(False, ""))

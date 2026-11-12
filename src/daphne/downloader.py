@@ -410,14 +410,19 @@ def _ytdlp_video_cmd(
 
 
 def _canonical_bilibili(url: str) -> str:
-    """The canonical video link, so every engine in the chain gets the same address."""
+    """The canonical video link, so every engine in the chain gets the same address.
+
+    A link matcha has no grammar for falls back to daphne's tracking-free form rather
+    than to the paste: no engine's argv may receive tracking parameters.
+    """
     try:
         return bilibili.canonical_url(url)
     except Exception as exc:
         logger.warning(
-            "Bilibili link could not be resolved: %s", bilibili.describe_error(exc)
+            "Bilibili link could not be canonicalised; using its tracking-free form: %s",
+            bilibili.describe_error(exc),
         )
-        return url
+        return sanitize_video_url(url)
 
 
 def _run_bilibili_chain(
@@ -628,15 +633,12 @@ def probe_video_dimensions(
         return None, None, None
 
 
-def fetch_video_metadata(url: str) -> dict:
-    if is_bilibili_url(url):
-        try:
-            return bilibili.fetch_bilibili_metadata(url)
-        except Exception as exc:
-            logger.warning(
-                "Native Bilibili metadata failed, trying yt-dlp: %s",
-                bilibili.describe_error(exc),
-            )
+def fetch_ytdlp_metadata(url: str) -> dict:
+    """Read one link with yt-dlp `--dump-json`. Empty when yt-dlp could not read it.
+
+    This is the fallback engine of the metadata chain in `daphne.video`; it is not a
+    Bilibili-specific reader, so a Bilibili link is retried with the site's headers.
+    """
     base = [
         *YT_DLP_CMD,
         "--dump-json",
@@ -656,11 +658,12 @@ def fetch_video_metadata(url: str) -> dict:
                 raise RuntimeError(f"yt-dlp exited with {code}")
             data = json.loads(stdout)
             return {
+                "id": data.get("id", ""),
                 "title": data.get("title", ""),
                 "uploader": data.get("uploader", ""),
                 "duration": data.get("duration"),
                 "thumbnail": data.get("thumbnail"),
-                "webpage_url": sanitize_video_url(data.get("webpage_url", url)),
+                "webpage_url": data.get("webpage_url", url),
                 "width": data.get("width"),
                 "height": data.get("height"),
                 "filesize": data.get("filesize"),

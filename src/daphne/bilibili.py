@@ -1,27 +1,29 @@
-"""Bilibili downloads without yt-dlp.
+"""Bilibili over matcha: matcha describes the request, daphne performs it.
 
-yt-dlp's Bilibili extractor fails on most videos right now, so this module uses the
-endpoints the web player uses. On 2026-10-29 the ``view`` endpoint answered 412 to
-every probe, while ``pagelist`` and ``playurl`` answered once a visitor session and a
-``bili_ticket`` were attached. So the cid and duration come from ``pagelist``, and
-``playurl`` with ``fnval=4048`` gives the DASH streams. The video and audio tracks are
-downloaded and merged with ffmpeg. Anonymous requests cap quality at 480p.
+`matcha.platforms.bilibili` owns the grammar (``WorkRef`` and the one canonical URL), the
+request descriptions (`view`, `playurl`, `finger/spi`, `GenWebTicket`, b23 expansion), the
+payload parsers and the error vocabulary. This module is the I/O half: it runs those
+requests with httpx, keeps the visitor session alive, backs off when Bilibili applies risk
+control, muxes the two DASH tracks with ffmpeg and keeps the short-lived mp4 cache.
+
+`x/web-interface/view` is the metadata source (owner, cover, total duration, the parts and
+their `cid`); `x/player/playurl` with `fnval=4048` is the download plan, so a size is
+priced before any byte moves. Both answer a request that carries the visitor cookies from
+`finger/spi` plus a `bili_ticket`; it is the cookieless request that gets 412 (measured).
+Anonymous quality still caps at 480p.
 
 Three things keep the request volume low:
-- a visitor session: the ``finger/spi`` cookies and a ``bili_ticket``, reused for 30
-  minutes and refreshed once when Bilibili answers risk control;
-- an on-disk cache of finished mp4 files, keyed by ``bvid`` and part, so a repeated link
-  is served without any API call;
+- a visitor session, reused for 30 minutes and refreshed once when Bilibili answers risk
+  control;
+- an on-disk cache of finished mp4 files, keyed by `matcha.link.cache_key`, so a repeated
+  link is served without any API call;
 - a time limit and a size cap on every stream, so one download cannot hold a worker or
   the disk indefinitely.
 """
 
 import contextlib
-import hashlib
-import hmac
 import logging
 import os
-import re
 import shutil
 import stat
 import subprocess
@@ -29,39 +31,31 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from typing import Any, Iterator, Optional
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import httpx
+
+from matcha import ApiError, Reason, Request, Session, Stream, StreamPlan, WorkRef
+from matcha import bilibili as api
+from matcha.errors import MatchaError, NeedsExpansionError
+from matcha.link import cache_key, canonical_url as _canonical_url
+from matcha.link import parse as _parse
+from matcha.link import with_expanded
+from matcha.types import MediaInfo
 
 from daphne.tg import failure_reason
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://api.bilibili.com"
-REFERER = "https://www.bilibili.com/"
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/130.0.0.0 Safari/537.36"
-)
-REQUEST_TIMEOUT = 30.0
-# 412 is intermittent risk control, so wait between attempts instead of retrying at once.
 RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 RISK_CONTROL_STATUSES = {412, 429}
 RISK_CONTROL_CODES = {-412, -799}
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+REQUEST_TIMEOUT = 30.0
 # Ask for the best quality; anonymous responses stop at 480p on their own.
 MAX_QN = 127
-# fnval=4048 asks for DASH with every format, the same flag yt-dlp and the web player use.
-FNVAL_DASH = 4048
-AVC_CODEC_ID = 7
-REDIRECT_CODES = {301, 302, 303, 307, 308}
-BV_RE = re.compile(r"BV[0-9A-Za-z]{10}")
-AV_RE = re.compile(r"/av(\d+)", re.IGNORECASE)
-
-# The web player's ticket signing key, as PipePipe and the probe of 2026-10-29 use it.
-TICKET_URL = f"{API_BASE}/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket"
-TICKET_KEY = b"XgwSnGZ1p"
-
 SESSION_TTL = 30 * 60
 CACHE_TTL = 6 * 60 * 60
 CACHE_MAX_BYTES = 2 * 1024**3
@@ -84,6 +78,21 @@ class RateLimitedError(BilibiliError):
     """Risk control kept refusing the requests after every retry."""
 
 
+class UnsupportedError(BilibiliError):
+    """A Bilibili work the native path refuses: bangumi episodes and paid content."""
+
+
+@dataclass(frozen=True)
+class Media:
+    """What one link resolved to: identity, what the source published, and its price."""
+
+    ref: WorkRef
+    canonical_url: str
+    info: MediaInfo
+    # ``None`` means the plan could not be priced; the caller shows a card instead.
+    plan: Optional[StreamPlan]
+
+
 def describe_error(exc: BaseException) -> str:
     """Our own messages are curated; anything else goes through the URL-free reason."""
     if isinstance(exc, BilibiliError):
@@ -91,8 +100,25 @@ def describe_error(exc: BaseException) -> str:
     return failure_reason(exc)
 
 
-def _headers() -> dict[str, str]:
-    return {"User-Agent": USER_AGENT, "Referer": REFERER}
+def reason_for(exc: BaseException) -> Reason:
+    """The shared reason vocabulary for a failure, so the bot never invents wording.
+
+    Platform codes go through matcha; our own failures carry the closest shared reason;
+    anything left is a transport problem.
+    """
+    if isinstance(exc, RateLimitedError):
+        return Reason.RATE_LIMITED
+    if isinstance(exc, UnsupportedError):
+        return Reason.AUTH_REQUIRED
+    if isinstance(exc, ApiError):
+        # The platform's own code decides, exactly as the parser reported it.
+        return api.describe_error(exc)
+    if isinstance(exc, MatchaError):
+        # A link matcha itself cannot canonicalise is unreadable, not a network problem.
+        return Reason.EXTRACTOR_FAILED
+    if isinstance(exc, BilibiliError):
+        return Reason.EXTRACTOR_FAILED
+    return api.describe_error(exc)
 
 
 @contextmanager
@@ -104,87 +130,80 @@ def _open(client: Optional[httpx.Client]) -> Iterator[httpx.Client]:
         yield owned
 
 
-def _is_bilibili_video_host(host: str) -> bool:
-    clean = host.lower()
-    return clean == "bilibili.com" or clean.endswith(".bilibili.com")
+def _with_session(request: Request) -> Request:
+    """Attach the cookies of the current visitor session to a request description."""
+    cookies = dict(_session["cookies"] or {})
+    if not cookies:
+        return request
+    return replace(request, cookies={**cookies, **dict(request.cookies)})
 
 
-def _expand_short_link(client: httpx.Client, url: str) -> str:
-    """Follow b23.tv share links by hand so the final bilibili.com URL is known."""
-    for _ in range(3):
-        host = (urlsplit(url).hostname or "").lower()
-        if host != "b23.tv":
-            if not _is_bilibili_video_host(host):
-                raise BilibiliError("b23.tv link did not resolve to bilibili.com")
-            return url
-        resp = client.get(url, headers=_headers())
-        location = resp.headers.get("location")
-        if resp.status_code not in REDIRECT_CODES or not location:
-            raise BilibiliError("Could not expand the b23.tv link")
-        url = urljoin(url, location)
-    raise BilibiliError("b23.tv link redirected too many times")
+def _send(client: httpx.Client, request: Request) -> httpx.Response:
+    """Perform one request description, with its cookies scoped to bilibili.com."""
+    headers = dict(request.headers)
+    # httpx deprecates per-request cookies, so the description's cookies go into the
+    # client's jar, scoped to the site they came from (never the media CDN).
+    for name, value in request.cookies.items():
+        client.cookies.set(name, value, domain=".bilibili.com", path="/")
+    if request.method == "POST":
+        return client.post(request.url, headers=headers)
+    return client.get(
+        request.url,
+        params=dict(request.params) or None,
+        headers=headers,
+    )
 
 
-def video_ref(url: str) -> tuple[dict[str, str], int]:
-    """Return the API identifier (``bvid`` or ``aid``) and the 1-based part number."""
-    parts = urlsplit(url)
-    if "/bangumi/" in parts.path:
-        raise BilibiliError(
-            "Bilibili episodes and paid content are not handled natively"
+def _perform(
+    client: httpx.Client, request: Request, *, session: bool = False
+) -> dict[str, Any]:
+    """Perform a request description and decode its body, backing off on risk control.
+
+    A non-zero platform code is *not* an error here: the matcha parser that reads the body
+    owns that judgement, and raises `ApiError` with the platform's own code.
+    """
+    refreshed = False
+    for delay in (*RETRY_DELAYS, None):
+        current = _with_session(request) if session else request
+        resp = _send(client, current)
+        if resp.status_code in RISK_CONTROL_STATUSES:
+            reason = f"HTTP {resp.status_code}"
+        else:
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("code") not in RISK_CONTROL_CODES:
+                return body
+            reason = f"API code {body.get('code')}"
+        if delay is None:
+            break
+        if session and not refreshed:
+            # Risk control can be tied to the visitor session, so start a fresh one once.
+            refreshed = True
+            _ensure_visitor_session(client, force=True)
+        logger.info(
+            "Bilibili %s hit risk control (%s); retrying in %.0fs",
+            urlsplit(request.url).path,
+            reason,
+            delay,
         )
-    page_values = parse_qs(parts.query).get("p", ["1"])
-    page = int(page_values[0]) if page_values[0].isdigit() else 1
-    bv = BV_RE.search(parts.path)
-    if bv:
-        return {"bvid": bv.group(0)}, page
-    av = AV_RE.search(parts.path)
-    if av:
-        return {"aid": av.group(1)}, page
-    raise BilibiliError("Not a Bilibili video link")
-
-
-def _spi_cookies(client: httpx.Client) -> dict[str, str]:
-    """The visitor cookies the site sets on a first visit (GET, as the site does)."""
-    resp = client.get(f"{API_BASE}/x/frontend/finger/spi", headers=_headers())
-    resp.raise_for_status()
-    body = resp.json()
-    if body.get("code") != 0:
-        raise BilibiliError(f"Bilibili visitor setup error {body.get('code')}")
-    data = body.get("data") or {}
-    cookies = {"buvid3": data["b_3"], "buvid4": data["b_4"]}
-    if data.get("b_nut"):
-        cookies["b_nut"] = data["b_nut"]
-    return cookies
-
-
-def _bili_ticket(client: httpx.Client, cookies: dict[str, str]) -> Optional[str]:
-    """A ``bili_ticket`` from GenWebTicket. Optional: a failure leaves the cookie out."""
-    ts = int(time.time())
-    sign = hmac.new(TICKET_KEY, f"ts{ts}".encode(), hashlib.sha256).hexdigest()
-    url = f"{TICKET_URL}?key_id=ec02&hexsign={sign}&context[ts]={ts}&csrf="
-    try:
-        resp = client.post(url, headers=_headers(), cookies=cookies)
-        resp.raise_for_status()
-        body = resp.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.info("Bilibili ticket request failed: %s", failure_reason(exc))
-        return None
-    if body.get("code") != 0:
-        logger.info("Bilibili ticket refused with code %s", body.get("code"))
-        return None
-    return (body.get("data") or {}).get("ticket")
+        time.sleep(delay)
+    raise RateLimitedError("Bilibili kept rate-limiting this video; try again later")
 
 
 def _visitor_cookies(client: httpx.Client) -> dict[str, str]:
-    cookies = _spi_cookies(client)
-    ticket = _bili_ticket(client, cookies)
-    if ticket:
-        cookies["bili_ticket"] = ticket
-    return cookies
+    """Visitor cookies from `finger/spi`, plus the ticket when Bilibili issues one."""
+    spi = _perform(client, api.spi_request())
+    ticket = None
+    try:
+        ticket = _perform(client, api.ticket_request(int(time.time())))
+    except (httpx.HTTPError, ValueError, RateLimitedError) as exc:
+        # The ticket is optional; the spi cookies alone often answer for view and playurl.
+        logger.info("Bilibili ticket request failed: %s", describe_error(exc))
+    return api.visitor_session(spi, ticket)
 
 
 def _ensure_visitor_session(client: httpx.Client, force: bool = False) -> None:
-    """Attach visitor cookies to ``client``, reusing the shared session while it is fresh.
+    """Cache the visitor cookies, reusing the shared session while it is fresh.
 
     The lock guards only the shared state. The network calls run outside it, so one slow
     setup does not hold up every other Bilibili request in the process.
@@ -204,127 +223,139 @@ def _ensure_visitor_session(client: httpx.Client, force: bool = False) -> None:
             cookies = None
         with _state_lock:
             _session.update(cookies=cookies, at=time.monotonic())
-    if cookies:
-        for name, value in cookies.items():
-            client.cookies.set(name, value, domain=".bilibili.com")
 
 
-def _api(client: httpx.Client, path: str, params: dict[str, Any]) -> Any:
-    """GET a Bilibili API, backing off on risk control. Returns the ``data`` field."""
-    refreshed = False
-    for delay in (*RETRY_DELAYS, None):
-        resp = client.get(f"{API_BASE}{path}", params=params, headers=_headers())
-        if resp.status_code in RISK_CONTROL_STATUSES:
-            reason = f"HTTP {resp.status_code}"
-        else:
-            resp.raise_for_status()
-            body = resp.json()
-            code = body.get("code")
-            if code == 0:
-                return body.get("data") or {}
-            if code not in RISK_CONTROL_CODES:
-                raise BilibiliError(f"Bilibili API error {code}: {body.get('message')}")
-            reason = f"API code {code}"
-        if delay is None:
-            break
-        if not refreshed:
-            # Risk control can be tied to the visitor session, so start a fresh one once.
-            refreshed = True
-            _ensure_visitor_session(client, force=True)
-        logger.info(
-            "Bilibili %s hit risk control (%s); retrying in %.0fs", path, reason, delay
+def _cookies() -> dict[str, str]:
+    with _state_lock:
+        return dict(_session["cookies"] or {})
+
+
+def _expand_short_link(client: httpx.Client, ref: WorkRef) -> WorkRef:
+    """Follow a b23.tv share link by hand until it names a bilibili.com work."""
+    current = ref
+    for _ in range(3):
+        request = api.expand_request(current)
+        resp = client.get(
+            request.url, headers=dict(request.headers), follow_redirects=False
         )
-        time.sleep(delay)
-    raise RateLimitedError("Bilibili kept rate-limiting this video; try again later")
+        location = resp.headers.get("location")
+        if resp.status_code not in REDIRECT_CODES or not location:
+            raise BilibiliError("Could not expand the b23.tv link")
+        target = urljoin(request.url, location)
+        host = (urlsplit(target).hostname or "").lower()
+        if host != "bilibili.com" and not host.endswith(".bilibili.com"):
+            raise BilibiliError("b23.tv link did not resolve to bilibili.com")
+        try:
+            current = with_expanded(current, target)
+        except (NeedsExpansionError, ValueError) as exc:
+            raise BilibiliError("Could not expand the b23.tv link") from exc
+        if current.kind != "short_link":
+            return current
+    raise BilibiliError("b23.tv link redirected too many times")
 
 
-def _ident(ref: dict[str, str]) -> str:
-    """The BV id, or ``av<aid>`` for old-style links."""
-    return ref["bvid"] if "bvid" in ref else f"av{ref['aid']}"
+def _ref(client: Optional[httpx.Client], url: str) -> WorkRef:
+    """The WorkRef a pasted or canonical link names. Only matcha parses identity."""
+    ref = _parse(url)
+    if ref is None or ref.platform != "bilibili":
+        raise BilibiliError("Not a Bilibili video link")
+    if ref.is_episode:
+        raise UnsupportedError(
+            "Bilibili episodes and paid content are not handled natively"
+        )
+    if ref.kind == "short_link":
+        if client is None:
+            with _open(None) as owned:
+                return _expand_short_link(owned, ref)
+        return _expand_short_link(client, ref)
+    return ref
 
 
-def _part(client: httpx.Client, ref: dict[str, str], page: int) -> dict[str, Any]:
-    """One part's name, cid, duration and dimensions from the pagelist endpoint.
+def _canonical(ref: WorkRef) -> str:
+    try:
+        return _canonical_url(ref)
+    except (NeedsExpansionError, ValueError) as exc:
+        raise BilibiliError("This Bilibili link has no canonical form") from exc
 
-    The view endpoint returned 412 on every probe of 2026-10-29, while pagelist and
-    playurl answered, so the native path reads parts from pagelist only.
+
+def _cid(body: dict[str, Any], ref: WorkRef) -> Optional[int]:
+    """The selected part's cid, read from the view payload that also carries the pages.
+
+    `matcha.PartInfo` keeps the page index, title and duration; the cid stays in the
+    payload, so the caller that performed the request reads it from there.
     """
-    pages = _api(client, "/x/player/pagelist", ref)
+    pages = [page for page in (body.get("data") or {}).get("pages") or [] if page]
     if not pages:
-        raise BilibiliError("Bilibili returned no parts for this video")
-    if not 1 <= page <= len(pages):
-        raise BilibiliError(f"This video has {len(pages)} parts, not {page}")
-    return pages[page - 1]
+        return None
+    if ref.part:
+        if not 1 <= ref.part <= len(pages):
+            raise BilibiliError(f"This video has {len(pages)} parts, not {ref.part}")
+        page = pages[ref.part - 1]
+    else:
+        page = pages[0]
+    cid = page.get("cid")
+    return int(cid) if cid else None
 
 
-def _playurl(client: httpx.Client, ref: dict[str, str], cid: int) -> dict[str, Any]:
-    return _api(
-        client,
-        "/x/player/playurl",
-        {
-            **ref,
-            "cid": cid,
-            "qn": MAX_QN,
-            "fnval": FNVAL_DASH,
-            "fnver": 0,
-            "fourk": 1,
-        },
+def _view(client: httpx.Client, ref: WorkRef) -> tuple[MediaInfo, Optional[int]]:
+    """Read `x/web-interface/view`: metadata through matcha, the part's cid alongside."""
+    body = _perform(client, api.view_request(ref, Session(_cookies())), session=True)
+    info = api.parse_view(body, ref, canonical=_canonical(ref))
+    return info, _cid(body, ref)
+
+
+def _plan(client: httpx.Client, ref: WorkRef, cid: int, info: MediaInfo) -> StreamPlan:
+    """Price the DASH download with `fnval=4048`, before any byte moves."""
+    request = api.playurl_request(ref, Session(_cookies()), qn=MAX_QN)
+    # The description leaves the cid to the caller, which is the only side that has it.
+    params = tuple((k, v) for k, v in request.params if k != "cid") + (
+        ("cid", str(cid)),
     )
+    body = _perform(client, replace(request, params=params), session=True)
+    return api.parse_playurl(body, duration_s=info.duration_s)
 
 
-def fetch_bilibili_metadata(
-    url: str, client: Optional[httpx.Client] = None
-) -> dict[str, Any]:
-    """Metadata in the same shape as the yt-dlp path returns.
+def resolve_media(url: str, client: Optional[httpx.Client] = None) -> Media:
+    """Identity, published metadata and a priced plan for one link.
 
-    The title is the part's name, which for a single-part video is usually the video's
-    title. The uploader and thumbnail are not available without the view endpoint.
+    A plan that cannot be priced is not an error: the caller shows a card instead of
+    uploading, which is exactly what `matcha.deliver.decide` does with ``plan=None``.
     """
     with _open(client) as open_client:
-        ref, page = video_ref(_expand_short_link(open_client, url))
+        ref = _ref(open_client, url)
         _ensure_visitor_session(open_client)
-        part = _part(open_client, ref, page)
-    dimension = part.get("dimension") or {}
-    width, height = dimension.get("width"), dimension.get("height")
-    if dimension.get("rotate") == 1:
-        width, height = height, width
-    return {
-        "title": part.get("part") or "",
-        "uploader": "",
-        "duration": part.get("duration"),
-        "thumbnail": None,
-        "webpage_url": f"https://www.bilibili.com/video/{_ident(ref)}",
-        "width": width,
-        "height": height,
-        "filesize": None,
-        "filesize_approx": None,
-        "url": None,
-    }
+        info, cid = _view(open_client, ref)
+        plan = None
+        if cid is None:
+            logger.info("Bilibili view carried no cid; the plan is unpriced.")
+        else:
+            try:
+                plan = _plan(open_client, ref, cid, info)
+            except (ApiError, BilibiliError, httpx.HTTPError) as exc:
+                # A refused or unreachable plan is a card, not a failure.
+                logger.info("Bilibili plan unavailable: %s", describe_error(exc))
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                # A payload the parser could not read is a regression worth seeing.
+                logger.warning(
+                    "Bilibili plan payload could not be read: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+    return Media(ref=ref, canonical_url=_canonical(ref), info=info, plan=plan)
 
 
-def pick_video_stream(dash: dict[str, Any]) -> dict[str, Any]:
-    streams = dash.get("video") or []
-    if not streams:
-        raise BilibiliError("Bilibili returned no video streams")
-    # H.264 first: it plays everywhere Telegram clients do. Other codecs remain a fallback.
-    avc = [stream for stream in streams if stream.get("codecid") == AVC_CODEC_ID]
-    return max(avc or streams, key=lambda s: (s.get("id", 0), s.get("bandwidth", 0)))
+def canonical_url(url: str, client: Optional[httpx.Client] = None) -> str:
+    """The ``www.bilibili.com/video/...`` link for a work, with ``?p=`` for later parts.
+
+    Expands b23.tv short links. Canonical links need no request, so passing one again is
+    free. This is a thin wrapper over `matcha.link.canonical_url`, the only URL producer.
+    """
+    return _canonical(_ref(client, url))
 
 
-def pick_audio_stream(dash: dict[str, Any]) -> dict[str, Any]:
-    streams = dash.get("audio") or []
-    if not streams:
-        raise BilibiliError("Bilibili returned no audio track")
-    return max(streams, key=lambda s: s.get("bandwidth", 0))
-
-
-def _stream_urls(stream: dict[str, Any]) -> list[str]:
-    base = stream.get("baseUrl") or stream.get("base_url")
-    backups = stream.get("backupUrl") or stream.get("backup_url") or []
-    return [url for url in [base, *backups] if url]
-
-
-def _stream_to_file(client: httpx.Client, url: str, dest: str) -> None:
+def _stream_to_file(
+    client: httpx.Client, url: str, dest: str, headers: dict[str, str]
+) -> None:
     """Write one CDN response to ``dest``, within the time limit and the size cap."""
     from daphne.doh import check_public_url
 
@@ -350,7 +381,7 @@ def _stream_to_file(client: httpx.Client, url: str, dest: str) -> None:
                 raise BilibiliError(str(exc)) from exc
         # Signed CDN URLs are never logged; only the reason for a failed host is.
         with client.stream(
-            "GET", current, headers=_headers(), follow_redirects=False
+            "GET", current, headers=headers, follow_redirects=False
         ) as resp:
             if resp.status_code in REDIRECT_CODES:
                 location = resp.headers.get("location")
@@ -373,11 +404,15 @@ def _stream_to_file(client: httpx.Client, url: str, dest: str) -> None:
     raise BilibiliError("Bilibili stream redirected too many times")
 
 
-def _download_stream(client: httpx.Client, stream: dict[str, Any], dest: str) -> None:
+def _download_stream(
+    client: httpx.Client, stream: Stream, dest: str, headers: dict[str, str]
+) -> None:
     last_error: Optional[BaseException] = None
-    for url in _stream_urls(stream):
+    for url in (stream.url, *stream.backup_urls):
+        if not url:
+            continue
         try:
-            _stream_to_file(client, url, dest)
+            _stream_to_file(client, url, dest, headers)
             if os.path.getsize(dest) > 0:
                 return
         except (httpx.HTTPError, BilibiliError) as exc:
@@ -402,25 +437,34 @@ def _ffmpeg(args: list[str]) -> None:
         raise BilibiliError(f"ffmpeg failed: {lines[-1] if lines else res.returncode}")
 
 
-def _fetch_tracks(
-    client: httpx.Client,
-    ref: dict[str, str],
-    page: int,
-    work: str,
-) -> tuple[str, str, str]:
-    """Download the chosen streams into ``work``. Returns (ident, video path, audio path)."""
+def _download_plan(client: httpx.Client, ref: WorkRef) -> StreamPlan:
+    """The plan a download needs: streams for both tracks, and the headers to ask for them.
+
+    It is re-read here instead of being threaded down from the card: signed CDN URLs
+    expire, and a queued download can start long after its price was quoted.
+    """
     _ensure_visitor_session(client)
-    part = _part(client, ref, page)
-    play = _playurl(client, ref, part["cid"])
-    dash = play.get("dash") or {}
-    if not dash:
+    info, cid = _view(client, ref)
+    if cid is None:
+        raise BilibiliError("Bilibili returned no cid for this part")
+    plan = _plan(client, ref, cid, info)
+    if plan.video is None or plan.audio is None:
         raise BilibiliError("Bilibili returned no DASH streams for this video")
-    audio = pick_audio_stream(dash)
-    video_path = os.path.join(work, "video.m4s")
-    audio_path = os.path.join(work, "audio.m4s")
-    _download_stream(client, pick_video_stream(dash), video_path)
-    _download_stream(client, audio, audio_path)
-    return _ident(ref), video_path, audio_path
+    return plan
+
+
+def _from_cache(key: str, out_dir: str, name: str) -> Optional[str]:
+    if not _cache_dir_ok():
+        return None
+    source = os.path.join(CACHE_DIR, f"{key}.mp4")
+    try:
+        if time.time() - os.path.getmtime(source) > CACHE_TTL:
+            return None
+        out_path = os.path.join(out_dir, f"{name}.mp4")
+        shutil.copyfile(source, out_path)
+    except OSError:
+        return None
+    return out_path
 
 
 def _cache_dir_ok() -> bool:
@@ -433,32 +477,14 @@ def _cache_dir_ok() -> bool:
     return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
 
 
-def _cache_file(bvid: str, page: int) -> str:
-    return os.path.join(CACHE_DIR, f"{bvid}-p{page}.mp4")
-
-
-def _from_cache(bvid: str, page: int, out_dir: str) -> Optional[str]:
-    if not _cache_dir_ok():
-        return None
-    source = _cache_file(bvid, page)
-    try:
-        if time.time() - os.path.getmtime(source) > CACHE_TTL:
-            return None
-        out_path = os.path.join(out_dir, f"{bvid}.mp4")
-        shutil.copyfile(source, out_path)
-    except OSError:
-        return None
-    return out_path
-
-
-def _to_cache(path: str, bvid: str, page: int) -> None:
+def _to_cache(path: str, key: str) -> None:
     """Store a finished mp4 atomically: copy to a unique temp name, then rename.
 
     A file larger than the whole cap is not stored, since it would evict everything else.
     """
     if not _cache_dir_ok() or os.path.getsize(path) > CACHE_MAX_BYTES:
         return
-    dest = _cache_file(bvid, page)
+    dest = os.path.join(CACHE_DIR, f"{key}.mp4")
     fd, partial = tempfile.mkstemp(dir=CACHE_DIR, suffix=".part")
     os.close(fd)
     try:
@@ -506,35 +532,35 @@ def _evict_cache(keep: str) -> None:
         total -= size
 
 
-def canonical_url(url: str, client: Optional[httpx.Client] = None) -> str:
-    """The ``www.bilibili.com/video/...`` link for a video, with ``?p=`` for later parts.
-
-    Expands b23.tv short links. Canonical links need no request, so passing one again is free.
-    """
-    with _open(client) as open_client:
-        ref, page = video_ref(_expand_short_link(open_client, url))
-    link = f"https://www.bilibili.com/video/{_ident(ref)}"
-    return f"{link}?p={page}" if page > 1 else link
+def _stem(ref: WorkRef) -> str:
+    """The output file stem: the work id, plus the part when one was chosen."""
+    return f"{ref.work_id}-p{ref.part}" if ref.part else ref.work_id
 
 
 def cached_video(url: str, out_dir: str) -> Optional[str]:
-    """A finished mp4 for this video from the disk cache, copied into ``out_dir``."""
-    ref, page = video_ref(url)
-    if "bvid" not in ref:
+    """A finished mp4 for this work and part from the disk cache, copied into ``out_dir``."""
+    try:
+        ref = _ref(None, url)
+    except (BilibiliError, MatchaError) as exc:
+        logger.info("Bilibili cache lookup skipped: %s", describe_error(exc))
         return None
-    cached = _from_cache(ref["bvid"], page, out_dir)
+    key = cache_key(ref)
+    cached = _from_cache(key, out_dir, _stem(ref))
     if cached:
-        logger.info("Bilibili cache hit for %s part %d", ref["bvid"], page)
+        logger.info("Bilibili cache hit for %s", key)
     return cached
 
 
 def store_video(url: str, path: str) -> None:
-    """Cache a finished mp4 for this video. The caller only stores files it has accepted."""
-    ref, page = video_ref(url)
-    if "bvid" not in ref:
+    """Cache a finished mp4 for this work and part. The caller only stores accepted files."""
+    try:
+        key = cache_key(_ref(None, url))
+    except (BilibiliError, MatchaError) as exc:
+        # A link layer that cannot name the work must never fail a finished download.
+        logger.info("Bilibili cache store skipped: %s", describe_error(exc))
         return
     try:
-        _to_cache(path, ref["bvid"], page)
+        _to_cache(path, key)
     except OSError as exc:
         # A full or read-only cache must not fail a download that already succeeded.
         logger.warning("Bilibili cache store failed: %s", failure_reason(exc))
@@ -546,11 +572,16 @@ def download_native_video(
     """Download a Bilibili video as one mp4 in ``out_dir`` and return its path."""
     os.makedirs(out_dir, exist_ok=True)
     with _open(client) as open_client:
-        ref, page = video_ref(_expand_short_link(open_client, url))
+        ref = _ref(open_client, url)
+        plan = _download_plan(open_client, ref)
+        headers = dict(plan.headers)
         work = tempfile.mkdtemp(prefix=".bilibili-", dir=out_dir)
         try:
-            ident, video_path, audio_path = _fetch_tracks(open_client, ref, page, work)
-            out_path = os.path.join(out_dir, f"{ident}.mp4")
+            video_path = os.path.join(work, "video.m4s")
+            audio_path = os.path.join(work, "audio.m4s")
+            _download_stream(open_client, plan.video, video_path, headers)
+            _download_stream(open_client, plan.audio, audio_path, headers)
+            out_path = os.path.join(out_dir, f"{_stem(ref)}.mp4")
             _ffmpeg(
                 [
                     "-i",

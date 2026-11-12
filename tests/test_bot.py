@@ -19,6 +19,35 @@ from daphne.config import (
 )
 from daphne.messages import PARSE_MODE_HTML
 from daphne.rbac import RbacService, get_rbac_config_path
+from daphne.video import Video
+from matcha import MediaInfo, StreamPlan
+
+BILI = "https://www.bilibili.com/video/BV1abc"
+
+
+def _video(size=None, *, title="Video", uploader="Uploader", duration=90, url=BILI):
+    """A resolved video, the shape `handle_video_link` now receives."""
+    plan = (
+        None
+        if size is None
+        else StreamPlan(
+            video=None,
+            audio=None,
+            estimated_bytes=size,
+            quality="480p",
+            needs_merge=False,
+        )
+    )
+    info = MediaInfo(
+        platform="bilibili",
+        kind="video",
+        work_id="BV1abc",
+        title=title,
+        creator=uploader,
+        duration_s=duration,
+        canonical_url=url,
+    )
+    return Video(ref=None, canonical_url=url, info=info, plan=plan)
 
 
 class TestRbac(unittest.TestCase):
@@ -271,23 +300,20 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
-    @patch("daphne.bot.fetch_video_metadata")
-    async def test_handle_video_link_over_configured_limit_sends_card(
-        self, mock_metadata, mock_limit
+    @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
+    @patch("os.path.getsize", return_value=513 * 1024 * 1024)
+    async def test_handle_video_link_cards_the_real_bytes_after_download(
+        self, mock_getsize, mock_download, mock_limit
     ):
-        mock_metadata.return_value = {
-            "title": "Huge Video",
-            "uploader": "Uploader",
-            "duration": 120,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-            "filesize_approx": 513 * 1024 * 1024,
-            "url": "https://direct-url.com/file.mp4",
-        }
-
+        # The upload-or-card decision already happened before this ran, so the only size
+        # check left is the real file: a download that grew past the limit still cards.
         await handle_video_link(
-            self.update, self.context, "https://www.bilibili.com/video/BV1abc"
+            self.update,
+            self.context,
+            _video(size=10 * 1024 * 1024, title="Huge Video", duration=120),
         )
 
+        mock_download.assert_called_once()
         self.context.bot.send_video.assert_not_called()
         self.assertEqual(self.update.message.reply_text.call_count, 2)
         text = self.update.message.reply_text.call_args_list[-1][0][0]
@@ -306,20 +332,12 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=1024 * 1024)
-    @patch("daphne.bot.fetch_video_metadata")
     async def test_handle_video_link_unknown_size_downloads_and_sends_video(
-        self, mock_metadata, mock_getsize, mock_download, mock_probe, mock_limit
+        self, mock_getsize, mock_download, mock_probe, mock_limit
     ):
-        mock_metadata.return_value = {
-            "title": "Unknown Size Video",
-            "uploader": "Uploader",
-            "duration": 90,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-        }
-
         with patch("builtins.open", unittest.mock.mock_open()):
             await handle_video_link(
-                self.update, self.context, "https://www.bilibili.com/video/BV1abc"
+                self.update, self.context, _video(title="Unknown Size Video")
             )
 
         mock_download.assert_called_once()
@@ -337,23 +355,30 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "failed https://api.telegram.org/bot123456:ABCDEF1234567890abcdef/getMe?token=secret123"
         ),
     )
-    @patch("daphne.bot.fetch_video_metadata")
     async def test_handle_video_link_redacts_exception_text(
-        self, mock_metadata, mock_download, mock_limit
+        self, mock_download, mock_limit
     ):
-        mock_metadata.return_value = {
-            "title": "Video",
-            "uploader": "Uploader",
-            "duration": 90,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-        }
-        await handle_video_link(
-            self.update, self.context, "https://www.bilibili.com/video/BV1abc"
-        )
+        await handle_video_link(self.update, self.context, _video())
         edited_text = self.status.edit_text.call_args_list[-1][0][0]
         self.assertIn("Video download failed:", edited_text)
         self.assertNotIn("ABCDEF1234567890abcdef", edited_text)
         self.assertNotIn("secret123", edited_text)
+
+    @patch("daphne.bot.handle_video_link", autospec=True)
+    @patch("daphne.bot.resolve_or_blank")
+    async def test_handle_video_url_resolves_then_takes_the_upload_path(
+        self, mock_resolve, mock_handle_video
+    ):
+        # The seam TikTok and Instagram reach after their own extractor failed.
+        resolved = _video(title="Resolved")
+        mock_resolve.return_value = resolved
+
+        await bot_module.handle_video_url(
+            self.update, self.context, BILI, platform="tiktok"
+        )
+
+        mock_resolve.assert_called_once_with(BILI, platform="tiktok")
+        mock_handle_video.assert_awaited_once_with(self.update, self.context, resolved)
 
     def test_preprocess_text_links(self):
         from daphne.bot import preprocess_text_links
@@ -523,22 +548,18 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         self.context.bot.send_video = AsyncMock()
 
     @patch("daphne.bot.rbac_service")
-    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.resolve_video")
     @patch("daphne.bot.handle_video_link")
     @patch("daphne.bot.send_video_card")
     async def test_media_message_handler_preview_path(
-        self, mock_send_card, mock_handle_video, mock_fetch_metadata, mock_rbac
+        self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
     ):
         mock_access = MagicMock()
         mock_access.is_allowed.return_value = True
         mock_rbac.check_access.return_value = mock_access
 
-        mock_fetch_metadata.return_value = {
-            "title": "Small Video",
-            "uploader": "Uploader",
-            "filesize": 10 * 1024 * 1024,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-        }
+        resolved = _video(size=10 * 1024 * 1024, title="Small Video")
+        mock_resolve.return_value = resolved
 
         self.update.message.text = "https://www.bilibili.com/video/BV1abc"
 
@@ -550,20 +571,15 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         )
         mock_rbac.check_access.assert_any_call(12345, -1002058191932, "preview_video")
 
-        mock_handle_video.assert_called_once_with(
-            self.update,
-            self.context,
-            "https://www.bilibili.com/video/BV1abc",
-            custom_metadata=mock_fetch_metadata.return_value,
-        )
+        mock_handle_video.assert_called_once_with(self.update, self.context, resolved)
         mock_send_card.assert_not_called()
 
     @patch("daphne.bot.rbac_service")
-    @patch("daphne.bot.fetch_video_metadata")
+    @patch("daphne.bot.resolve_video")
     @patch("daphne.bot.handle_video_link")
     @patch("daphne.bot.send_video_card")
     async def test_media_message_handler_card_path(
-        self, mock_send_card, mock_handle_video, mock_fetch_metadata, mock_rbac
+        self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
     ):
         mock_fetch_allowed = MagicMock()
         mock_fetch_allowed.is_allowed.return_value = True
@@ -581,12 +597,8 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
 
         mock_rbac.check_access.side_effect = mock_check_access
 
-        mock_fetch_metadata.return_value = {
-            "title": "Small Video No Permission",
-            "uploader": "Uploader",
-            "filesize": 10 * 1024 * 1024,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-        }
+        resolved = _video(size=10 * 1024 * 1024, title="Small Video No Permission")
+        mock_resolve.return_value = resolved
 
         self.update.message.text = "https://www.bilibili.com/video/BV1abc"
 
@@ -600,8 +612,78 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         mock_handle_video.assert_not_called()
         mock_send_card.assert_called_once_with(
             self.update,
-            "https://www.bilibili.com/video/BV1abc",
-            mock_fetch_metadata.return_value,
+            resolved,
+            bot_module.sender_attribution(self.update.effective_user),
+            "Video Details",
+        )
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.resolve_video")
+    async def test_an_unreadable_link_keeps_the_message_and_names_the_reason(
+        self, mock_resolve, mock_rbac
+    ):
+        from daphne.video import Unreadable
+        from matcha import Reason
+
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+        mock_resolve.side_effect = Unreadable(Reason.NOT_FOUND)
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc"
+        await bot_module.media_message_handler(self.update, self.context)
+
+        edited = self.status.edit_text.call_args_list[-1][0][0]
+        self.assertIn("gone", edited)
+        self.assertIn("original link was kept", edited)
+        self.update.message.delete.assert_not_called()
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.resolve_video")
+    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot.send_video_card")
+    async def test_a_priced_video_over_the_telegram_limit_becomes_a_card(
+        self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
+    ):
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+
+        resolved = _video(size=3 * 1024 * 1024 * 1024)
+        mock_resolve.return_value = resolved
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc"
+        await bot_module.media_message_handler(self.update, self.context)
+
+        mock_handle_video.assert_not_called()
+        mock_send_card.assert_called_once_with(
+            self.update,
+            resolved,
+            bot_module.sender_attribution(self.update.effective_user),
+            "Video is over Telegram's 2GiB limit",
+        )
+
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.resolve_video")
+    @patch("daphne.bot.handle_video_link")
+    @patch("daphne.bot.send_video_card")
+    async def test_a_video_with_no_size_becomes_a_card(
+        self, mock_send_card, mock_handle_video, mock_resolve, mock_rbac
+    ):
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+
+        resolved = _video()
+        mock_resolve.return_value = resolved
+
+        self.update.message.text = "https://www.bilibili.com/video/BV1abc"
+        await bot_module.media_message_handler(self.update, self.context)
+
+        mock_handle_video.assert_not_called()
+        mock_send_card.assert_called_once_with(
+            self.update,
+            resolved,
             bot_module.sender_attribution(self.update.effective_user),
             "Video Details",
         )
@@ -626,29 +708,21 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         self.update.message.reply_text.assert_not_called()
 
     @patch("daphne.bot.rbac_service")
-    @patch("daphne.bot.fetch_video_metadata")
     @patch("daphne.bot.download_video")
     @patch("daphne.bot.probe_video_dimensions", return_value=(1280, 720, 60))
     @patch("os.path.getsize", return_value=15 * 1024 * 1024)
     async def test_download_button_callback_success(
-        self, mock_getsize, mock_probe, mock_download, mock_fetch_metadata, mock_rbac
+        self, mock_getsize, mock_probe, mock_download, mock_rbac
     ):
         mock_access = MagicMock()
         mock_access.is_allowed.return_value = True
         mock_rbac.check_access.return_value = mock_access
 
-        mock_fetch_metadata.return_value = {
-            "title": "Downloaded Video",
-            "uploader": "Uploader",
-            "filesize": 15 * 1024 * 1024,
-            "webpage_url": "https://www.bilibili.com/video/BV1abc",
-        }
         mock_download.return_value = "/tmp/video.mp4"
 
-        # The card stored the link and its metadata, so the button does not look them up again.
-        bot_module.CALLBACK_URL_CACHE["testshort"] = (
-            "https://www.bilibili.com/video/BV1abc",
-            mock_fetch_metadata.return_value,
+        # The card stored the resolved video, so the button does not look it up again.
+        bot_module.CALLBACK_URL_CACHE["testshort"] = _video(
+            size=15 * 1024 * 1024, title="Downloaded Video"
         )
 
         query = AsyncMock()
@@ -783,7 +857,7 @@ class TestCallbackCacheBound(unittest.TestCase):
             patch.object(bot_module, "CALLBACK_CACHE_LIMIT", 2),
         ):
             for index in range(3):
-                bot_module._remember_callback(f"s{index}", f"url{index}", {})
+                bot_module._remember_callback(f"s{index}", _video(url=f"url{index}"))
             self.assertEqual(list(bot_module.CALLBACK_URL_CACHE), ["s1", "s2"])
 
 

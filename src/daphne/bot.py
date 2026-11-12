@@ -21,6 +21,9 @@ from aiogram.types import (
 )
 import uuid
 
+from matcha import Capabilities, Reason, Upload
+
+from daphne import bilibili
 from daphne.config import (
     max_concurrent_downloads,
     max_user_concurrent_downloads,
@@ -28,21 +31,27 @@ from daphne.config import (
 )
 from daphne.downloader import (
     download_video,
-    fetch_video_metadata,
     format_duration,
     format_video_caption,
     is_bilibili_url,
     is_youtube_url,
     probe_video_dimensions,
-    sanitize_video_url,
 )
 from daphne.messages import (
     HtmlMessage,
     PARSE_MODE_HTML,
+    reason_text,
     sender_attribution,
 )
 from daphne.rbac import RbacService
 from daphne.redact import redact
+from daphne.video import (
+    Unreadable,
+    Video,
+    canonical_link,
+    resolve as resolve_video,
+    resolve_or_blank,
+)
 from daphne.tg import (
     TelegramBot,
     TelegramContext,
@@ -57,14 +66,14 @@ from daphne.tg import (
 )
 
 TG_HARD_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
-# A download button keeps its card's link and metadata here. The cache is bounded, so a
-# busy bot cannot grow it without limit; an evicted button reports that the link expired.
+# A download button keeps its card's resolved video. The cache is bounded, so a busy bot
+# cannot grow it without limit; an evicted button reports that the link expired.
 CALLBACK_CACHE_LIMIT = 500
-CALLBACK_URL_CACHE: dict[str, tuple[str, dict]] = {}
+CALLBACK_URL_CACHE: dict[str, Video] = {}
 
 
-def _remember_callback(short_id: str, webpage_url: str, metadata: dict) -> None:
-    CALLBACK_URL_CACHE[short_id] = (webpage_url, metadata)
+def _remember_callback(short_id: str, video: Video) -> None:
+    CALLBACK_URL_CACHE[short_id] = video
     while len(CALLBACK_URL_CACHE) > CALLBACK_CACHE_LIMIT:
         CALLBACK_URL_CACHE.pop(next(iter(CALLBACK_URL_CACHE)))
 
@@ -226,113 +235,94 @@ async def help_command(update: TelegramUpdate, context: TelegramContext) -> None
     await update.message.reply_text(text, parse_mode=PARSE_MODE_HTML)
 
 
-def detect_platform(url: str) -> str:
-    url_lower = url.lower()
-    if is_bilibili_url(url_lower):
-        return "bilibili"
-    elif "youtube.com" in url_lower or "youtu.be" in url_lower:
-        return "youtube"
-    elif "tiktok.com" in url_lower or "douyin.com" in url_lower:
-        return "tiktok"
-    elif "instagram.com" in url_lower:
-        return "instagram"
-    elif "bsky.app" in url_lower or "bluesky" in url_lower:
-        return "bluesky"
-    return "video"
-
-
 def extract_video_url(text: str) -> str | None:
+    """The first video link in a message, as the one URL daphne may print or download.
+
+    Identity comes from matcha, which owns the canonical form. A b23.tv share link is
+    opaque, so it keeps its tracking-free form here and is expanded by `resolve` in a
+    worker; a link matcha has no grammar for keeps its tracking-free form too, because
+    dropping it would silently lose a video the bot already handled.
+    """
     text = preprocess_text_links(text)
     for match in URL_REGEX.finditer(text):
-        url = sanitize_video_url(match.group(0))
-        if is_bilibili_url(url) or is_youtube_url(url):
-            return url
+        raw = match.group(0)
+        if is_bilibili_url(raw) or is_youtube_url(raw):
+            return canonical_link(raw)
     return None
 
 
-def _metadata_size(metadata: dict) -> int | None:
-    for key in ("filesize", "filesize_approx"):
-        value = metadata.get(key)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except TypeError, ValueError:
-            continue
-    return None
+def _size_reason(size: int) -> str:
+    """Why a known-size video is not uploaded: the site limit, or Telegram's own."""
+    if size > TG_HARD_LIMIT_BYTES:
+        return "Video is over Telegram's 2GiB limit"
+    return f"Video is over {video_upload_limit_mb()} MB"
 
 
-def _expected_duration(metadata: dict) -> float | None:
-    value = metadata.get("duration")
-    if value is None:
-        return None
+def _card_reason(reason: Reason, video: Video, preview_access) -> str:
+    """The card's heading, from the shared reason vocabulary rather than from prose.
+
+    A size and a quota are daphne's own limits, so they are named as such; everything
+    else is the platform's answer, phrased once for every platform.
+    """
+    size = video.estimated_bytes
+    if reason is Reason.TOO_LARGE:
+        return _size_reason(size or 0)
+    if reason is Reason.NO_ACCESS:
+        if preview_access.is_rate_limited():
+            return "Video Preview Quota Exceeded (direct download only)"
+        return "Video Details"
+    if reason is Reason.NO_PLAN:
+        return "Video Details"
+    return reason_text(reason)
+
+
+def _duration_text(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "Unknown"
     try:
-        return float(value)
+        return format_duration(int(float(seconds)))
     except TypeError, ValueError:
-        return None
+        return "Unknown"
 
 
-def _video_caption_from_metadata(
-    metadata: dict,
-    url: str,
+def _video_caption(
+    video: Video,
     fallback_path: str | None,
     duration: int | None,
     sender: str | None,
 ) -> str:
-    title = metadata.get("title") or (
+    """The uploaded video's caption. Absent fields are left out, never faked."""
+    title = video.info.title or (
         os.path.splitext(os.path.basename(fallback_path))[0]
         if fallback_path
         else "Video"
     )
-    uploader = metadata.get("uploader") or "Unknown"
-    webpage_url = metadata.get("webpage_url") or url
-
-    dur_secs = metadata.get("duration")
-    if dur_secs is None:
-        dur_secs = duration
-    if dur_secs is not None:
-        try:
-            dur_str = format_duration(int(float(dur_secs)))
-        except ValueError, TypeError:
-            dur_str = "Unknown"
-    else:
-        dur_str = "Unknown"
-
+    dur_secs = video.info.duration_s if video.info.duration_s is not None else duration
     return format_video_caption(
         title=title,
-        uploader=uploader,
-        duration=dur_str,
-        url=webpage_url,
-        platform=detect_platform(url),
+        uploader=video.info.creator or "Unknown",
+        duration=_duration_text(dur_secs),
+        url=video.canonical_url,
+        platform=video.platform,
         sender=sender,
     )
 
 
 async def send_video_card(
     update: TelegramUpdate,
-    url: str,
-    metadata: dict,
+    video: Video,
     sender: str | None,
     reason: str,
 ) -> None:
-    title = metadata.get("title") or "Video"
-    uploader = metadata.get("uploader") or "Unknown"
-    webpage_url = metadata.get("webpage_url") or url
-    duration = metadata.get("duration")
-    duration_text = "Unknown"
-    if duration is not None:
-        try:
-            duration_text = format_duration(int(float(duration)))
-        except TypeError, ValueError:
-            pass
-    platform_name = detect_platform(url)
+    webpage_url = video.canonical_url
+    platform_name = video.platform
     text = (
         HtmlMessage(sender=sender)
         .title(reason)
         .fields(
-            ("Title:", title),
-            ("Uploader:", uploader),
-            ("Duration:", duration_text),
+            ("Title:", video.info.title or "Video"),
+            ("Uploader:", video.info.creator or "Unknown"),
+            ("Duration:", _duration_text(video.info.duration_s)),
         )
         .link(webpage_url, f"🔗 Source ({platform_name.capitalize()})")
         .tags(platform_name)
@@ -340,9 +330,9 @@ async def send_video_card(
     )
     buttons = []
     short_id = str(uuid.uuid4())[:8]
-    _remember_callback(short_id, webpage_url, metadata)
+    _remember_callback(short_id, video)
 
-    size = _metadata_size(metadata)
+    size = video.estimated_bytes
     if size is None or size <= TG_HARD_LIMIT_BYTES:
         buttons.append(
             InlineKeyboardButton(text="Download video", callback_data=f"dl:{short_id}")
@@ -367,15 +357,12 @@ async def delete_original_message(update: TelegramUpdate) -> None:
 async def handle_video_link(
     update: TelegramUpdate,
     context: TelegramContext,
-    url: str,
-    custom_metadata: dict | None = None,
+    video: Video,
 ) -> None:
+    """Download an already-resolved video and upload it to the chat."""
     sender = sender_attribution(update.effective_user)
-    status_text = (
-        "Preparing download..." if custom_metadata else "Fetching video metadata..."
-    )
     status_msg = await update.message.reply_text(
-        HtmlMessage(sender=sender).text(status_text).render(),
+        HtmlMessage(sender=sender).text("Preparing download...").render(),
         parse_mode=PARSE_MODE_HTML,
     )
 
@@ -387,23 +374,9 @@ async def handle_video_link(
     except Exception as exc:
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
-    if custom_metadata:
-        metadata = custom_metadata
-    else:
-        metadata = await loop.run_in_executor(None, fetch_video_metadata, url)
-
+    # No size check here: the upload-or-card decision was already made before this ran.
+    # The real bytes are checked after the download, where they are actually known.
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-    size = _metadata_size(metadata)
-    if size is not None and size > max_upload_bytes:
-        await status_msg.delete()
-        await send_video_card(
-            update,
-            url,
-            metadata,
-            sender,
-            f"Video is over {video_upload_limit_mb()} MB",
-        )
-        return
 
     with tempfile.TemporaryDirectory() as out_dir:
         try:
@@ -423,7 +396,11 @@ async def handle_video_link(
                     parse_mode=PARSE_MODE_HTML,
                 )
                 video_path = await loop.run_in_executor(
-                    None, download_video, url, out_dir, _expected_duration(metadata)
+                    None,
+                    download_video,
+                    video.fetch_url,
+                    out_dir,
+                    video.expected_duration,
                 )
         except Exception as exc:
             logger.exception("Failed to download video")
@@ -439,13 +416,7 @@ async def handle_video_link(
         file_size = os.path.getsize(video_path)
         if file_size > max_upload_bytes:
             await status_msg.delete()
-            await send_video_card(
-                update,
-                url,
-                metadata,
-                sender,
-                f"Video is over {video_upload_limit_mb()} MB",
-            )
+            await send_video_card(update, video, sender, _size_reason(file_size))
             return
 
         await status_msg.edit_text(
@@ -461,9 +432,7 @@ async def handle_video_link(
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
         )
-        caption = _video_caption_from_metadata(
-            metadata, url, video_path, duration, sender
-        )
+        caption = _video_caption(video, video_path, duration, sender)
 
         kwargs = {
             "chat_id": update.effective_chat.id,
@@ -494,6 +463,25 @@ async def handle_video_link(
 
     await status_msg.delete()
     await delete_original_message(update)
+
+
+async def handle_video_url(
+    update: TelegramUpdate,
+    context: TelegramContext,
+    url: str,
+    platform: str,
+) -> None:
+    """Resolve a page URL in a worker, then take the normal upload path.
+
+    A platform handler reaches this after its own extractor gave up. The metadata chain
+    still gets its chance to describe the link, and a link no engine can describe still
+    downloads with a blank description rather than failing outright.
+    """
+    loop = asyncio.get_running_loop()
+    video = await loop.run_in_executor(
+        None, functools.partial(resolve_or_blank, url, platform=platform)
+    )
+    await handle_video_link(update, context, video)
 
 
 async def media_message_handler(
@@ -585,9 +573,32 @@ async def media_message_handler(
             parse_mode=PARSE_MODE_HTML,
         )
 
+        loop = asyncio.get_running_loop()
         try:
-            loop = asyncio.get_running_loop()
-            metadata = await loop.run_in_executor(None, fetch_video_metadata, video_url)
+            video = await loop.run_in_executor(None, resolve_video, video_url)
+        except bilibili.RateLimitedError:
+            logger.warning("Bilibili risk control refused every metadata attempt")
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(
+                    f"{reason_text(Reason.RATE_LIMITED)} Your original link was kept."
+                )
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+        except Unreadable as exc:
+            # No engine could read the link; the reason decides what the user is told.
+            logger.info("Video metadata unreadable: %s", exc.reason.value)
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"{reason_text(exc.reason)} Your original link was kept.")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
         except Exception:
             logger.exception("Failed to fetch video metadata")
             await set_reaction(update.message, REACTION_FAILED)
@@ -599,57 +610,31 @@ async def media_message_handler(
             )
             return
 
-        # yt-dlp failures come back as an empty dict. Without metadata there is
-        # no real card, so send no download button and keep the original link.
-        if not metadata:
-            await set_reaction(update.message, REACTION_FAILED)
-            await status_msg.edit_text(
-                HtmlMessage(sender=sender)
-                .text(
-                    "Could not read this video's metadata; your original link was kept."
-                )
-                .render(),
-                parse_mode=PARSE_MODE_HTML,
-            )
-            return
-
         preview_access = rbac_service.check_access(
             user_id, chat_id, "preview_video", dry_run=True
         )
-        max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-        size = _metadata_size(metadata)
+        # Policy says daphne previews; capability says how large a file may be and whether
+        # this chat may preview at all. matcha owns the resulting upload-or-card rule.
+        caps = Capabilities(
+            max_upload_bytes=video_upload_limit_mb() * 1024 * 1024,
+            preview_allowed=preview_access.is_allowed(),
+        )
+        decision = video.delivery(caps)
+        await status_msg.delete()
 
-        if (
-            size is not None
-            and size <= max_upload_bytes
-            and preview_access.is_allowed()
-        ):
+        if isinstance(decision, Upload):
             # Charge preview_video quota
             rbac_service.check_access(user_id, chat_id, "preview_video")
-            await status_msg.delete()
-            await handle_video_link(
-                update, context, video_url, custom_metadata=metadata
-            )
-        else:
-            # Fallback to sending the video card
-            await status_msg.delete()
-            if size is not None and size > TG_HARD_LIMIT_BYTES:
-                reason = "Video is over Telegram's 2GiB limit"
-            elif size is not None and size > max_upload_bytes:
-                reason = f"Video is over {video_upload_limit_mb()} MB"
-            elif preview_access.is_rate_limited():
-                reason = "Video Preview Quota Exceeded (direct download only)"
-            else:
-                reason = "Video Details"
+            await handle_video_link(update, context, video)
+            return
 
-            await send_video_card(
-                update,
-                video_url,
-                metadata,
-                sender,
-                reason,
-            )
-            # A card is not an upload; keep the source message.
+        await send_video_card(
+            update,
+            video,
+            sender,
+            _card_reason(decision.reason, video, preview_access),
+        )
+        # A card is not an upload; keep the source message.
 
 
 async def download_button_callback(
@@ -672,7 +657,7 @@ async def download_button_callback(
     if not entry:
         await query.answer("Error: Video link has expired.", show_alert=True)
         return
-    url, metadata = entry
+    video = entry
 
     user_id = query.from_user.id if query.from_user else 0
     chat_id = query.message.chat.id if query.message else 0
@@ -688,7 +673,7 @@ async def download_button_callback(
     _active_card_downloads.add(short_id)
     try:
         await _run_card_download(
-            query, context, short_id, url, metadata, user_id, chat_id, sender
+            query, context, short_id, video, user_id, chat_id, sender
         )
     finally:
         _active_card_downloads.discard(short_id)
@@ -698,8 +683,7 @@ async def _run_card_download(
     query,
     context: TelegramContext,
     short_id: str,
-    url: str,
-    metadata: dict,
+    video: Video,
     user_id: int,
     chat_id: int,
     sender: Optional[str],
@@ -707,8 +691,8 @@ async def _run_card_download(
     # Acknowledge the callback query immediately to avoid loading animation on button
     await query.answer()
 
-    # Edit the card message to indicate progress and remove the buttons. The metadata
-    # came with the card, so the link is not looked up again.
+    # Edit the card message to indicate progress and remove the buttons. The resolved
+    # video came with the card, so the link is not looked up again.
     try:
         await query.edit_message_text(
             HtmlMessage(sender=sender).text("Preparing download...").render(),
@@ -719,7 +703,7 @@ async def _run_card_download(
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
     loop = asyncio.get_running_loop()
-    size = _metadata_size(metadata)
+    size = video.estimated_bytes
     if size is not None and size > TG_HARD_LIMIT_BYTES:
         try:
             await query.edit_message_text(
@@ -760,7 +744,11 @@ async def _run_card_download(
 
             async with download_slot(user_id, on_wait=_notify_queued):
                 video_path = await loop.run_in_executor(
-                    None, download_video, url, out_dir, _expected_duration(metadata)
+                    None,
+                    download_video,
+                    video.fetch_url,
+                    out_dir,
+                    video.expected_duration,
                 )
         except Exception as exc:
             logger.exception("Failed to download video")
@@ -810,9 +798,7 @@ async def _run_card_download(
         width, height, duration = await loop.run_in_executor(
             None, probe_video_dimensions, video_path
         )
-        caption = _video_caption_from_metadata(
-            metadata, url, video_path, duration, sender
-        )
+        caption = _video_caption(video, video_path, duration, sender)
 
         kwargs = {
             "chat_id": chat_id,

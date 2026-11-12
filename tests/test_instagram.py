@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from daphne.media_http import MediaTooLarge
+
 from daphne.instagram import (
     contains_instagram_link,
     extract_instagram_link,
@@ -122,11 +124,85 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         )
         delete.assert_awaited_once()
 
-    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.instagram.try_delete_message", autospec=True)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.bot.send_video_card", autospec=True)
+    @patch("daphne.instagram.video_upload_limit_mb", return_value=1)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_oversized_video_sends_card_and_keeps_original(
+        self, extract, _limit, card, stream, delete
+    ):
+        stream.side_effect = MediaTooLarge()
+        extract.return_value = {
+            "id": "ABC",
+            "type": "video",
+            "title": "Video by someone",
+            "uploader": "someone",
+            "formats": [{"url": "https://cdn.test/1.mp4"}],
+        }
+        await handle_instagram_links(self.update, self.context)
+        card.assert_awaited_once()
+        update, video, _sender, reason = card.await_args.args
+        self.assertIs(update, self.update)
+        self.assertEqual(video.platform, "instagram")
+        self.assertEqual(video.canonical_url, "https://www.instagram.com/p/DRZSlC7D3OT")
+        self.assertEqual(reason, "Video is over 1 MB")
+        delete.assert_not_awaited()
+
+    @patch("daphne.bot.handle_video_url", autospec=True)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_direct_download_failure_falls_back_to_the_video_pipeline(
+        self, extract, stream, fallback
+    ):
+        stream.side_effect = RuntimeError("boom")
+        extract.return_value = {
+            "id": "ABC",
+            "type": "video",
+            "title": "Video by someone",
+            "uploader": "someone",
+            "formats": [{"url": "https://cdn.test/1.mp4"}],
+        }
+        await handle_instagram_links(self.update, self.context)
+        fallback.assert_awaited_once_with(
+            self.update,
+            self.context,
+            "https://www.instagram.com/p/DRZSlC7D3OT",
+            "instagram",
+        )
+
+    @patch("daphne.bot.handle_video_url", autospec=True)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.instagram.video_upload_limit_mb", return_value=1)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_a_real_file_over_the_limit_falls_back_to_the_video_pipeline(
+        self, extract, _limit, stream, fallback
+    ):
+        async def fake_stream(client, url, output, limit):
+            output.write(b"video")
+
+        stream.side_effect = fake_stream
+        extract.return_value = {
+            "id": "ABC",
+            "type": "video",
+            "title": "Video by someone",
+            "uploader": "someone",
+            "formats": [{"url": "https://cdn.test/1.mp4"}],
+        }
+        with patch("daphne.instagram.os.path.getsize", return_value=2 * 1024 * 1024):
+            await handle_instagram_links(self.update, self.context)
+        fallback.assert_awaited_once_with(
+            self.update,
+            self.context,
+            "https://www.instagram.com/p/DRZSlC7D3OT",
+            "instagram",
+        )
+
+    @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("daphne.downloader.fetch_instagram_fallback_media", return_value=None)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_extraction_failure_fails_fast_no_video_fallback(
-        self, mock_extract, mock_yt_dlp_fallback, mock_handle_video_link
+        self, mock_extract, mock_yt_dlp_fallback, mock_handle_video_url
     ):
         from parth_dl.utils import DownloadError
 
@@ -140,7 +216,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         # parth-dl already failed to read — yt-dlp's own Instagram extractor
         # hits the same public endpoints and would just retry into the same
         # wall.
-        mock_handle_video_link.assert_not_called()
+        mock_handle_video_url.assert_not_called()
 
         self.context.bot.send_message.assert_called_once()
         _, kwargs = self.context.bot.send_message.call_args
@@ -150,23 +226,23 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
 
         self.update.message.set_reaction.assert_called_once()
 
-    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("daphne.downloader.fetch_instagram_fallback_media", return_value=None)
     @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
     async def test_no_data_returned_fails_fast_no_video_fallback(
-        self, mock_extract, mock_yt_dlp_fallback, mock_handle_video_link
+        self, mock_extract, mock_yt_dlp_fallback, mock_handle_video_url
     ):
         # Same fail-fast contract when extract() returns falsy instead of
         # raising, and the yt-dlp fallback also comes up empty.
         await handle_instagram_links(self.update, self.context)
 
-        mock_handle_video_link.assert_not_called()
+        mock_handle_video_url.assert_not_called()
         self.context.bot.send_message.assert_called_once()
 
-    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
     async def test_parth_dl_failure_recovers_via_yt_dlp_image_fallback(
-        self, mock_extract, mock_handle_video_link
+        self, mock_extract, mock_handle_video_url
     ):
         # This is the actual production case: parth-dl comes up empty for an
         # image post, but yt-dlp's own Instagram extractor (called with
@@ -187,7 +263,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         ):
             await handle_instagram_links(self.update, self.context)
 
-        mock_handle_video_link.assert_not_called()
+        mock_handle_video_url.assert_not_called()
         self.context.bot.send_message.assert_not_called()
         self.context.bot.send_photo.assert_called_once()
         _, kwargs = self.context.bot.send_photo.call_args
@@ -197,10 +273,10 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         # one author hashtag rather than splitting or being dropped.
         self.assertIn("#instagram #nyarumaa_cosplay", kwargs["caption"])
 
-    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
     async def test_no_uploader_skips_author_hashtag(
-        self, mock_extract, mock_handle_video_link
+        self, mock_extract, mock_handle_video_url
     ):
         fallback_data = {
             "id": "DRZSlC7D3OT",
@@ -222,10 +298,10 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#instagram", kwargs["caption"])
         self.assertNotIn("#unknown", kwargs["caption"])
 
-    @patch("daphne.bot.handle_video_link", new_callable=AsyncMock)
+    @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("parth_dl.extractors.MediaExtractor.extract", return_value=None)
     async def test_multi_word_and_non_ascii_uploader_hashtag(
-        self, mock_extract, mock_handle_video_link
+        self, mock_extract, mock_handle_video_url
     ):
         fallback_data = {
             "id": "DRZSlC7D3OT",

@@ -215,8 +215,9 @@ async def handle_bluesky_links(
             logger.warning("Bluesky photo send failed: %s", failure_reason(exc))
             await _report_failure(message, context, chat_id, sender, "send")
     elif video_url:
-        # Import handle_video_link here to avoid circular imports
+        # Import here to avoid circular imports
         from daphne.bot import handle_video_link
+        from daphne.video import from_metadata
 
         custom_metadata = {
             "title": post_text[:100] if post_text else "Bluesky Video",
@@ -224,8 +225,11 @@ async def handle_bluesky_links(
             "duration": None,
             "webpage_url": original_url,
         }
+        # The file is the CDN video; the link the user sees is the post.
         await handle_video_link(
-            update, context, video_url, custom_metadata=custom_metadata
+            update,
+            context,
+            from_metadata(video_url, custom_metadata, platform="bluesky"),
         )
         return
     else:

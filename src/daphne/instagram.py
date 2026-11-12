@@ -145,7 +145,7 @@ async def handle_instagram_links(
             "deleted, or Instagram is blocking the request.",
             url,
         )
-        # Do NOT fall back to handle_video_link here: yt-dlp's own Instagram
+        # Do NOT fall back to handle_video_url here: yt-dlp's own Instagram
         # extractor hits the same public post/API endpoints parth-dl already
         # tried (and we just tried it above), so the full yt-dlp
         # chain would just retry into the same wall at real cost (multiple
@@ -286,11 +286,15 @@ async def handle_instagram_links(
                     )
                 except MediaTooLarge:
                     from daphne.bot import send_video_card
+                    from daphne.video import from_metadata
 
                     await send_video_card(
                         update,
-                        url,
-                        {"title": title, "uploader": uploader, "webpage_url": url},
+                        from_metadata(
+                            url,
+                            {"title": title, "uploader": uploader, "webpage_url": url},
+                            platform="instagram",
+                        ),
                         sender,
                         f"Video is over {video_upload_limit_mb()} MB",
                     )
@@ -300,9 +304,9 @@ async def handle_instagram_links(
                         "Failed to download Instagram video from direct URL: %s", exc
                     )
                     # Try fallback to standard video link downloader
-                    from daphne.bot import handle_video_link
+                    from daphne.bot import handle_video_url
 
-                    await handle_video_link(update, context, url)
+                    await handle_video_url(update, context, url, "instagram")
                     return
 
                 # Check video upload limit
@@ -314,9 +318,9 @@ async def handle_instagram_links(
                         file_size,
                         max_upload_bytes,
                     )
-                    from daphne.bot import handle_video_link
+                    from daphne.bot import handle_video_url
 
-                    await handle_video_link(update, context, url)
+                    await handle_video_url(update, context, url, "instagram")
                     return
 
                 width, height, duration = probe_video_dimensions(video_path)
