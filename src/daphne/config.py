@@ -55,6 +55,15 @@ def video_upload_limit_mb() -> int:
     return max(1, limit)
 
 
+def upload_cap_bytes() -> int:
+    """The upload cap in bytes: the single source the delivery gate and stream limits read.
+
+    It lives here, next to the setting it derives from, so a leaf module can ask for the
+    cap without importing the bot that owns the delivery gate.
+    """
+    return video_upload_limit_mb() * 1024 * 1024
+
+
 def max_concurrent_downloads() -> int:
     """Maximum number of heavy downloads running across the whole bot."""
     value = app_config().get("max_concurrent_downloads", 3)

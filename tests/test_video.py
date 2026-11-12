@@ -161,6 +161,24 @@ class TestResolveChain(unittest.TestCase):
                 resolve(BILI)
         ytdlp.assert_not_called()
 
+    def test_an_out_of_range_part_is_never_retried_with_yt_dlp(self):
+        # The message is the instruction, so it must survive the fallback: yt-dlp would
+        # answer with a generic reason, or serve part 1 for a ?p=9 link.
+        with (
+            patch(
+                "daphne.bilibili.resolve_media",
+                side_effect=bilibili.PartOutOfRangeError(
+                    "This video has 2 parts, not 9"
+                ),
+            ),
+            patch("daphne.downloader.fetch_ytdlp_metadata") as ytdlp,
+        ):
+            with self.assertRaisesRegex(
+                bilibili.PartOutOfRangeError, "has 2 parts, not 9"
+            ):
+                resolve(BILI + "?p=9")
+        ytdlp.assert_not_called()
+
     def test_youtube_is_read_by_yt_dlp_alone(self):
         with (
             patch("daphne.bilibili.resolve_media") as native,

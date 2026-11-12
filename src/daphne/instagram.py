@@ -57,7 +57,8 @@ async def send_carousel_media(bot, chat_id, videos, caption, update, photos=()):
     once per single video when the album is refused.
     """
     # Local import: bot.py imports this module's handler, resolved at call time.
-    from daphne.bot import _charge_preview, upload_cap_bytes
+    from daphne.bot import _charge_preview
+    from daphne.config import upload_cap_bytes
 
     with tempfile.TemporaryDirectory() as directory:
         paths = []
@@ -360,8 +361,8 @@ async def handle_instagram_links(
                 decide_delivery,
                 download_slot,
                 send_video_card,
-                upload_cap_bytes,
             )
+            from daphne.config import upload_cap_bytes
             from daphne.video import from_metadata
             from matcha import Upload
             from daphne.media_http import content_length

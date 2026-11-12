@@ -115,7 +115,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_carousel_send_failure_keeps_original(
         self, extract, _limit, rbac, photos, videos, delete
@@ -144,7 +144,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.send_photos", new_callable=AsyncMock)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_mixed_carousel_sends_every_entry(
         self, extract, _limit, rbac, photos, videos, delete
@@ -189,7 +189,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch(
         "daphne.media_http.content_length", new=AsyncMock(return_value=2 * 1024 * 1024)
     )
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_an_over_limit_carousel_item_cards_the_video_set(
         self, extract, _limit, rbac, card, photos, videos, delete
@@ -223,7 +223,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.send_video_card", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_a_carousel_stream_over_the_cap_cards_the_whole_video_set(
         self, extract, _limit, rbac, card, stream, photos, delete
@@ -274,7 +274,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.stream_media", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_a_transport_failure_before_photos_leaves_them_unsent(
         self, extract, _limit, rbac, stream, photos, delete
@@ -312,7 +312,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch(
         "daphne.media_http.content_length", new=AsyncMock(return_value=2 * 1024 * 1024)
     )
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_oversized_video_cards_before_downloading(
         self, extract, _limit, rbac, card, stream, delete
@@ -344,7 +344,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.send_video_card", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=None))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_an_unpriceable_video_cards_instead_of_guessing(
         self, extract, _limit, rbac, card, stream, delete
@@ -374,7 +374,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.stream_media", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_a_cdnc_price_that_lied_cards_the_real_bytes(
         self, extract, _limit, rbac, stream, fallback
@@ -406,7 +406,7 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.stream_media", autospec=True)
     @patch("daphne.bot.rbac_service")
     @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
-    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("daphne.config.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_direct_download_failure_cards_instead_of_a_second_cycle(
         self, extract, _limit, rbac, stream, card

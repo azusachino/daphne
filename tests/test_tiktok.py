@@ -49,7 +49,7 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         }
         with (
             self._client(api),
-            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch("daphne.config.video_upload_limit_mb", return_value=1),
             patch("daphne.tiktok.stream_media", new=AsyncMock()) as stream,
             patch("daphne.bot.rbac_service") as rbac,
             patch("daphne.bot.send_video_card", autospec=True) as card,
@@ -82,7 +82,7 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         }
         with (
             self._client(api),
-            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch("daphne.config.video_upload_limit_mb", return_value=1),
             patch(
                 "daphne.tiktok.stream_media", new=AsyncMock(side_effect=MediaTooLarge())
             ),
@@ -114,7 +114,7 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         }
         with (
             self._client(api),
-            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch("daphne.config.video_upload_limit_mb", return_value=1),
             patch(
                 "daphne.tiktok.stream_media", new=AsyncMock(side_effect=RuntimeError())
             ),
@@ -145,7 +145,7 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         }
         with (
             self._client(api, MagicMock(content=b"small")),
-            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch("daphne.config.video_upload_limit_mb", return_value=1),
             patch("daphne.tiktok.stream_media", new=AsyncMock()),
             patch("daphne.bot.rbac_service") as rbac,
             patch("daphne.tiktok.probe_video_dimensions", return_value=(720, 1280, 10)),
@@ -178,7 +178,7 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
         }
         with (
             self._client(api),
-            patch("daphne.bot.video_upload_limit_mb", return_value=1),
+            patch("daphne.config.video_upload_limit_mb", return_value=1),
             patch("daphne.tiktok.stream_media", new=AsyncMock()) as stream,
             patch("daphne.bot.rbac_service") as rbac,
             patch("daphne.bot.send_video_card", autospec=True) as card,

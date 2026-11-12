@@ -41,7 +41,7 @@ flowchart TD
 
 | Order | Engine | What it does | Typical failure |
 | --- | --- | --- | --- |
-| 1 | Native `x/web-interface/view` | Title, owner, cover, total duration, every part and its duration, with the visitor cookies attached. Parsed by `matcha.platforms.bilibili.parse_view`. | HTTP 412 or code `-412` risk control, retried with backoff and one fresh visitor session; platform codes such as `-404` end it at once. |
+| 1 | Native `x/web-interface/view` | Title, owner, cover, total duration, every part with its duration and `cid`, with the visitor cookies attached. Parsed by `matcha.platforms.bilibili.parse_view`. | HTTP 412 or code `-412` risk control, retried with backoff and one fresh visitor session; platform codes such as `-404` end it at once. |
 | 2 | yt-dlp `--dump-json` | Reads title, uploader, duration and size; retried once with the site's headers. | Bilibili extractor broken upstream. |
 
 `view` answers a request that carries the visitor session (the `finger/spi` cookies plus a
@@ -55,7 +55,20 @@ site.
 The native engine also calls `x/player/playurl` with `fnval=4048` for the selected part's
 `cid`, and `matcha.platforms.bilibili.parse_playurl` prices the download from the chosen
 streams' bandwidth and the part's duration. So the size is known before any byte moves.
-A plan that cannot be priced is not an error: `plan=None` becomes a card, not a failure.
+`cid` is a required argument of matcha's description and comes from `MediaInfo.cid`, so no
+request is patched after the fact. A plan that cannot be priced is not an error:
+`plan=None` becomes a card, not a failure.
+
+One check stays here: matcha reports a `?p=` the body does not publish as `cid is None`,
+which reads like "the source published no cid". Comparing the paste against
+`len(info.parts)` raises `PartOutOfRangeError`, and that message -- "This video has N
+parts, not P" -- is the one failure the bot shows verbatim instead of reducing to a shared
+`Reason`, so the chain stops there and does not retry yt-dlp for it.
+
+A `?p=` on a body that publishes no pages at all is left unpriced on purpose: matcha's
+fallback cid is the body's own, which names part 1 whatever part was asked for (measured),
+and serving part 1 for a part-2 link is worse than a card. With no `?p=`, that same cid is
+the only part there is, so it prices normally.
 
 ### Delivery
 

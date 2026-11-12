@@ -21,13 +21,13 @@ from aiogram.types import (
 )
 import uuid
 
-from matcha import Capabilities, Delivery, Reason, Upload
+from matcha import Capabilities, Card, Delivery, MatchaError, Reason, Upload
 
 from daphne import bilibili
 from daphne.config import (
     max_concurrent_downloads,
     max_user_concurrent_downloads,
-    video_upload_limit_mb,
+    upload_cap_bytes,
 )
 from daphne.downloader import (
     download_video,
@@ -255,12 +255,7 @@ def _size_reason(size: int) -> str:
     """Why a known-size video is not uploaded: the site limit, or Telegram's own."""
     if size > TG_HARD_LIMIT_BYTES:
         return "Video is over Telegram's 2GiB limit"
-    return f"Video is over {video_upload_limit_mb()} MB"
-
-
-def upload_cap_bytes() -> int:
-    """The single source of the upload cap: the gate and every stream limit read it."""
-    return video_upload_limit_mb() * 1024 * 1024
+    return f"Video is over {upload_cap_bytes() // (1024 * 1024)} MB"
 
 
 async def _charge_preview(update: TelegramUpdate) -> None:
@@ -500,6 +495,12 @@ async def decide_delivery(
     bytes are actually delivered, so a failed download or a fallback retry never
     charges twice. A ``Card`` renders here and charges nothing -- its Download
     button charges ``download_video`` when pressed.
+
+    ``decide()`` raises a ``MatchaError`` -- ``PolicyError`` today -- when a policy makes
+    no ``auto_preview`` choice, and no matcha failure from the decision may escape this
+    gate: daphne states its own policy, so a raise here is this bot's bug, not the user's.
+    It cards the video instead, which claims nothing -- no size was priced, but the source
+    and its Download button work.
     """
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
@@ -512,7 +513,13 @@ async def decide_delivery(
         max_upload_bytes=upload_cap_bytes(),
         preview_allowed=preview_access.is_allowed(),
     )
-    decision = video.delivery(caps)
+    try:
+        decision = video.delivery(caps)
+    except MatchaError as exc:
+        # MatchaError, not PolicyError: the intent is that nothing the decision raises
+        # escapes this gate, and PolicyError is a subclass.
+        logger.error("Delivery decision unavailable: %s", str(exc))
+        decision = Card(Reason.NO_PLAN)
     if isinstance(decision, Upload):
         return decision
     await send_video_card(
@@ -665,6 +672,18 @@ async def media_message_handler(
             await status_msg.edit_text(
                 HtmlMessage(sender=sender)
                 .text(f"{reason_text(exc.reason)} Your original link was kept.")
+                .render(),
+                parse_mode=PARSE_MODE_HTML,
+            )
+            return
+        except bilibili.PartOutOfRangeError as exc:
+            # The one failure whose own text is the instruction: it names the real part
+            # count, so it is shown rather than reduced to a shared reason.
+            logger.info("Bilibili part selection out of range: %s", exc)
+            await set_reaction(update.message, REACTION_FAILED)
+            await status_msg.edit_text(
+                HtmlMessage(sender=sender)
+                .text(f"{exc}. Your original link was kept.")
                 .render(),
                 parse_mode=PARSE_MODE_HTML,
             )

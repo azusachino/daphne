@@ -106,8 +106,8 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                             decide_delivery,
                             download_slot,
                             send_video_card,
-                            upload_cap_bytes,
                         )
+                        from daphne.config import upload_cap_bytes
                         from daphne.video import from_metadata
                         from matcha import Upload
 

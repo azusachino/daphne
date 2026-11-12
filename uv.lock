@@ -308,7 +308,7 @@ requires-dist = [
     { name = "aiogram", specifier = ">=3.31.0" },
     { name = "gallery-dl", specifier = ">=1.32.17" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "matcha", git = "https://github.com/azusachino/matcha.git?tag=v0.2.0" },
+    { name = "matcha", git = "https://github.com/azusachino/matcha.git?tag=v0.3.0" },
     { name = "parth-dl", specifier = ">=1.2.1" },
 ]
 
@@ -425,8 +425,8 @@ wheels = [
 
 [[package]]
 name = "matcha"
-version = "0.2.0"
-source = { git = "https://github.com/azusachino/matcha.git?tag=v0.2.0#ea0741f4363cc5db4dca4c249cf577ef28b58da2" }
+version = "0.3.0"
+source = { git = "https://github.com/azusachino/matcha.git?tag=v0.3.0#ea721f5f72a3190e3a6e86b66a024a745543f0d7" }
 
 [[package]]
 name = "multidict"

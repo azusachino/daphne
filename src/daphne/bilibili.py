@@ -82,6 +82,15 @@ class UnsupportedError(BilibiliError):
     """A Bilibili work the native path refuses: bangumi episodes and paid content."""
 
 
+class PartOutOfRangeError(BilibiliError):
+    """A ``?p=`` the body does not publish. The message names the real part count.
+
+    It is its own type because the message *is* the instruction, so the caller that shows
+    failures to the user has to let it through instead of replacing it with a generic
+    reason or retrying the link with the next engine.
+    """
+
+
 @dataclass(frozen=True)
 class Media:
     """What one link resolved to: identity, what the source published, and its price."""
@@ -278,40 +287,53 @@ def _canonical(ref: WorkRef) -> str:
         raise BilibiliError("This Bilibili link has no canonical form") from exc
 
 
-def _cid(body: dict[str, Any], ref: WorkRef) -> Optional[int]:
-    """The selected part's cid, read from the view payload that also carries the pages.
+def _check_part(ref: WorkRef, info: MediaInfo) -> None:
+    """Report an out-of-range ``?p=`` as the user's mistake, not as an unpublished cid.
 
-    `matcha.PartInfo` keeps the page index, title and duration; the cid stays in the
-    payload, so the caller that performed the request reads it from there.
+    matcha answers a part the body does not publish with ``cid is None``, which reads the
+    same as "the source published no cid". Only the part count can tell the two apart, so
+    the count is what the user is told -- the one bounds check daphne still owns, and the
+    one failure whose text is the instruction.
     """
-    pages = [page for page in (body.get("data") or {}).get("pages") or [] if page]
-    if not pages:
+    if ref.part is not None and info.parts and not 1 <= ref.part <= len(info.parts):
+        raise PartOutOfRangeError(
+            f"This video has {len(info.parts)} parts, not {ref.part}"
+        )
+
+
+def _part_cid(ref: WorkRef, info: MediaInfo) -> Optional[int]:
+    """The cid worth pricing, or ``None`` when daphne must not price this selection.
+
+    ``MediaInfo.cid`` falls back to the body's own top-level cid only when the body
+    published no pages at all, and that number names part 1 whatever part was asked for
+    (measured). A ``?p=`` on such a body therefore has no cid that can be trusted: pricing
+    it would serve part 1 for a part-2 link, which is worse than an unpriced card, because
+    daphne cannot claim a part count it never read.
+    """
+    if ref.part is not None and not info.parts:
         return None
-    if ref.part:
-        if not 1 <= ref.part <= len(pages):
-            raise BilibiliError(f"This video has {len(pages)} parts, not {ref.part}")
-        page = pages[ref.part - 1]
-    else:
-        page = pages[0]
-    cid = page.get("cid")
-    return int(cid) if cid else None
+    return info.cid
 
 
-def _view(client: httpx.Client, ref: WorkRef) -> tuple[MediaInfo, Optional[int]]:
-    """Read `x/web-interface/view`: metadata through matcha, the part's cid alongside."""
+def _view(client: httpx.Client, ref: WorkRef) -> MediaInfo:
+    """Read `x/web-interface/view`: metadata and the parts' cids, through matcha."""
     body = _perform(client, api.view_request(ref, Session(_cookies())), session=True)
     info = api.parse_view(body, ref, canonical=_canonical(ref))
-    return info, _cid(body, ref)
+    _check_part(ref, info)
+    return info
 
 
-def _plan(client: httpx.Client, ref: WorkRef, cid: int, info: MediaInfo) -> StreamPlan:
-    """Price the DASH download with `fnval=4048`, before any byte moves."""
-    request = api.playurl_request(ref, Session(_cookies()), qn=MAX_QN)
-    # The description leaves the cid to the caller, which is the only side that has it.
-    params = tuple((k, v) for k, v in request.params if k != "cid") + (
-        ("cid", str(cid)),
-    )
-    body = _perform(client, replace(request, params=params), session=True)
+def _plan(client: httpx.Client, ref: WorkRef, info: MediaInfo) -> StreamPlan:
+    """Price the DASH download with `fnval=4048`, before any byte moves.
+
+    The cid is authoritative and comes from ``MediaInfo.cid``: matcha's description sends
+    it as a required parameter, so nothing here edits the request it returned.
+    """
+    cid = _part_cid(ref, info)
+    if cid is None:
+        raise BilibiliError("Bilibili returned no cid for this part")
+    request = api.playurl_request(ref, Session(_cookies()), cid=cid, qn=MAX_QN)
+    body = _perform(client, request, session=True)
     return api.parse_playurl(body, duration_s=info.duration_s)
 
 
@@ -324,13 +346,13 @@ def resolve_media(url: str, client: Optional[httpx.Client] = None) -> Media:
     with _open(client) as open_client:
         ref = _ref(open_client, url)
         _ensure_visitor_session(open_client)
-        info, cid = _view(open_client, ref)
+        info = _view(open_client, ref)
         plan = None
-        if cid is None:
-            logger.info("Bilibili view carried no cid; the plan is unpriced.")
+        if _part_cid(ref, info) is None:
+            logger.info("Bilibili view carried no cid this link can trust; unpriced.")
         else:
             try:
-                plan = _plan(open_client, ref, cid, info)
+                plan = _plan(open_client, ref, info)
             except (ApiError, BilibiliError, httpx.HTTPError) as exc:
                 # A refused or unreachable plan is a card, not a failure.
                 logger.info("Bilibili plan unavailable: %s", describe_error(exc))
@@ -444,10 +466,8 @@ def _download_plan(client: httpx.Client, ref: WorkRef) -> StreamPlan:
     expire, and a queued download can start long after its price was quoted.
     """
     _ensure_visitor_session(client)
-    info, cid = _view(client, ref)
-    if cid is None:
-        raise BilibiliError("Bilibili returned no cid for this part")
-    plan = _plan(client, ref, cid, info)
+    info = _view(client, ref)
+    plan = _plan(client, ref, info)
     if plan.video is None or plan.audio is None:
         raise BilibiliError("Bilibili returned no DASH streams for this video")
     return plan
