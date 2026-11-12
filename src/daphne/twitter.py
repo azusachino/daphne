@@ -15,7 +15,7 @@ from daphne.tg import (
     send_photo_or_document,
 )
 
-from daphne.config import video_upload_limit_mb
+from daphne.bot import upload_cap_bytes
 from daphne.media_http import stream_media
 from daphne.messages import (
     HtmlMessage,
@@ -199,7 +199,7 @@ async def send_video_helper(
         logger.warning(
             f"Failed to send video by URL {url}: {e}. Retrying by downloading bytes..."
         )
-        video_bytes = await download_bytes(url, video_upload_limit_mb() * 1024 * 1024)
+        video_bytes = await download_bytes(url, upload_cap_bytes())
         bio = io.BytesIO(video_bytes)
         bio.name = "video.mp4"
         await bot.send_video(
@@ -222,7 +222,7 @@ async def send_animation_helper(
         logger.warning(
             f"Failed to send animation by URL {url}: {e}. Retrying by downloading bytes..."
         )
-        gif_bytes = await download_bytes(url, video_upload_limit_mb() * 1024 * 1024)
+        gif_bytes = await download_bytes(url, upload_cap_bytes())
         bio = io.BytesIO(gif_bytes)
         bio.name = "animation.gif"
         await bot.send_animation(
@@ -347,9 +347,7 @@ async def send_videos(bot, chat_id, urls, caption, parse_mode, video_meta):
             try:
                 files = [
                     image_input(
-                        await download_bytes(
-                            url, video_upload_limit_mb() * 1024 * 1024
-                        ),
+                        await download_bytes(url, upload_cap_bytes()),
                         f"video_{i}.mp4",
                     )
                     for i, url in enumerate(batch)
