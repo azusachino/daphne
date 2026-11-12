@@ -122,9 +122,11 @@ def canonical_link(url: str) -> str:
 def resolve(url: str) -> Video:
     """Read a link through the metadata chain, then price the download.
 
-    Raises `Unreadable` when no engine could read the link, and
-    `bilibili.RateLimitedError` when risk control refused every attempt: the other engines
-    reach the same host, so trying them would only add to the limit.
+    Raises `Unreadable` when no engine could read the link,
+    `bilibili.RateLimitedError` when risk control refused every attempt, and
+    `bilibili.PartOutOfRangeError` when the paste asks for a part the video does not
+    publish: the other engines reach the same host, so trying them would only add to the
+    limit -- or, for a part selection, answer with part 1.
     """
     ref = video_ref(url)
     if ref is not None and ref.platform == "bilibili":
@@ -141,7 +143,7 @@ def resolve_or_blank(url: str, *, platform: str) -> Video:
     """
     try:
         return resolve(url)
-    except (Unreadable, bilibili.RateLimitedError) as exc:
+    except (Unreadable, bilibili.RateLimitedError, bilibili.PartOutOfRangeError) as exc:
         logger.info("Resolving %s as a blank video: %s", platform, exc)
         return from_metadata(url, {}, platform=platform)
 
@@ -208,7 +210,11 @@ def _resolve_bilibili(url: str) -> Video:
             plan=media.plan,
             engine="bilibili-view",
         )
-    except bilibili.RateLimitedError:
+    except bilibili.RateLimitedError, bilibili.PartOutOfRangeError:
+        # Neither is worth trying elsewhere: the first is the host refusing this client,
+        # the second is the paste's own part selection, and only its message ("This video
+        # has N parts, not P") can tell the user what to fix. yt-dlp would answer with a
+        # generic reason -- or, worse, with part 1.
         raise
     except Exception as exc:
         reason = bilibili.reason_for(exc)
