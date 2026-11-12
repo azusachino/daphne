@@ -32,6 +32,10 @@ RUN LUX_VERSION="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github
 
 FROM base AS builder
 
+# `matcha` is a git dependency (see pyproject.toml), and uv shells out to git to fetch it.
+# It is installed here only, so the runtime image stays without a git client.
+RUN apk add --no-cache git
+
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
 

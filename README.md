@@ -11,7 +11,7 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Lint & format: ruff](https://img.shields.io/badge/lint%20%26%20format-ruff-000000?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![Package manager: uv](https://img.shields.io/badge/deps-uv-DE5FE9?logo=uv&logoColor=white)](https://github.com/astral-sh/uv)
-[![Tests](https://img.shields.io/badge/tests-212%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-258%20passing-brightgreen)](tests/)
 
 </div>
 
@@ -32,14 +32,14 @@ Twitter/X · Pixiv · Bluesky · TikTok · Instagram · Bilibili · YouTube — 
 
 ## Why Daphne
 
-Daphne turns a pasted link into media in the chat. It uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` and its fallbacks for YouTube, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
+Daphne turns a pasted link into media in the chat. It uses **purpose-built handlers per platform** for clean native rendering, `yt-dlp` and its fallbacks for YouTube, and its own download chain for Bilibili ([docs/bilibili-download-chain.md](docs/bilibili-download-chain.md)). Link identity, the canonical URL a caption prints, the Bilibili request/parse layer and the upload-or-card rule come from [`matcha`](../matcha), the pure library daphne shares with suzuran. It has **no database**: secrets live in the environment, settings in a single `config.toml` (see [RBAC.md](RBAC.md)), and the only on-disk state is a short-lived Bilibili media cache in the temp directory.
 
 ## Features
 
 - **🔗 Paste a link** — Twitter/X, Pixiv, Bluesky, Instagram, TikTok, YouTube, Bilibili, and single yande.re, Konachan, lolibooru, or Danbooru post links convert in the chat. Nothing else is needed.
 - **🎯 Per-platform handlers** — photos, GIFs, videos, and carousels render natively instead of dumping a link. X photos and videos are grouped in separate albums where possible; oversized photos are sent as files, grouped separately when possible. Multiple X GIFs backed by MP4 can be grouped as videos; other GIFs stay separate animations.
 - **🎬 Video** — YouTube through `yt-dlp` (two passes), then `you-get` and `lux`. A file that is shorter than its metadata says is retried.
-- **📺 Bilibili** — its own chain: disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last). Every engine's file must pass the duration check. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
+- **📺 Bilibili** — metadata from the player's own `view` endpoint (title, uploader, cover, duration, every part), read with the visitor cookies Bilibili expects. The download is priced from `playurl` **before** it starts, so a small video uploads straight into the chat and a large one keeps its card. The chain is disk cache → native player API (480p anonymous) → yt-dlp → you-get → lux → yutto (last), and every engine's file must pass the duration check. See [docs/bilibili-download-chain.md](docs/bilibili-download-chain.md).
 - **🃏 Media card** — when the size is unknown or too large for a direct send, the bot posts a card with title, uploader, duration, and **Download video** and **Open source** buttons.
 - **🔐 Role-based access control** — per user and per chat, configured statically in `config.toml`, with quotas per permission. See [RBAC.md](RBAC.md).
 - **🚦 Concurrency guard** — global and per-user download limits, so one large transfer never starves the others. Users see a _Queued…_ notice.
@@ -55,7 +55,7 @@ Daphne turns a pasted link into media in the chat. It uses **purpose-built handl
 | **Twitter / X**     | FxTwitter API                                | Photos, GIFs, videos, Articles (preview + up to 3 media) |
 | **Instagram**       | `parth-dl` (GraphQL), `yt-dlp` fallback      | Images, carousels, reels                                 |
 | **YouTube**         | `yt-dlp` (two passes), then `you-get`, `lux` | Video                                                    |
-| **Bilibili · b23**  | Native API → yt-dlp → you-get → lux → yutto  | Video (480p anonymous)                                   |
+| **Bilibili · b23**  | `view` + `playurl` price, then native → yt-dlp → you-get → lux → yutto | Video (480p anonymous)                                   |
 | **Danbooru family** | gallery-dl (single post links) | Images from yande.re, Konachan, lolibooru and Danbooru post pages |
 | **Pixiv**           | Pixiv API; pixiv.cat and CDN; gallery-dl with an owner login for age-restricted works | Photos and media groups |
 | **Bluesky**         | XRPC identity + HLS parsing                  | Image carousels, videos                                  |
@@ -172,6 +172,7 @@ make ready    # fmt + lint + test
 ## Architecture
 
 - **Python 3.14**, `aiogram`, polling-based.
+- **Shared link pipeline**: [`matcha`](https://github.com/azusachino/matcha) (pinned by tag in `pyproject.toml`) owns link identity, the canonical URL, the Bilibili request descriptions and parsers, the error vocabulary and the upload-or-card rule. `src/daphne/video.py` and `src/daphne/bilibili.py` are the I/O half.
 - **Stateless**: no database; secrets in env, everything else in `config.toml`. The Bilibili cache lives in the temp directory.
 - Deployed as a systemd user service or a Podman/Docker stack with a local Bot API sidecar (TZ `Asia/Tokyo`, no token-bearing HTTP logs).
 

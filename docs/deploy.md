@@ -37,11 +37,13 @@ make image-build     # builds daphne:latest with the Dockerfile
 make verify          # runs the image's --help and checks the banner
 ```
 
-The Dockerfile builds from public registries only. Two things are fetched at build
-time: the lux release (latest, checked against its checksums file) and the Python
-environment from `uv.lock`. yt-dlp, yutto and you-get are not in the image's lock; they
-run through `uvx` and are refreshed from PyPI at each bot start. A bot that starts
-without network can still run, with the last cached tool versions.
+The Dockerfile builds from public registries only. Three things are fetched at build
+time: the lux release (latest, checked against its checksums file), the Python
+environment from `uv.lock`, and `matcha` — the shared link pipeline — from its public
+GitHub tag over HTTPS, so the build needs no credentials. yt-dlp, yutto and you-get are
+not in the image's lock; they run through `uvx` and are refreshed from PyPI at each bot
+start. A bot that starts without network can still run, with the last cached tool
+versions.
 
 ## 3. Run with compose
 

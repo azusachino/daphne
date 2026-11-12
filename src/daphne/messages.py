@@ -4,6 +4,8 @@ import unicodedata
 from importlib.metadata import PackageNotFoundError, version
 from typing import Optional
 
+from matcha import Reason
+
 
 PARSE_MODE_HTML = "HTML"
 
@@ -43,6 +45,28 @@ def author_tag(value: object) -> Optional[str]:
         return None
     slug = slugify_tag(value)
     return slug or None
+
+
+# What a user reads when a link did not become media. One phrasing per shared reason, so
+# a new platform code only has to pick a Reason and never invent wording of its own.
+REASON_TEXT: dict[Reason, str] = {
+    Reason.NOT_FOUND: "This video is gone (removed, or never existed).",
+    Reason.AUTH_REQUIRED: "This video needs a Bilibili account (login or premium) this bot does not have.",
+    Reason.PREMIUM_ONLY: "This video is available to Bilibili premium members only.",
+    Reason.REGION_BLOCKED: "This video is not available in the server's region.",
+    Reason.RATE_LIMITED: "Bilibili is rate-limiting this server right now; try again in a few minutes.",
+    Reason.TOO_LARGE: "This video is too large to upload here.",
+    Reason.NO_PLAN: "The size of this video could not be worked out.",
+    Reason.NO_ACCESS: "This chat may not preview videos; use the download button.",
+    Reason.MANUAL_POLICY: "This bot does not upload automatically.",
+    Reason.EXTRACTOR_FAILED: "The platform answered in a way this bot could not use.",
+    Reason.NETWORK: "The platform could not be reached.",
+}
+
+
+def reason_text(reason: Reason) -> str:
+    """The user-facing sentence for a shared reason."""
+    return REASON_TEXT.get(reason, REASON_TEXT[Reason.EXTRACTOR_FAILED])
 
 
 def bot_version() -> str:

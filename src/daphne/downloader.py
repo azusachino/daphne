@@ -628,15 +628,12 @@ def probe_video_dimensions(
         return None, None, None
 
 
-def fetch_video_metadata(url: str) -> dict:
-    if is_bilibili_url(url):
-        try:
-            return bilibili.fetch_bilibili_metadata(url)
-        except Exception as exc:
-            logger.warning(
-                "Native Bilibili metadata failed, trying yt-dlp: %s",
-                bilibili.describe_error(exc),
-            )
+def fetch_ytdlp_metadata(url: str) -> dict:
+    """Read one link with yt-dlp `--dump-json`. Empty when yt-dlp could not read it.
+
+    This is the fallback engine of the metadata chain in `daphne.video`; it is not a
+    Bilibili-specific reader, so a Bilibili link is retried with the site's headers.
+    """
     base = [
         *YT_DLP_CMD,
         "--dump-json",
@@ -656,11 +653,12 @@ def fetch_video_metadata(url: str) -> dict:
                 raise RuntimeError(f"yt-dlp exited with {code}")
             data = json.loads(stdout)
             return {
+                "id": data.get("id", ""),
                 "title": data.get("title", ""),
                 "uploader": data.get("uploader", ""),
                 "duration": data.get("duration"),
                 "thumbnail": data.get("thumbnail"),
-                "webpage_url": sanitize_video_url(data.get("webpage_url", url)),
+                "webpage_url": data.get("webpage_url", url),
                 "width": data.get("width"),
                 "height": data.get("height"),
                 "filesize": data.get("filesize"),
