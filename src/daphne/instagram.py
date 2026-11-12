@@ -12,7 +12,6 @@ from daphne.tg import TelegramContext, TelegramUpdate
 from daphne.messages import HtmlMessage, PARSE_MODE_HTML, author_tag, sender_attribution
 from daphne.twitter import send_photos, try_delete_message
 from daphne.downloader import probe_video_dimensions
-from daphne.config import video_upload_limit_mb
 from daphne.media_http import MediaTooLarge, stream_media
 
 logger = logging.getLogger(__name__)
@@ -40,16 +39,23 @@ def extract_instagram_link(text: str) -> str | None:
     return None
 
 
-async def send_carousel_videos(bot, chat_id, urls, caption):
-    """Stream every item to disk under the configured limit, then group videos."""
+async def send_carousel_videos(bot, chat_id, videos, caption, update):
+    """Stream every priced item to disk under the cap, then group videos.
+
+    The gate already approved each item; this only fetches bytes and sends. The
+    preview quota charges once per successfully delivered group.
+    """
+    # Local import: bot.py imports this module's handler, resolved at call time.
+    from daphne.bot import _charge_preview, upload_cap_bytes
+
     with tempfile.TemporaryDirectory() as directory:
         paths = []
         async with httpx.AsyncClient() as client:
-            for index, url in enumerate(urls):
+            for index, video in enumerate(videos):
                 path = os.path.join(directory, f"{index}.mp4")
                 with open(path, "wb") as output:
                     await stream_media(
-                        client, url, output, video_upload_limit_mb() * 1024 * 1024
+                        client, video.fetch_url, output, upload_cap_bytes()
                     )
                 paths.append(path)
         for start in range(0, len(paths), 10):
@@ -67,6 +73,7 @@ async def send_carousel_videos(bot, chat_id, urls, caption):
                 ]
                 try:
                     await bot.send_media_group(chat_id=chat_id, media=media)
+                    await _charge_preview(update)
                     continue
                 except TelegramBadRequest as exc:
                     logger.warning("Instagram video album refused: %s", exc.message)
@@ -78,6 +85,7 @@ async def send_carousel_videos(bot, chat_id, urls, caption):
                     parse_mode=PARSE_MODE_HTML,
                     supports_streaming=True,
                 )
+            await _charge_preview(update)
 
 
 async def handle_instagram_links(
@@ -197,7 +205,17 @@ async def handle_instagram_links(
     if media_type == "carousel" and entries:
         photos = []
         videos = []
-        from daphne.bot import REACTION_FAILED, download_slot, set_reaction
+        # Local imports: bot.py imports this module's handler, resolved at call
+        # time to avoid the cycle.
+        from daphne.bot import (
+            REACTION_FAILED,
+            decide_delivery,
+            download_slot,
+            set_reaction,
+        )
+        from daphne.media_http import content_length
+        from daphne.video import from_metadata
+        from matcha import Upload
 
         try:
             for entry in entries:
@@ -206,15 +224,50 @@ async def handle_instagram_links(
                     raise ValueError("Instagram carousel contains an unavailable item")
                 target = photos if entry["kind"] == "image" else videos
                 target.append(formats[0]["url"])
+            # Price and gate every video item before any byte is fetched. One
+            # card-able item cards the whole video set -- a half-delivered group
+            # is worse than a card -- and the card already says why. Photos are
+            # not preview-gated by design.
+            async with httpx.AsyncClient() as client:
+                priced = [
+                    from_metadata(
+                        item_url,
+                        {
+                            "title": title,
+                            "uploader": uploader,
+                            "webpage_url": url,
+                            "size": await content_length(
+                                client,
+                                item_url,
+                                headers={"Referer": "https://www.instagram.com/"},
+                            ),
+                        },
+                        platform="instagram",
+                    )
+                    for item_url in videos
+                ]
+            for video in priced:
+                if not isinstance(await decide_delivery(update, video, sender), Upload):
+                    # The gate rendered the card for this item. Deliver the
+                    # photos, keep the original message, and stop.
+                    if photos:
+                        await send_photos(
+                            context.bot, chat_id, photos, caption, PARSE_MODE_HTML
+                        )
+                    return
             user_id = update.effective_user.id if update.effective_user else 0
             async with download_slot(user_id):
                 if photos:
                     await send_photos(
                         context.bot, chat_id, photos, caption, PARSE_MODE_HTML
                     )
-                if videos:
+                if priced:
                     await send_carousel_videos(
-                        context.bot, chat_id, videos, "" if photos else caption
+                        context.bot,
+                        chat_id,
+                        priced,
+                        "" if photos else caption,
+                        update,
                     )
         except Exception:
             logger.exception("Instagram carousel delivery failed")
@@ -255,10 +308,19 @@ async def handle_instagram_links(
         if formats:
             video_url = formats[0]["url"]
 
-            from daphne.bot import decide_delivery
-            from daphne.media_http import content_length
+            # Local imports: bot.py imports this module's handler, resolved at
+            # call time to avoid the cycle.
+            from daphne.bot import (
+                _charge_preview,
+                _size_reason,
+                decide_delivery,
+                download_slot,
+                send_video_card,
+                upload_cap_bytes,
+            )
             from daphne.video import from_metadata
             from matcha import Upload
+            from daphne.media_http import content_length
 
             # Price the direct file before downloading it: a HEAD gives the byte
             # size when the CDN states one, and the delivery gate decides
@@ -310,7 +372,7 @@ async def handle_instagram_links(
                                     client,
                                     video_url,
                                     f,
-                                    video_upload_limit_mb() * 1024 * 1024,
+                                    upload_cap_bytes(),
                                 )
                     logger.info(
                         "Instagram handler: video download completed. File size: %d bytes",
@@ -362,6 +424,7 @@ async def handle_instagram_links(
 
                 with open(video_path, "rb") as video_file:
                     await context.bot.send_video(video=video_file, **kwargs)
+                await _charge_preview(update)
                 success = True
 
     if success:

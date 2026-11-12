@@ -258,6 +258,26 @@ def _size_reason(size: int) -> str:
     return f"Video is over {video_upload_limit_mb()} MB"
 
 
+def upload_cap_bytes() -> int:
+    """The single source of the upload cap: the gate and every stream limit read it."""
+    return video_upload_limit_mb() * 1024 * 1024
+
+
+async def _charge_preview(update: TelegramUpdate) -> None:
+    """Charge the preview quota once bytes actually went out, never before.
+
+    Charging at send time (not at the gate's decision) means a failed download or a
+    fallback retry never consumes quota for an upload that did not happen. A charge
+    failure is logged, never raised into the send path.
+    """
+    user_id = update.effective_user.id if update.effective_user else 0
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    try:
+        rbac_service.check_access(user_id, chat_id, "preview_video")
+    except Exception as exc:
+        logger.warning("preview_video charge failed: %s", failure_reason(exc))
+
+
 def _card_reason(reason: Reason, video: Video, preview_access) -> str:
     """The card's heading, from the shared reason vocabulary rather than from prose.
 
@@ -270,7 +290,7 @@ def _card_reason(reason: Reason, video: Video, preview_access) -> str:
     if reason is Reason.NO_ACCESS:
         if preview_access.is_rate_limited():
             return "Video Preview Quota Exceeded (direct download only)"
-        return "Video Details"
+        return "Preview Not Allowed (direct download only)"
     if reason is Reason.NO_PLAN:
         return "Video Details"
     return reason_text(reason)
@@ -464,6 +484,7 @@ async def _upload_resolved_video(
                 parse_mode=PARSE_MODE_HTML,
             )
             return
+        await _charge_preview(update)
 
     await status_msg.delete()
     await delete_original_message(update)
@@ -472,13 +493,13 @@ async def _upload_resolved_video(
 async def decide_delivery(
     update: TelegramUpdate, video: Video, sender: Optional[str]
 ) -> Delivery:
-    """The one delivery gate: matcha decides upload-or-card, RBAC charges on upload.
+    """The one delivery gate: matcha decides upload-or-card from RBAC and the cap.
 
     Every handler that resolved media passes through here before any byte is fetched
-    or sent. An ``Upload`` answer charges the ``preview_video`` quota; a ``Card`` is
-    rendered here and charges nothing -- its Download button charges
-    ``download_video`` when pressed. Handlers that fetched their own bytes upload
-    them themselves once this gate answers ``Upload``.
+    or sent. The decision is policy only -- the ``preview_video`` charge lands when
+    bytes are actually delivered, so a failed download or a fallback retry never
+    charges twice. A ``Card`` renders here and charges nothing -- its Download
+    button charges ``download_video`` when pressed.
     """
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
@@ -488,13 +509,11 @@ async def decide_delivery(
     # Policy says daphne previews; capability says how large a file may be and whether
     # this chat may preview at all. matcha owns the resulting upload-or-card rule.
     caps = Capabilities(
-        max_upload_bytes=video_upload_limit_mb() * 1024 * 1024,
+        max_upload_bytes=upload_cap_bytes(),
         preview_allowed=preview_access.is_allowed(),
     )
     decision = video.delivery(caps)
     if isinstance(decision, Upload):
-        # Charge preview_video quota
-        rbac_service.check_access(user_id, chat_id, "preview_video")
         return decision
     await send_video_card(
         update, video, sender, _card_reason(decision.reason, video, preview_access)

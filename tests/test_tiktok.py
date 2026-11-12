@@ -155,5 +155,5 @@ class TestTikTokHandler(unittest.IsolatedAsyncioTestCase):
             rbac.check_access.return_value = denied
             await handle_tiktok_links(self.update, self.context)
         reason = card.await_args.args[3]
-        self.assertEqual(reason, "Video Details")
+        self.assertEqual(reason, "Preview Not Allowed (direct download only)")
         stream.assert_not_called()

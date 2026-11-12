@@ -18,8 +18,13 @@ async def content_length(
 
     Sources that stream or chunk dynamically return nothing usable; the caller
     treats ``None`` as unpriced and the delivery gate cards rather than guesses.
+    A URL that cannot be verified public is equally unpriced, not an error:
+    pricing must never crash a delivery path.
     """
-    await asyncio.to_thread(check_public_url, url)
+    try:
+        await asyncio.to_thread(check_public_url, url)
+    except ValueError:
+        return None
     try:
         resp = await client.head(
             url, headers=headers, follow_redirects=True, timeout=timeout

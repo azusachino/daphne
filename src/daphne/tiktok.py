@@ -8,7 +8,6 @@ from daphne.tg import TelegramContext, TelegramUpdate, failure_reason
 from daphne.messages import PARSE_MODE_HTML, sender_attribution
 from daphne.twitter import try_delete_message
 from daphne.downloader import probe_video_dimensions, format_video_caption
-from daphne.config import video_upload_limit_mb
 from daphne.media_http import MediaTooLarge, stream_media
 
 logger = logging.getLogger(__name__)
@@ -98,11 +97,15 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
 
                     # Download video file
                     if video_url:
+                        # Local imports: bot.py imports this module's handler, so the
+                        # dependency is resolved at call time to avoid a cycle.
                         from daphne.bot import (
+                            _charge_preview,
                             _size_reason,
                             decide_delivery,
                             download_slot,
                             send_video_card,
+                            upload_cap_bytes,
                         )
                         from daphne.video import from_metadata
                         from matcha import Upload
@@ -135,7 +138,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                 "TikTok handler: downloading video bytes from direct URL %s",
                                 video_url,
                             )
-                            max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
+                            max_upload_bytes = upload_cap_bytes()
                             user_id = (
                                 update.effective_user.id if update.effective_user else 0
                             )
@@ -184,6 +187,7 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
 
                             with open(video_path, "rb") as video_file:
                                 await context.bot.send_video(video=video_file, **kwargs)
+                            await _charge_preview(update)
                             success = True
                 else:
                     logger.warning(

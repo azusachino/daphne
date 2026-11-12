@@ -26,7 +26,7 @@ BILI = "https://www.bilibili.com/video/BV1abc"
 
 
 def _video(size=None, *, title="Video", uploader="Uploader", duration=90, url=BILI):
-    """A resolved video, the shape `handle_video_link` now receives."""
+    """A resolved video, the shape `_upload_resolved_video` now receives."""
     plan = (
         None
         if size is None
@@ -302,7 +302,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.video_upload_limit_mb", return_value=512)
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=513 * 1024 * 1024)
-    async def test_handle_video_link_cards_the_real_bytes_after_download(
+    async def test__upload_resolved_video_cards_the_real_bytes_after_download(
         self, mock_getsize, mock_download, mock_limit
     ):
         # The upload-or-card decision already happened before this ran, so the only size
@@ -332,7 +332,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.bot.probe_video_dimensions", return_value=(1920, 1080, 90))
     @patch("daphne.bot.download_video", return_value="/tmp/video.mp4")
     @patch("os.path.getsize", return_value=1024 * 1024)
-    async def test_handle_video_link_unknown_size_downloads_and_sends_video(
+    async def test__upload_resolved_video_unknown_size_downloads_and_sends_video(
         self, mock_getsize, mock_download, mock_probe, mock_limit
     ):
         with patch("builtins.open", unittest.mock.mock_open()):
@@ -355,7 +355,7 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
             "failed https://api.telegram.org/bot123456:ABCDEF1234567890abcdef/getMe?token=secret123"
         ),
     )
-    async def test_handle_video_link_redacts_exception_text(
+    async def test__upload_resolved_video_redacts_exception_text(
         self, mock_download, mock_limit
     ):
         await _upload_resolved_video(self.update, self.context, _video())
@@ -575,7 +575,8 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
         mock_rbac.check_access.assert_any_call(
             12345, -1002058191932, "preview_video", dry_run=True
         )
-        mock_rbac.check_access.assert_any_call(12345, -1002058191932, "preview_video")
+        # The quota charge lands in _upload_resolved_video after the send
+        # succeeds -- not here, where only the decision was made.
 
         mock_handle_video.assert_called_once_with(self.update, self.context, resolved)
         mock_send_card.assert_not_called()
@@ -620,7 +621,7 @@ class TestCallbackAndMessageHandler(unittest.IsolatedAsyncioTestCase):
             self.update,
             resolved,
             bot_module.sender_attribution(self.update.effective_user),
-            "Video Details",
+            "Preview Not Allowed (direct download only)",
         )
 
     @patch("daphne.bot.rbac_service")
