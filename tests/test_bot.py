@@ -20,7 +20,7 @@ from daphne.config import (
 from daphne.messages import PARSE_MODE_HTML
 from daphne.rbac import RbacService, get_rbac_config_path
 from daphne.video import Video
-from matcha import MediaInfo, StreamPlan
+from matcha import Card, MediaInfo, Policy, Reason, StreamPlan
 
 BILI = "https://www.bilibili.com/video/BV1abc"
 
@@ -385,6 +385,31 @@ class TestVideoHandler(unittest.IsolatedAsyncioTestCase):
 
         mock_resolve.assert_called_once_with(BILI, platform="tiktok")
         mock_handle_video.assert_awaited_once_with(self.update, self.context, resolved)
+
+    @patch("daphne.video.POLICY", Policy(auto_preview=None))
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.bot.video_upload_limit_mb", return_value=512)
+    async def test_decide_delivery_cards_when_the_policy_makes_no_choice(
+        self, mock_limit, mock_rbac
+    ):
+        # matcha v0.3.0 refuses a policy that made no `auto_preview` choice, raising
+        # PolicyError (a MatchaError) instead of reporting a product decision daphne
+        # never made. It must be caught at the gate, never escape as an exception.
+        mock_access = MagicMock()
+        mock_access.is_allowed.return_value = True
+        mock_rbac.check_access.return_value = mock_access
+
+        decision = await bot_module.decide_delivery(
+            self.update, _video(size=1024), "Haru"
+        )
+
+        self.assertIsInstance(decision, Card)
+        self.assertIs(decision.reason, Reason.NO_PLAN)
+        self.context.bot.send_video.assert_not_called()
+        # The card claims nothing it did not measure: no size, but a working source.
+        text = self.update.message.reply_text.call_args[0][0]
+        self.assertIn("Video Details", text)
+        self.assertNotIn("over", text)
 
     def test_preprocess_text_links(self):
         from daphne.bot import preprocess_text_links

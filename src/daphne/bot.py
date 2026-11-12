@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 import uuid
 
-from matcha import Capabilities, Delivery, Reason, Upload
+from matcha import Capabilities, Card, Delivery, PolicyError, Reason, Upload
 
 from daphne import bilibili
 from daphne.config import (
@@ -500,6 +500,11 @@ async def decide_delivery(
     bytes are actually delivered, so a failed download or a fallback retry never
     charges twice. A ``Card`` renders here and charges nothing -- its Download
     button charges ``download_video`` when pressed.
+
+    ``decide()`` raises ``PolicyError`` (a ``MatchaError``) when a policy makes no
+    ``auto_preview`` choice, and that must not escape this gate: daphne states its own
+    policy, so it is this bot's bug, not the user's. It cards the video instead, which
+    claims nothing -- no size was priced, but the source and its Download button work.
     """
     user_id = update.effective_user.id if update.effective_user else 0
     chat_id = update.effective_chat.id if update.effective_chat else 0
@@ -512,7 +517,11 @@ async def decide_delivery(
         max_upload_bytes=upload_cap_bytes(),
         preview_allowed=preview_access.is_allowed(),
     )
-    decision = video.delivery(caps)
+    try:
+        decision = video.delivery(caps)
+    except PolicyError as exc:
+        logger.error("Delivery policy made no decision: %s", failure_reason(exc))
+        decision = Card(Reason.NO_PLAN)
     if isinstance(decision, Upload):
         return decision
     await send_video_card(
