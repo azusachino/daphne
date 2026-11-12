@@ -217,7 +217,7 @@ class TestHandlerAdapter(unittest.TestCase):
 
     def test_a_page_link_is_printed_and_fetched(self):
         resolved = from_metadata(
-            "https://www.tiktok.com/@user/video/123?is_from_webapp=1",
+            "https://www.tiktok.com/@user/video/123",
             {"title": "t", "filesize": 2048},
             platform="tiktok",
         )
@@ -227,16 +227,30 @@ class TestHandlerAdapter(unittest.TestCase):
         )
         self.assertEqual(resolved.estimated_bytes, 2048)
 
-    def test_a_signed_cdn_url_is_fetched_verbatim(self):
-        # A fetch URL is never rewritten: its own signature or index may matter.
+    def test_a_page_url_keeps_its_query_only_for_the_fetch(self):
+        # The printed link is tracking-free; the fetch stays whatever was handed over.
         resolved = from_metadata(
-            "https://video.example/a.mp4?sig=abc",
-            {"webpage_url": "https://bsky.app/profile/alice.test/post/1?x=1"},
-            platform="bluesky",
+            "https://www.tiktok.com/@user/video/123?is_from_webapp=1",
+            {"title": "t"},
+            platform="tiktok",
         )
         self.assertEqual(
-            resolved.canonical_url, "https://bsky.app/profile/alice.test/post/1"
+            resolved.canonical_url, "https://www.tiktok.com/@user/video/123"
         )
+        self.assertEqual(
+            resolved.fetch_url,
+            "https://www.tiktok.com/@user/video/123?is_from_webapp=1",
+        )
+
+    def test_a_signed_cdn_url_is_fetched_verbatim(self):
+        # A signed file differs from its printable form only in the query. Comparing
+        # tracking-free forms would drop the signature and fetch the wrong thing.
+        resolved = from_metadata(
+            "https://video.example/a.mp4?sig=abc",
+            {"webpage_url": "https://video.example/a.mp4"},
+            platform="bluesky",
+        )
+        self.assertEqual(resolved.canonical_url, "https://video.example/a.mp4")
         self.assertEqual(resolved.fetch_url, "https://video.example/a.mp4?sig=abc")
 
     def test_a_link_nothing_can_describe_still_downloads(self):
@@ -267,6 +281,13 @@ class TestDelivery(unittest.TestCase):
         self.assertEqual(self._video(None).delivery(caps), Card(Reason.NO_PLAN))
         blocked = Capabilities(max_upload_bytes=1000, preview_allowed=False)
         self.assertEqual(self._video(900).delivery(blocked), Card(Reason.NO_ACCESS))
+
+    def test_permission_is_checked_before_the_plan(self):
+        # matcha v0.2.0 order: policy, then permission, then the plan. A chat that may
+        # not preview must not be told that a download could not be priced.
+        blocked = Capabilities(max_upload_bytes=1000, preview_allowed=False)
+        self.assertEqual(self._video(None).delivery(blocked), Card(Reason.NO_ACCESS))
+        self.assertEqual(self._video(2000).delivery(blocked), Card(Reason.NO_ACCESS))
 
 
 class TestReasonText(unittest.TestCase):

@@ -22,7 +22,7 @@ packages = ["daphne"]
 package = true
 
 [tool.uv.sources]
-matcha = { git = "https://github.com/azusachino/matcha.git", tag = "v0.1.0" }
+matcha = { git = "https://github.com/azusachino/matcha.git", tag = "v0.2.0" }
 
 # Present so ruff's upward config discovery stops here instead of picking up
 # a parent checkout's pyproject.toml (e.g. when this repo is vendored inside

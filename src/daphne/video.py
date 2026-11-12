@@ -184,14 +184,15 @@ def from_metadata(
             needs_merge=False,
         )
     )
-    fetch = url
+    # Compared raw, not by tracking-free form: a signed CDN URL differs from the post
+    # only in its query, and dropping that query would fetch the wrong thing (or a 403).
     return Video(
         ref=ref,
         canonical_url=printable,
         info=info,
         plan=plan,
         engine="platform",
-        media_url="" if strip_tracking(fetch) == strip_tracking(printable) else fetch,
+        media_url="" if url == printable else url,
     )
 
 
