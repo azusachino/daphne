@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from daphne.media_http import MediaTooLarge
 
 from daphne.instagram import (
     contains_instagram_link,
@@ -127,12 +126,20 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
     @patch("daphne.instagram.try_delete_message", autospec=True)
     @patch("daphne.instagram.stream_media", autospec=True)
     @patch("daphne.bot.send_video_card", autospec=True)
-    @patch("daphne.instagram.video_upload_limit_mb", return_value=1)
+    @patch("daphne.bot.rbac_service")
+    @patch(
+        "daphne.media_http.content_length", new=AsyncMock(return_value=2 * 1024 * 1024)
+    )
+    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
-    async def test_oversized_video_sends_card_and_keeps_original(
-        self, extract, _limit, card, stream, delete
+    async def test_oversized_video_cards_before_downloading(
+        self, extract, _limit, rbac, card, stream, delete
     ):
-        stream.side_effect = MediaTooLarge()
+        # The CDN states a size over the limit: the gate cards without fetching
+        # a single media byte (the old path streamed to the cap first).
+        allowed = MagicMock()
+        allowed.is_allowed.return_value = True
+        rbac.check_access.return_value = allowed
         extract.return_value = {
             "id": "ABC",
             "type": "video",
@@ -147,14 +154,54 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(video.platform, "instagram")
         self.assertEqual(video.canonical_url, "https://www.instagram.com/p/DRZSlC7D3OT")
         self.assertEqual(reason, "Video is over 1 MB")
+        stream.assert_not_called()
+        delete.assert_not_awaited()
+
+    @patch("daphne.instagram.try_delete_message", autospec=True)
+    @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.bot.send_video_card", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.media_http.content_length", new=AsyncMock(return_value=None))
+    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
+    @patch("parth_dl.extractors.MediaExtractor.extract")
+    async def test_an_unpriceable_video_cards_instead_of_guessing(
+        self, extract, _limit, rbac, card, stream, delete
+    ):
+        # No HEAD size: unknown means card with a Download button, not a blind
+        # download; and the yt-dlp pipeline is not burned retrying it.
+        allowed = MagicMock()
+        allowed.is_allowed.return_value = True
+        rbac.check_access.return_value = allowed
+        extract.return_value = {
+            "id": "ABC",
+            "type": "video",
+            "title": "Video by someone",
+            "uploader": "someone",
+            "formats": [{"url": "https://cdn.test/1.mp4"}],
+        }
+        with patch("daphne.bot.handle_video_url", autospec=True) as fallback:
+            await handle_instagram_links(self.update, self.context)
+        card.assert_awaited_once()
+        _update, _video, _sender, reason = card.await_args.args
+        self.assertEqual(reason, "Video Details")
+        stream.assert_not_called()
+        fallback.assert_not_called()
         delete.assert_not_awaited()
 
     @patch("daphne.bot.handle_video_url", autospec=True)
     @patch("daphne.instagram.stream_media", autospec=True)
+    @patch("daphne.bot.rbac_service")
+    @patch("daphne.media_http.content_length", new=AsyncMock(return_value=512 * 1024))
+    @patch("daphne.bot.video_upload_limit_mb", return_value=1)
     @patch("parth_dl.extractors.MediaExtractor.extract")
     async def test_direct_download_failure_falls_back_to_the_video_pipeline(
-        self, extract, stream, fallback
+        self, extract, _limit, rbac, stream, fallback
     ):
+        # The gate approved the price, but the CDN stream died: the generic
+        # pipeline gets one shot at the post before giving up.
+        allowed = MagicMock()
+        allowed.is_allowed.return_value = True
+        rbac.check_access.return_value = allowed
         stream.side_effect = RuntimeError("boom")
         extract.return_value = {
             "id": "ABC",
@@ -164,33 +211,6 @@ class TestInstagramHandler(unittest.IsolatedAsyncioTestCase):
             "formats": [{"url": "https://cdn.test/1.mp4"}],
         }
         await handle_instagram_links(self.update, self.context)
-        fallback.assert_awaited_once_with(
-            self.update,
-            self.context,
-            "https://www.instagram.com/p/DRZSlC7D3OT",
-            "instagram",
-        )
-
-    @patch("daphne.bot.handle_video_url", autospec=True)
-    @patch("daphne.instagram.stream_media", autospec=True)
-    @patch("daphne.instagram.video_upload_limit_mb", return_value=1)
-    @patch("parth_dl.extractors.MediaExtractor.extract")
-    async def test_a_real_file_over_the_limit_falls_back_to_the_video_pipeline(
-        self, extract, _limit, stream, fallback
-    ):
-        async def fake_stream(client, url, output, limit):
-            output.write(b"video")
-
-        stream.side_effect = fake_stream
-        extract.return_value = {
-            "id": "ABC",
-            "type": "video",
-            "title": "Video by someone",
-            "uploader": "someone",
-            "formats": [{"url": "https://cdn.test/1.mp4"}],
-        }
-        with patch("daphne.instagram.os.path.getsize", return_value=2 * 1024 * 1024):
-            await handle_instagram_links(self.update, self.context)
         fallback.assert_awaited_once_with(
             self.update,
             self.context,

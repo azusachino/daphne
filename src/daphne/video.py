@@ -289,8 +289,8 @@ def _http_url(value: object) -> Optional[str]:
 
 
 def _size(data: dict) -> Optional[int]:
-    """The price yt-dlp reported, in bytes, when it reported one."""
-    for key in ("filesize", "filesize_approx"):
+    """The price a source reported, in bytes, when it reported one."""
+    for key in ("filesize", "filesize_approx", "size"):
         value = data.get(key)
         if value is None:
             continue

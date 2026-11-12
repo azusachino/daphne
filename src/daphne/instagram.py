@@ -254,6 +254,38 @@ async def handle_instagram_links(
         formats = data.get("formats", [])
         if formats:
             video_url = formats[0]["url"]
+
+            from daphne.bot import decide_delivery
+            from daphne.media_http import content_length
+            from daphne.video import from_metadata
+            from matcha import Upload
+
+            # Price the direct file before downloading it: a HEAD gives the byte
+            # size when the CDN states one, and the delivery gate decides
+            # upload-or-card without a single media byte fetched.
+            async with httpx.AsyncClient() as client:
+                size = await content_length(
+                    client,
+                    video_url,
+                    headers={"Referer": "https://www.instagram.com/"},
+                )
+            video = from_metadata(
+                url,
+                {
+                    "title": title,
+                    "uploader": uploader,
+                    "duration": data.get("duration"),
+                    "webpage_url": url,
+                    "size": size,
+                },
+                platform="instagram",
+            )
+            decision = await decide_delivery(update, video, sender)
+            if not isinstance(decision, Upload):
+                # The gate rendered the card. That is a delivered outcome, not a
+                # failure the fallback chain should retry.
+                return
+
             try:
                 await context.bot.send_chat_action(
                     chat_id=chat_id, action="upload_video"
@@ -285,39 +317,22 @@ async def handle_instagram_links(
                         os.path.getsize(video_path),
                     )
                 except MediaTooLarge:
-                    from daphne.bot import send_video_card
-                    from daphne.video import from_metadata
+                    from daphne.bot import _size_reason, send_video_card
 
+                    # The CDN's price was wrong: the real bytes passed the cap the
+                    # gate already approved. Card the priced video.
                     await send_video_card(
                         update,
-                        from_metadata(
-                            url,
-                            {"title": title, "uploader": uploader, "webpage_url": url},
-                            platform="instagram",
-                        ),
+                        video,
                         sender,
-                        f"Video is over {video_upload_limit_mb()} MB",
+                        _size_reason(video.estimated_bytes or 0),
                     )
                     return
                 except Exception as exc:
                     logger.exception(
                         "Failed to download Instagram video from direct URL: %s", exc
                     )
-                    # Try fallback to standard video link downloader
-                    from daphne.bot import handle_video_url
-
-                    await handle_video_url(update, context, url, "instagram")
-                    return
-
-                # Check video upload limit
-                max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
-                file_size = os.path.getsize(video_path)
-                if file_size > max_upload_bytes:
-                    logger.warning(
-                        "Instagram video size %d exceeds limit %d",
-                        file_size,
-                        max_upload_bytes,
-                    )
+                    # The direct file failed; the chain may still read the page.
                     from daphne.bot import handle_video_url
 
                     await handle_video_url(update, context, url, "instagram")

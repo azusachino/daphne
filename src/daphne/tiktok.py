@@ -98,6 +98,35 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
 
                     # Download video file
                     if video_url:
+                        from daphne.bot import (
+                            _size_reason,
+                            decide_delivery,
+                            download_slot,
+                            send_video_card,
+                        )
+                        from daphne.video import from_metadata
+                        from matcha import Upload
+
+                        # TikWM reports the file size, so the delivery gate decides
+                        # before any media byte streams: over-limit or preview-denied
+                        # cards without the download today's path performed first.
+                        video = from_metadata(
+                            url,
+                            {
+                                "title": title,
+                                "uploader": uploader,
+                                "duration": duration_secs,
+                                "webpage_url": url,
+                                "size": data.get("size"),
+                            },
+                            platform="tiktok",
+                        )
+                        decision = await decide_delivery(update, video, sender)
+                        if not isinstance(decision, Upload):
+                            # The gate rendered the card; that is a delivered outcome,
+                            # not a failure the yt-dlp fallback should retry.
+                            return
+
                         with tempfile.TemporaryDirectory() as out_dir:
                             video_path = os.path.join(
                                 out_dir, f"{data.get('id', 'tiktok_video')}.mp4"
@@ -106,9 +135,6 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                 "TikTok handler: downloading video bytes from direct URL %s",
                                 video_url,
                             )
-                            from daphne.bot import download_slot, send_video_card
-                            from daphne.video import from_metadata
-
                             max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
                             user_id = (
                                 update.effective_user.id if update.effective_user else 0
@@ -124,20 +150,13 @@ async def handle_tiktok_links(update: TelegramUpdate, context: TelegramContext) 
                                             headers=headers,
                                         )
                             except MediaTooLarge:
+                                # TikWM's price was wrong: the real bytes passed the
+                                # cap the gate already approved. Card the priced video.
                                 await send_video_card(
                                     update,
-                                    from_metadata(
-                                        url,
-                                        {
-                                            "title": title,
-                                            "uploader": uploader,
-                                            "duration": duration_secs,
-                                            "webpage_url": url,
-                                        },
-                                        platform="tiktok",
-                                    ),
+                                    video,
                                     sender,
-                                    f"Video is over {video_upload_limit_mb()} MB",
+                                    _size_reason(video.estimated_bytes or 0),
                                 )
                                 return
 

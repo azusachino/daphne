@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 import uuid
 
-from matcha import Capabilities, Reason, Upload
+from matcha import Capabilities, Delivery, Reason, Upload
 
 from daphne import bilibili
 from daphne.config import (
@@ -354,12 +354,16 @@ async def delete_original_message(update: TelegramUpdate) -> None:
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
 
-async def handle_video_link(
+async def _upload_resolved_video(
     update: TelegramUpdate,
     context: TelegramContext,
     video: Video,
 ) -> None:
-    """Download an already-resolved video and upload it to the chat."""
+    """Download an already-decided video and upload it to the chat.
+
+    Module-private on purpose: ``decide_delivery`` is the only road to an upload,
+    so a new handler cannot wire itself around the gate by importing this.
+    """
     sender = sender_attribution(update.effective_user)
     status_msg = await update.message.reply_text(
         HtmlMessage(sender=sender).text("Preparing download...").render(),
@@ -374,8 +378,8 @@ async def handle_video_link(
     except Exception as exc:
         logger.warning("Best-effort Telegram call failed: %s", failure_reason(exc))
 
-    # No size check here: the upload-or-card decision was already made before this ran.
-    # The real bytes are checked after the download, where they are actually known.
+    # The gate already decided upload; the real bytes are still checked after the
+    # download, where they are actually known.
     max_upload_bytes = video_upload_limit_mb() * 1024 * 1024
 
     with tempfile.TemporaryDirectory() as out_dir:
@@ -465,6 +469,51 @@ async def handle_video_link(
     await delete_original_message(update)
 
 
+async def decide_delivery(
+    update: TelegramUpdate, video: Video, sender: Optional[str]
+) -> Delivery:
+    """The one delivery gate: matcha decides upload-or-card, RBAC charges on upload.
+
+    Every handler that resolved media passes through here before any byte is fetched
+    or sent. An ``Upload`` answer charges the ``preview_video`` quota; a ``Card`` is
+    rendered here and charges nothing -- its Download button charges
+    ``download_video`` when pressed. Handlers that fetched their own bytes upload
+    them themselves once this gate answers ``Upload``.
+    """
+    user_id = update.effective_user.id if update.effective_user else 0
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    preview_access = rbac_service.check_access(
+        user_id, chat_id, "preview_video", dry_run=True
+    )
+    # Policy says daphne previews; capability says how large a file may be and whether
+    # this chat may preview at all. matcha owns the resulting upload-or-card rule.
+    caps = Capabilities(
+        max_upload_bytes=video_upload_limit_mb() * 1024 * 1024,
+        preview_allowed=preview_access.is_allowed(),
+    )
+    decision = video.delivery(caps)
+    if isinstance(decision, Upload):
+        # Charge preview_video quota
+        rbac_service.check_access(user_id, chat_id, "preview_video")
+        return decision
+    await send_video_card(
+        update, video, sender, _card_reason(decision.reason, video, preview_access)
+    )
+    return decision
+
+
+async def deliver_video(
+    update: TelegramUpdate,
+    context: TelegramContext,
+    video: Video,
+    sender: Optional[str],
+) -> None:
+    """Gate, then deliver: the generic path for a link the bot resolved itself."""
+    decision = await decide_delivery(update, video, sender)
+    if isinstance(decision, Upload):
+        await _upload_resolved_video(update, context, video)
+
+
 async def handle_video_url(
     update: TelegramUpdate,
     context: TelegramContext,
@@ -481,7 +530,9 @@ async def handle_video_url(
     video = await loop.run_in_executor(
         None, functools.partial(resolve_or_blank, url, platform=platform)
     )
-    await handle_video_link(update, context, video)
+    await deliver_video(
+        update, context, video, sender_attribution(update.effective_user)
+    )
 
 
 async def media_message_handler(
@@ -610,30 +661,8 @@ async def media_message_handler(
             )
             return
 
-        preview_access = rbac_service.check_access(
-            user_id, chat_id, "preview_video", dry_run=True
-        )
-        # Policy says daphne previews; capability says how large a file may be and whether
-        # this chat may preview at all. matcha owns the resulting upload-or-card rule.
-        caps = Capabilities(
-            max_upload_bytes=video_upload_limit_mb() * 1024 * 1024,
-            preview_allowed=preview_access.is_allowed(),
-        )
-        decision = video.delivery(caps)
         await status_msg.delete()
-
-        if isinstance(decision, Upload):
-            # Charge preview_video quota
-            rbac_service.check_access(user_id, chat_id, "preview_video")
-            await handle_video_link(update, context, video)
-            return
-
-        await send_video_card(
-            update,
-            video,
-            sender,
-            _card_reason(decision.reason, video, preview_access),
-        )
+        await deliver_video(update, context, video, sender)
         # A card is not an upload; keep the source message.
 
 

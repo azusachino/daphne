@@ -2,11 +2,37 @@
 
 import asyncio
 
+import httpx
+
 from daphne.doh import check_public_url
 
 
 class MediaTooLarge(ValueError):
     pass
+
+
+async def content_length(
+    client: httpx.AsyncClient, url: str, *, headers=None, timeout=10.0
+) -> int | None:
+    """A file's byte size from a HEAD request, when the source states it.
+
+    Sources that stream or chunk dynamically return nothing usable; the caller
+    treats ``None`` as unpriced and the delivery gate cards rather than guesses.
+    """
+    await asyncio.to_thread(check_public_url, url)
+    try:
+        resp = await client.head(
+            url, headers=headers, follow_redirects=True, timeout=timeout
+        )
+    except httpx.HTTPError:
+        return None
+    if resp.status_code != 200:
+        return None
+    raw = resp.headers.get("Content-Length")
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
 
 
 async def stream_media(
