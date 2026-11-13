@@ -4,7 +4,7 @@
 # the locked environment in the builder, and the runtime image keeps uv so
 # uvx can start yt-dlp, you-get and yutto at their latest releases without a
 # rebuild. media-base provides python, ffmpeg, deno and tini.
-ARG BASE_IMAGE=azusachino.com/media-base:py3.14-trixie-r1
+ARG BASE_IMAGE=azusachino.com/media-base:py3.14-trixie-r2
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:latest
 # lux is built from source at the latest release tag: upstream's published
 # binaries are compiled with an old Go toolchain and carry stdlib CVEs into
