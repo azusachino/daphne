@@ -591,6 +591,65 @@ class TestLimitsAndCacheRules(BilibiliTestCase):
         ):
             download_native_video(URL, out_dir, client=fake.client())
 
+    def test_send_forwards_query_params_on_post(self):
+        seen: list[tuple[str, dict[str, str]]] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen.append((req.method, dict(req.url.params)))
+            return httpx.Response(200, json={"code": 0})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            req = bilibili.Request(
+                method="POST",
+                url="https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+                params={"key_id": "ec02", "hexsign": "abc"},
+                headers={"User-Agent": "test"},
+            )
+            resp = bilibili._send(client, req)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(seen, [("POST", {"key_id": "ec02", "hexsign": "abc"})])
+
+    def test_with_session_reads_under_state_lock(self):
+        entered = False
+
+        class TrackingLock:
+            def __enter__(self):
+                nonlocal entered
+                entered = True
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        req = bilibili.Request(
+            method="GET",
+            url="https://api.bilibili.com/x/web-interface/view",
+            cookies={"extra": "1"},
+        )
+        with (
+            patch.object(bilibili, "_state_lock", TrackingLock()),
+            patch.dict(bilibili._session, {"cookies": {"buvid3": "v3"}, "at": 1.0}),
+        ):
+            enriched = bilibili._with_session(req)
+        self.assertTrue(entered)
+        self.assertEqual(enriched.cookies, {"buvid3": "v3", "extra": "1"})
+
+    def test_to_cache_serializes_replace_and_eviction_under_cache_lock(self):
+        held_during_evict: list[bool] = []
+        real_evict = bilibili._evict_cache
+
+        def spy_evict(keep: str) -> None:
+            held_during_evict.append(bilibili._cache_lock.locked())
+            real_evict(keep)
+
+        out_dir = tempfile.mkdtemp(prefix="bili-out-")
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        path = os.path.join(out_dir, "x.mp4")
+        Path(path).write_bytes(b"video")
+        with patch.object(bilibili, "_evict_cache", side_effect=spy_evict):
+            bilibili._to_cache(path, "bilibili-BV1locktest")
+        self.assertEqual(held_during_evict, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,7 @@ MAX_STREAM_BYTES = 2 * 1024**3
 CACHE_DIR = os.path.join(tempfile.gettempdir(), f"daphne-bilibili-{os.getuid()}")
 
 _state_lock = threading.Lock()
+_cache_lock = threading.Lock()
 _session: dict[str, Any] = {"cookies": None, "at": 0.0}
 
 
@@ -141,7 +142,8 @@ def _open(client: Optional[httpx.Client]) -> Iterator[httpx.Client]:
 
 def _with_session(request: Request) -> Request:
     """Attach the cookies of the current visitor session to a request description."""
-    cookies = dict(_session["cookies"] or {})
+    with _state_lock:
+        cookies = dict(_session["cookies"] or {})
     if not cookies:
         return request
     return replace(request, cookies={**cookies, **dict(request.cookies)})
@@ -154,11 +156,12 @@ def _send(client: httpx.Client, request: Request) -> httpx.Response:
     # client's jar, scoped to the site they came from (never the media CDN).
     for name, value in request.cookies.items():
         client.cookies.set(name, value, domain=".bilibili.com", path="/")
+    params = dict(request.params) or None
     if request.method == "POST":
-        return client.post(request.url, headers=headers)
+        return client.post(request.url, params=params, headers=headers)
     return client.get(
         request.url,
-        params=dict(request.params) or None,
+        params=params,
         headers=headers,
     )
 
@@ -509,12 +512,13 @@ def _to_cache(path: str, key: str) -> None:
     os.close(fd)
     try:
         shutil.copyfile(path, partial)
-        os.replace(partial, dest)
+        with _cache_lock:
+            os.replace(partial, dest)
+            _evict_cache(dest)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(partial)
         raise
-    _evict_cache(dest)
 
 
 def _evict_cache(keep: str) -> None:
